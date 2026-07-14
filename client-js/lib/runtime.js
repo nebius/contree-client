@@ -206,7 +206,14 @@ export async function sha256(content) {
     content = textToBytes(content);
   }
   if (content instanceof Uint8Array) {
-    const digest = await crypto.subtle.digest("SHA-256", content);
+    // the webcrypto global only appeared in Node 19: fall back to
+    // node:crypto on Node 18 (browsers always have globalThis.crypto)
+    const subtle = globalThis.crypto?.subtle;
+    if (subtle === undefined) {
+      const { createHash } = await import("node:crypto");
+      return createHash("sha256").update(content).digest("hex");
+    }
+    const digest = await subtle.digest("SHA-256", content);
     return hex(new Uint8Array(digest));
   }
   if (typeof Blob !== "undefined" && content instanceof Blob) {
@@ -219,7 +226,7 @@ export async function sha256(content) {
       }
       return digest.digest("hex");
     }
-    const digest = await crypto.subtle.digest(
+    const digest = await globalThis.crypto.subtle.digest(
       "SHA-256",
       await content.arrayBuffer(),
     );

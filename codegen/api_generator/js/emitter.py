@@ -897,15 +897,36 @@ export class ContreeClient {{
 
   /** Execute the request and return the buffered response. */
   async request(spec) {{
-    const signal =
-      this.timeout !== null ? AbortSignal.timeout(this.timeout * 1000) : undefined;
-    const response = await this._fetch(this.buildUrl(spec), this._fetchOptions(spec, signal));
-    const body = new Uint8Array(await response.arrayBuffer());
-    const headers = {{}};
-    response.headers.forEach((value, key) => {{
-      headers[key.toLowerCase()] = value;
-    }});
-    return {{ status: response.status, headers, body, url: response.url }};
+    const controller = new AbortController();
+    // an explicit timer, not AbortSignal.timeout(): Node unrefs that
+    // timer, so it can never fire when nothing else keeps the event
+    // loop alive (custom fetch transports, for one)
+    const timer =
+      this.timeout !== null
+        ? setTimeout(
+            () =>
+              controller.abort(
+                new DOMException("request timed out", "TimeoutError"),
+              ),
+            this.timeout * 1000,
+          )
+        : null;
+    try {{
+      const response = await this._fetch(
+        this.buildUrl(spec),
+        this._fetchOptions(spec, controller.signal),
+      );
+      const body = new Uint8Array(await response.arrayBuffer());
+      const headers = {{}};
+      response.headers.forEach((value, key) => {{
+        headers[key.toLowerCase()] = value;
+      }});
+      return {{ status: response.status, headers, body, url: response.url }};
+    }} finally {{
+      if (timer !== null) {{
+        clearTimeout(timer);
+      }}
+    }}
   }}
 
   /** fetch reports network failures as TypeError; timeouts abort. */
