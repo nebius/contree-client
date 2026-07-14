@@ -1,0 +1,64 @@
+# The repository root is a virtual uv workspace: codegen/ holds the
+# code generator, client/ holds the published distribution. End users
+# never build the generator - the client sdist is self-contained.
+
+# Every code dependency is declared by the member that needs it (as
+# `dev` extras); the documentation is built from the workspace root,
+# so its toolchain lives here.
+[dependency-groups]
+dev = [
+    "contree-client[dev]",
+    "contree-client-codegen[dev]",
+    "sphinx>=8.1.3",
+    "myst-parser>=4.0.1",
+    "sphinx-design>=0.6",
+    "sphinx-mintlify-output>=0.1.2",
+]
+
+# `pytest client docs` runs with the repository root as rootdir,
+# outside the client project config - register the marker here too or
+# every run warns about it
+[tool.pytest.ini_options]
+markers = [
+    "integration: live tests against the real Contree API; auto-skip without an active contree-cli profile",
+]
+
+# Covers root-level files (conftest.py); the members carry the same
+# configuration for their own trees.
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "A",    # builtins shadowing
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "FURB", # refurb modernization
+    "I",    # isort
+    "ISC",  # implicit string concatenation pitfalls
+    "PERF", # performance anti-patterns
+    "PIE",  # misc lints
+    "PLC",  # pylint conventions (function-local imports among them)
+    "PLE",  # pylint errors
+    "RET",  # return statements
+    "RSE",  # raise statements
+    "RUF",  # ruff-specific
+    "SIM",  # simplify
+    "T20",  # no stray print
+    "UP",   # pyupgrade
+    "W",    # pycodestyle warnings
+]
+ignore = [
+    # conflicts with the formatter (implicit concat in wrapped strings)
+    "ISC001",
+]
+
+[tool.uv.workspace]
+members = ["codegen", "client"]
+
+[tool.uv.sources]
+contree-client = { workspace = true }
+contree-client-codegen = { workspace = true }

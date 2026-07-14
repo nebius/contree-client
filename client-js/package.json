@@ -1,0 +1,35 @@
+{
+  "name": "contree-client",
+  "version": "0.1.0",
+  "description": "JavaScript client for the Contree API, generated from the OpenAPI spec",
+  "homepage": "https://contree.dev/",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./testing": {
+      "types": "./lib/testing.d.ts",
+      "default": "./lib/testing.js"
+    }
+  },
+  "types": "./lib/index.d.ts",
+  "files": [
+    "lib"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "format": "prettier --write lib test",
+    "lint": "prettier --check lib test && tsc --noEmit",
+    "test": "node --test \"test/*.test.mjs\"",
+    "prepack": "node --input-type=module -e \"await import(new URL('./lib/index.js', 'file://' + process.cwd() + '/').href); await import(new URL('./lib/testing.js', 'file://' + process.cwd() + '/').href);\""
+  },
+  "devDependencies": {
+    "prettier": "^3.3.0",
+    "typescript": "^5.5.0"
+  }
+}

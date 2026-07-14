@@ -1,0 +1,80 @@
+# It builds with plain uv_build - no generator, no hooks, no network.
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12"]
+build-backend = "uv_build"
+
+[project]
+name = "contree-client"
+version = "0.1.0"
+description = "Python client for the Contree API, generated from the OpenAPI specification"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Dmitry Orlov", email = "mosquito@nebius.com" }]
+dependencies = []
+
+[project.urls]
+Homepage = "https://contree.dev/"
+Documentation = "https://docs.tokenfactory.nebius.com/sandboxes/overview"
+
+[project.optional-dependencies]
+urllib3 = ["urllib3>=2.0"]
+requests = ["requests>=2.28"]
+aiohttp = ["aiohttp>=3.9"]
+httpx = ["httpx>=0.27"]
+# everything needed to develop and run the bundled test suite
+dev = [
+    "contree-client[urllib3,requests,aiohttp,httpx]",
+    "pytest>=8",
+    "pytest-cov>=7.1.0",
+    "markdown-pytest[async]>=0.3",
+    "types-requests",
+]
+
+[tool.uv.build-backend]
+module-root = ""
+# the generated __init__.py may be absent on a fresh clone (it is
+# produced by `make generate`); namespace mode skips the module check
+namespace = true
+# ship the test suite inside the sdist as well
+source-include = ["tests/**"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: live tests against the real Contree API; auto-skip without an active contree-cli profile",
+]
+
+[tool.ty.environment]
+python-version = "3.10"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "A",    # builtins shadowing
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "FURB", # refurb modernization
+    "I",    # isort
+    "ISC",  # implicit string concatenation pitfalls
+    "PERF", # performance anti-patterns
+    "PIE",  # misc lints
+    "PLC",  # pylint conventions (function-local imports among them)
+    "PLE",  # pylint errors
+    "RET",  # return statements
+    "RSE",  # raise statements
+    "RUF",  # ruff-specific
+    "SIM",  # simplify
+    "T20",  # no stray print
+    "UP",   # pyupgrade
+    "W",    # pycodestyle warnings
+]
+ignore = [
+    # conflicts with the formatter (implicit concat in wrapped strings)
+    "ISC001",
+]

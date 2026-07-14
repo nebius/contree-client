@@ -1,0 +1,70 @@
+# The builder project: the code generator that produces the client
+# package in ../client from the OpenAPI specification. Not for publishing to pypi
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12"]
+build-backend = "uv_build"
+
+[project]
+name = "contree-client-codegen"
+version = "0.1.0"
+description = "Code generator producing the contree-client package from the OpenAPI spec"
+requires-python = ">=3.10"
+authors = [{ name = "Dmitry Orlov", email = "mosquito@nebius.com" }]
+dependencies = [
+    "argclass>=1.9",
+    "pyyaml>=6",
+    "ruff>=0.8",
+]
+
+[project.urls]
+Homepage = "https://contree.dev/"
+Documentation = "https://docs.tokenfactory.nebius.com/sandboxes/overview"
+
+[project.optional-dependencies]
+dev = [
+    "types-pyyaml",
+    "ty>=0.0.58",
+]
+
+[tool.uv.build-backend]
+module-root = ""
+module-name = "api_generator"
+
+[tool.ty.environment]
+python-version = "3.10"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "A",    # builtins shadowing
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "FURB", # refurb modernization
+    "I",    # isort
+    "ISC",  # implicit string concatenation pitfalls
+    "PERF", # performance anti-patterns
+    "PIE",  # misc lints
+    "PLC",  # pylint conventions (function-local imports among them)
+    "PLE",  # pylint errors
+    "RET",  # return statements
+    "RSE",  # raise statements
+    "RUF",  # ruff-specific
+    "SIM",  # simplify
+    "T20",  # no stray print
+    "UP",   # pyupgrade
+    "W",    # pycodestyle warnings
+]
+ignore = [
+    # conflicts with the formatter (implicit concat in wrapped strings)
+    "ISC001",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# the CLI entry point legitimately prints its result
+"api_generator/__main__.py" = ["T201"]

@@ -1,0 +1,116 @@
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+env:
+  DEFAULT_PYTHON: "3.12"
+  # required: both packages are generated from the spec at build time;
+  # publishing an artifact without it is impossible by construction
+  CONTREE_SPEC: ${{ secrets.CONTREE_SPEC }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  pypi:
+    name: Build and Publish (PyPI)
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # PyPI trusted publishing (OIDC): configure the publisher for
+      # `contree-client` on pypi.org, no long-lived token needed
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.DEFAULT_PYTHON }}
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Set version from tag
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          cd client && uv version "$VERSION"
+
+      - name: Generate the client package
+        run: uv run python -m api_generator --package client/contree_client
+
+      - name: Gate the artifact
+        # builds a wheel and imports it from an isolated environment -
+        # a formally successful but incomplete artifact cannot pass
+        run: uv run pytest -q client/tests/test_wheel.py
+
+      - name: Build package
+        run: uv build client --out-dir dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  npm:
+    name: Build and Publish (npm)
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      # npm trusted publishing / provenance (OIDC): configure the
+      # trusted publisher for `contree-client` on npmjs.com
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.DEFAULT_PYTHON }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: |
+          uv sync
+          npm ci --prefix client-js --no-audit --no-fund
+
+      - name: Set version from tag
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          cd client-js
+          npm version "$VERSION" --no-git-tag-version
+          # the User-Agent product token duplicates the version
+          sed -i "s|^export const PACKAGE_VERSION = \".*\";|export const PACKAGE_VERSION = \"$VERSION\";|" lib/runtime.js
+          grep -q "PACKAGE_VERSION = \"$VERSION\"" lib/runtime.js
+
+      - name: Generate the client package
+        run: uv run python -m api_generator --lang js --package client-js/lib
+
+      - name: Gate the artifact
+        # the node suites against the local stub plus the strict type
+        # check; prepack re-imports the entrypoints at pack time
+        run: |
+          cd client-js
+          node --test "test/*.test.mjs"
+          npx tsc --noEmit
+
+      - name: Publish to npm
+        run: cd client-js && npm publish --provenance --access public

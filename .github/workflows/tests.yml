@@ -1,0 +1,208 @@
+name: Tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+env:
+  DEFAULT_PYTHON: "3.14"
+  FORCE_COLOR: "1"
+  # the OpenAPI spec location is a repository secret, never stored in
+  # the repo; without it every spec-dependent test skips cleanly (PRs
+  # from forks still get lint/typecheck and the offline unit tests)
+  CONTREE_SPEC: ${{ secrets.CONTREE_SPEC }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.DEFAULT_PYTHON }}
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Ruff format
+        run: uv run ruff format --check codegen client/tests conftest.py
+
+      - name: Ruff check
+        run: uv run ruff check codegen client/tests conftest.py
+
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.DEFAULT_PYTHON }}
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run ty (codegen)
+        run: uv run ty check codegen/api_generator
+
+      - name: Generate and ty (client)
+        if: env.CONTREE_SPEC != ''
+        run: |
+          uv run python -m api_generator --package client/contree_client
+          uv run ty check client/contree_client
+
+  test-python:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Generate the client package
+        if: env.CONTREE_SPEC != ''
+        run: uv run python -m api_generator --package client/contree_client
+
+      - name: Run tests
+        run: uv run pytest -v --tb=short -m "not integration" client docs
+
+  test-js:
+    name: Node ${{ matrix.node-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node-version: ["18.17", "20", "22", "24"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        # the node suites spawn the stdlib-only python stub server
+        run: |
+          uv python install ${{ env.DEFAULT_PYTHON }}
+          echo "PYTHON=$(uv python find ${{ env.DEFAULT_PYTHON }})" >> "$GITHUB_ENV"
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: |
+          uv sync
+          npm ci --prefix client-js --no-audit --no-fund
+
+      - name: Generate the client package
+        if: env.CONTREE_SPEC != ''
+        run: uv run python -m api_generator --lang js --package client-js/lib
+
+      - name: Run tests
+        if: env.CONTREE_SPEC != ''
+        run: cd client-js && node --test "test/*.test.mjs"
+
+      - name: Strict type check
+        if: env.CONTREE_SPEC != ''
+        run: cd client-js && npx tsc --noEmit && npx prettier --check lib test
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.DEFAULT_PYTHON }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
+      - name: Install dependencies
+        run: |
+          uv sync
+          npm ci --prefix client-js --no-audit --no-fund
+
+      - name: Build documentation (HTML + Mintlify)
+        if: env.CONTREE_SPEC != ''
+        run: make docs docs-mintlify
+
+  integration:
+    name: Integration (live API)
+    # Linux only, serialized with the unit jobs: these tests perform
+    # WRITE operations (upload, spawn, cancel) against the endpoint in
+    # the CONTREE_URL secret - never point it at production
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [test-python]
+    env:
+      CONTREE_TOKEN: ${{ secrets.CONTREE_TOKEN }}
+      CONTREE_URL: ${{ secrets.CONTREE_URL }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.DEFAULT_PYTHON }}
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Generate the client package
+        if: env.CONTREE_SPEC != '' && env.CONTREE_TOKEN != ''
+        run: uv run python -m api_generator --package client/contree_client
+
+      - name: Run integration tests
+        if: env.CONTREE_SPEC != '' && env.CONTREE_TOKEN != ''
+        run: uv run pytest -v --tb=short -m integration client
