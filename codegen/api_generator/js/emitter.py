@@ -941,11 +941,32 @@ export class ContreeClient {{
     );
   }}
 
+  /** One transparent reconnect for a replayable idempotent request:
+   * fetch pools keep-alive sockets and cannot pre-check them the way
+   * the Python adapters do, so the first request on a socket the
+   * server already closed fails without ever reaching the server. */
+  async _reconnecting(spec) {{
+    try {{
+      return await this.request(spec);
+    }} catch (error) {{
+      if (
+        !spec.idempotent ||
+        (typeof ReadableStream !== "undefined" &&
+          spec.body instanceof ReadableStream) ||
+        !this._transportRetryable(error) ||
+        this._transportNonretryable(error)
+      ) {{
+        throw error;
+      }}
+      return await this.request(spec);
+    }}
+  }}
+
   /** Execute a buffered request, retrying per the client policy. */
   async call(spec) {{
     const policy = this.retry;
     if (policy === null) {{
-      return await this.request(spec);
+      return await this._reconnecting(spec);
     }}
     if (!spec.idempotent && !policy.retryUnsafe) {{
       // a lost response after a non-idempotent request (POST) could
@@ -1023,16 +1044,44 @@ export class ContreeClient {{
       }}
       return deadline === null ? null : deadline - monotonic();
     }};
-    abortIn(this.timeout); // the connect phase always has a bound
-    let response;
-    try {{
-      response = await this._fetch(
-        this.buildUrl(spec),
-        this._fetchOptions(spec, controller.signal),
+    // the server may close a pooled keep-alive socket between
+    // requests and fetch exposes no pool to pre-check (the Python
+    // adapters validate pooled connections instead): a replayable
+    // connect that fails on the transport is retried per the client
+    // policy, and even with no policy it gets one transparent
+    // reconnect - the body has not been consumed yet, so it is safe
+    const replayable =
+      spec.idempotent &&
+      !(
+        typeof ReadableStream !== "undefined" &&
+        spec.body instanceof ReadableStream
       );
-    }} catch (error) {{
-      disarm();
-      throw error;
+    const policy = replayable ? this.retry : null;
+    const maxAttempts =
+      policy !== null ? policy.maxAttempts : replayable ? 2 : 1;
+    const delays = policy === null ? null : retryDelays(policy.delays);
+    let attempts = 0;
+    let response;
+    for (;;) {{
+      attempts += 1;
+      abortIn(this.timeout); // the connect phase always has a bound
+      try {{
+        response = await this._fetch(
+          this.buildUrl(spec),
+          this._fetchOptions(spec, controller.signal),
+        );
+        break;
+      }} catch (error) {{
+        disarm();
+        if (
+          !this._transportRetryable(error) ||
+          this._transportNonretryable(error) ||
+          (maxAttempts !== null && attempts >= maxAttempts)
+        ) {{
+          throw error;
+        }}
+        await sleep(delays === null ? 0 : delays.next().value);
+      }}
     }}
     if (!(response.status >= 200 && response.status < 300)) {{
       // the error body is read under the same timer: a 500 with an

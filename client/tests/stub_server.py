@@ -35,6 +35,7 @@ RECONNECT_OPERATION_UUID = "00000000-0000-0000-0000-00000000ec0e"
 CLOSING_OPERATION_UUID = "00000000-0000-0000-0000-0000000c105e"
 DROPPING_OPERATION_UUID = "00000000-0000-0000-0000-00000000d40b"
 KEEPALIVE_OPERATION_UUID = "00000000-0000-0000-0000-0000000cee9a"
+RESET_OPERATION_UUID = "00000000-0000-0000-0000-000000000e5e"
 SSE_HANG_SECONDS = 10.0
 FILE_UUID = "a9165a5d-5c86-4bd8-8ee4-ae46c19cf45d"
 KNOWN_SHA256 = "a" * 64
@@ -287,6 +288,9 @@ class Reply:
     # serve a normal keepalive response, then silently close the TCP
     # connection - the client only finds out when it tries to reuse it
     drop_after: bool = False
+    # close the connection without writing anything at all: what a
+    # stale keep-alive socket looks like to the next request on it
+    drop_before: bool = False
 
 
 def json_reply(status: int, payload: Any, **headers: str) -> Reply:
@@ -482,6 +486,17 @@ def route(request: Captured, attempts: collections.Counter[str]) -> Reply:
             stream_chunks=SSE_FRAMES,
         )
 
+    if path == f"/v1/operations/{RESET_OPERATION_UUID}/events":
+        # the first connect lands on a "stale" socket that the server
+        # closes without a byte; a retried connect gets the stream
+        if attempt == 1:
+            return Reply(status=200, drop_before=True)
+        return Reply(
+            status=200,
+            content_type="text/event-stream",
+            stream_chunks=SSE_FRAMES,
+        )
+
     if path == f"/v1/operations/{BROKEN_OPERATION_UUID}/events":
         return Reply(
             status=200,
@@ -630,6 +645,9 @@ class Handler(BaseHTTPRequestHandler):
         )
         self.stub.captured.append(request)
         reply = route(request, self.stub.attempts)
+        if reply.drop_before:
+            self.close_connection = True
+            return
         if reply.stream_chunks is not None:
             self.send_stream(reply)
             return

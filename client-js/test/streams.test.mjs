@@ -14,6 +14,7 @@ import {
   IMAGE_UUID,
   OPERATION_UUID,
   RECONNECT_OPERATION_UUID,
+  RESET_OPERATION_UUID,
   TRUNCATED_IMAGE_UUID,
   startStub,
 } from "./stub.mjs";
@@ -83,6 +84,20 @@ test("a truncated compressed stream ends without hanging", async () => {
     intact.push(chunk);
   }
   assert.ok(concat(chunks).length < concat(intact).length);
+});
+
+test("a connect dropped on a stale socket is retried", async () => {
+  // the stub closes the first connection without writing a byte -
+  // exactly what a reused keep-alive socket the server already closed
+  // looks like; the idempotent connect must retry, not fail
+  const events = [];
+  for await (const event of client.iterOperationEvents(RESET_OPERATION_UUID)) {
+    events.push(event);
+  }
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["init", "spawn", "exit"],
+  );
 });
 
 test("SSE events arrive typed and in order", async () => {

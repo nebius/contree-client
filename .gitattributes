@@ -1,0 +1,3 @@
+# prettier and the generated sources are LF-only; a Windows
+# checkout must not silently rewrite them to CRLF
+* text=auto eol=lf
