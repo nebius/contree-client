@@ -125,3 +125,7 @@ make generate-js          # regenerate into client-js/lib
 make lint-js              # prettier --check + tsc --noEmit
 make test-js              # node --test against the shared python stub
 ```
+
+## Copyright
+
+Nebius B.V. 2026, Licensed under the Apache License, Version 2.0 (see "LICENSE" file).

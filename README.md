@@ -78,3 +78,7 @@ Repository secrets:
 
 Without `CONTREE_SPEC` (forks, external PRs) the spec-dependent tests
 skip; lint, type checks and the offline unit tests still run.
+
+## Copyright
+
+Nebius B.V. 2026, Licensed under the Apache License, Version 2.0 (see "LICENSE" file).

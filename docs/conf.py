@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import tomllib
@@ -17,7 +18,7 @@ version = ".".join(release.split(".")[:2])
 
 project = "contree-client"
 author = "Dmitry Orlov"
-copyright = "2026, Dmitry Orlov"  # noqa: A001
+copyright = f"{datetime.now(timezone.utc).year}, Nebius B.V."  # noqa: A001
 
 extensions = [
     "myst_parser",

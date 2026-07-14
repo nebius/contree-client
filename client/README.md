@@ -355,3 +355,7 @@ name: test_readme_logging
 set_log_level(logging.ERROR)  # keep the other examples quiet
 ```
 -->
+
+## Copyright
+
+Nebius B.V. 2026, Licensed under the Apache License, Version 2.0 (see "LICENSE" file).

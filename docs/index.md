@@ -97,3 +97,9 @@ js/api
 js/reference
 js/testing
 ```
+
+## License
+
+Both packages are distributed under the Apache License, Version 2.0.
+
+Copyright Nebius B.V. 2026 (see the "LICENSE" file in the repository).
