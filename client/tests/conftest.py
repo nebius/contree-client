@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -18,27 +17,6 @@ CLIENT_ROOT = Path(__file__).resolve().parent.parent
 if str(CLIENT_ROOT) not in sys.path:
     sys.path.insert(0, str(CLIENT_ROOT))
 
-try:  # the distribution sdist ships no generator: the package is prebuilt
-    from api_generator.loader import load_spec
-    from api_generator.python.emitter import generate
-
-    HAVE_GENERATOR = True
-except ImportError:
-    HAVE_GENERATOR = False
-
-# generator-only test modules are not collectable without codegen
-collect_ignore = (
-    []
-    if HAVE_GENERATOR
-    else [
-        "test_ir.py",
-        "test_js_reference.py",
-        "test_loader.py",
-        "test_main.py",
-        "test_naming.py",
-    ]
-)
-
 from tests.stub_server import StubServer  # noqa: E402
 
 TOKEN = "test-token"
@@ -50,51 +28,21 @@ BACKENDS = SYNC_BACKENDS + ASYNC_BACKENDS
 
 
 @pytest.fixture(scope="session")
-def spec_source(tmp_path_factory: pytest.TempPathFactory) -> str:
-    """The OpenAPI spec location as a local path.
+def generated_package() -> ModuleType:
+    """Import the generated package, wherever it lives.
 
-    The spec is never stored in the repository: the CONTREE_SPEC
-    environment variable (a CI secret) points at it. Tests that need
-    the spec are skipped when the variable is not exported; a URL is
-    fetched once per session so every consumer works from the same
-    local file.
+    Three layouts work: the dev repo after `make generate`, the
+    distribution sdist with the modules baked in, and a CI job that
+    installed the built wheel (the incomplete source tree removed).
+    This suite never runs the generator - that is codegen/tests.
     """
-    source = os.environ.get("CONTREE_SPEC", "")
-    if not source:
-        pytest.skip("the CONTREE_SPEC environment variable is not set")
-    if source.startswith(("http://", "https://")):
-        path = tmp_path_factory.mktemp("spec") / "api.yaml"
-        path.write_text(load_spec(source).text, encoding="utf-8")
-        return str(path)
-    return source
-
-
-@pytest.fixture(scope="session")
-def generated_package(request: pytest.FixtureRequest) -> ModuleType:
-    """Import the package, regenerating it first when possible.
-
-    Three layouts work: the dev repo with CONTREE_SPEC exported
-    (regenerate from the fresh spec), a checkout with pregenerated
-    sources (a CI artifact built once on one job), and the
-    distribution sdist where the modules are baked in and no
-    generator ships at all.
-    """
-    if HAVE_GENERATOR and os.environ.get("CONTREE_SPEC"):
-        generate(
-            request.getfixturevalue("spec_source"),
-            CLIENT_ROOT / "contree_client",
+    try:
+        importlib.import_module("contree_client.base")
+    except ImportError:
+        pytest.skip(
+            "the generated contree_client package is not available;"
+            " run `make generate` or install the built wheel"
         )
-    else:
-        # no spec: the package must already be complete - pregenerated
-        # sources, the sdist, or an installed wheel (CI removes the
-        # source tree and installs the built artifact instead)
-        try:
-            importlib.import_module("contree_client.base")
-        except ImportError:
-            pytest.skip(
-                "the generated contree_client package is not available;"
-                " export CONTREE_SPEC or install the built wheel"
-            )
     return importlib.import_module("contree_client")
 
 

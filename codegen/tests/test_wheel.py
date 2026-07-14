@@ -9,6 +9,7 @@ modules from an isolated environment makes that impossible to miss.
 
 from __future__ import annotations
 
+import pathlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,7 +17,7 @@ from types import ModuleType
 
 import pytest
 
-from tests.conftest import CLIENT_ROOT
+CLIENT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent / "client"
 
 # what a bare install (no extras) guarantees to import
 SMOKE_IMPORTS = (

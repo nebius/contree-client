@@ -7,6 +7,7 @@ import io
 from pathlib import Path
 
 import pytest
+
 from api_generator import loader
 
 DOCUMENT = b"openapi: 3.0.0\ninfo: {title: t, version: '1'}\n"

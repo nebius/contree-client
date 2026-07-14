@@ -65,18 +65,12 @@ jobs:
         if: env.CONTREE_SPEC != ''
         run: uv run ty check client/contree_client
 
-      - name: Run the generator test suite
+      - name: Run the codegen test suite
         # spec-dependent by design: loader, IR, emitters, the wheel
-        # gate (builds a wheel and imports it from an isolated env)
+        # gate (builds a wheel and imports it from an isolated env).
+        # Linux-only on purpose - codegen runs nowhere else.
         if: env.CONTREE_SPEC != ''
-        run: >
-          uv run pytest -v --tb=short
-          client/tests/test_ir.py
-          client/tests/test_loader.py
-          client/tests/test_main.py
-          client/tests/test_naming.py
-          client/tests/test_js_reference.py
-          client/tests/test_wheel.py
+        run: uv run pytest -v --tb=short codegen/tests
 
       - name: Build the packages
         if: env.CONTREE_SPEC != ''
@@ -150,9 +144,6 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        run: uv sync
-
       - name: Download the Python distribution
         if: needs.build.outputs.built == 'true'
         uses: actions/download-artifact@v4
@@ -160,17 +151,22 @@ jobs:
           name: dist-python
           path: dist
 
-      - name: Install the built wheel
-        # the tests then exercise the exact artifact: the incomplete
-        # source package is removed so nothing can shadow the wheel
+      - name: Install the built wheel into a clean environment
+        # NOT `uv sync`: the workspace would substitute the editable
+        # source member for the wheel. A standalone venv gets the
+        # exact artifact plus its own [dev] extra (pytest & friends);
+        # the incomplete source package is removed so nothing shadows
+        # the wheel
         if: needs.build.outputs.built == 'true'
         run: |
-          rm -rf client/contree_client
-          uv pip install --force-reinstall "$(ls dist/*.whl)[urllib3,requests,aiohttp,httpx]"
+          rm -rf client/contree_client .venv
+          uv venv --python ${{ matrix.python-version }}
+          uv pip install "$(ls dist/*.whl)[dev]"
 
       - name: Run tests
+        if: needs.build.outputs.built == 'true'
         run: >
-          uv run --no-sync pytest -v --tb=short --timeout 300
+          uv run --no-project pytest -v --tb=short --timeout 300
           -m "not integration" client docs
 
   test-js:
@@ -301,9 +297,7 @@ jobs:
           node-version: "lts/*"
 
       - name: Install dependencies
-        run: |
-          uv sync
-          npm ci --prefix client-js --no-audit --no-fund
+        run: npm ci --prefix client-js --no-audit --no-fund
 
       - name: Download the distributions
         if: needs.build.outputs.built == 'true'
@@ -314,10 +308,13 @@ jobs:
           merge-multiple: true
 
       - name: Install the built artifacts
+        # a standalone venv, not `uv sync`: the workspace would
+        # substitute the editable source member for the wheel
         if: needs.build.outputs.built == 'true'
         run: |
-          rm -rf client/contree_client
-          uv pip install --force-reinstall "$(ls dist/*.whl)[urllib3,requests,aiohttp,httpx]"
+          rm -rf client/contree_client .venv
+          uv venv --python ${{ env.DEFAULT_PYTHON }}
+          uv pip install "$(ls dist/*.whl)[dev]"
           tar -xzf dist/*.tgz
           rm -rf client-js/lib
           mv package/lib client-js/lib
@@ -325,7 +322,7 @@ jobs:
       - name: Run Python integration tests
         if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
         run: >
-          uv run --no-sync pytest -v --tb=short --timeout 300
+          uv run --no-project pytest -v --tb=short --timeout 300
           -m integration client
 
       - name: Run JS integration tests

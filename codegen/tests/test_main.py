@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from api_generator.__main__ import main
 from api_generator.python import emitter
 from api_generator.python.emitter import GENERATED_FILES

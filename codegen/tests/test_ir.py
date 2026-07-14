@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from api_generator.ir import OpDef, SchemaConverter, SpecIR, build_ir
 from api_generator.loader import Spec, load_spec
 from api_generator.python.emitter import render_operation_status

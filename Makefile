@@ -61,7 +61,7 @@ test: test-python test-js
 # Default runs are fully offline: live tests against the real API
 # (they upload, spawn and cancel!) only run via the test-live target.
 test-python: generate
-	uv run pytest -v client docs -m "not integration" \
+	uv run pytest -v codegen/tests client docs -m "not integration" \
 	    --cov=contree_client --cov-report=term-missing
 
 # the node suites spawn the python stub server themselves
@@ -82,7 +82,7 @@ test-live-js: generate-js
 	cd client-js && node --test --test-timeout=300000 test/live/*.test.mjs
 
 coverage: generate
-	uv run pytest -q client docs -m "not integration" \
+	uv run pytest -q codegen/tests client docs -m "not integration" \
 	    --cov=api_generator --cov=contree_client \
 	    --cov-report=term-missing
 
