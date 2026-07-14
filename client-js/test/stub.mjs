@@ -22,6 +22,14 @@ export async function startStub() {
   });
   const lines = createInterface({ input: child.stdout });
   const [baseUrl] = await once(lines, "line");
+  // the child must not keep the parent's event loop alive: Node
+  // 18.17's test runner never fires the root after() hook, so the
+  // suite would hang waiting for these handles. The stub exits on
+  // stdin EOF, which parent exit delivers for free.
+  lines.close();
+  child.stdout.destroy();
+  child.stdin.unref();
+  child.unref();
   return {
     baseUrl,
     stop() {

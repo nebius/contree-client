@@ -158,6 +158,38 @@ FIELD_TYPE_OVERRIDES: dict[tuple[str, str], TypeRef] = {
 # ---------------------------------------------------------------------------
 
 
+LINE_LIMIT = 88
+# implicit-concatenation chunks are laid out by the formatter at the
+# metadata-value depth: dict items sit at column 12, chunks at 16
+METADATA_ITEM_COLUMN = 12
+CHUNK_WIDTH = LINE_LIMIT - METADATA_ITEM_COLUMN - 4
+
+
+def string_literal(value: object, offset: int = 0) -> str:
+    """Repr a value; strings that overflow the line limit become
+    parenthesized implicit concatenation.
+
+    The formatter cannot split a single long string token, so
+    spec-provided prose is chunked at word boundaries. *offset* is the
+    rendered column the literal starts at (plus the trailing comma):
+    a string is kept inline whenever it genuinely fits there.
+    """
+    literal = repr(value)
+    if not isinstance(value, str) or offset + len(literal) <= LINE_LIMIT:
+        return literal
+    chunks: list[str] = []
+    current = ""
+    for part in re.split(r"(?<= )", value):
+        if current and len(repr(current + part)) > CHUNK_WIDTH:
+            chunks.append(current)
+            current = part
+        else:
+            current += part
+    if current:
+        chunks.append(current)
+    return "(" + " ".join(repr(chunk) for chunk in chunks) + ")"
+
+
 @dataclass
 class FieldDef:
     """One model field.
@@ -189,12 +221,15 @@ class FieldDef:
     @property
     def metadata_literal(self) -> str:
         items: list[str] = []
-        if self.description:
-            items.append(f'"description": {self.description!r}')
-        if self.has_example:
-            items.append(f'"example": {self.example_value!r}')
-        if self.has_default:
-            items.append(f'"default": {self.default_value!r}')
+        for key, value, present in (
+            ("description", self.description, bool(self.description)),
+            ("example", self.example_value, self.has_example),
+            ("default", self.default_value, self.has_default),
+        ):
+            if not present:
+                continue
+            offset = METADATA_ITEM_COLUMN + len(f'"{key}": ') + len(",")
+            items.append(f'"{key}": {string_literal(value, offset)}')
         return "{" + ", ".join(items) + "}" if items else ""
 
     @property

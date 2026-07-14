@@ -267,9 +267,6 @@ def render_models(ir: SpecIR) -> str:
     )
     parts = [
         f'"""Data models for the Contree API.\n\n{GENERATED_NOTE}\n"""',
-        # file-level: spec-derived docstrings and metadata literals are
-        # long; the marker works wherever the file is generated
-        "# ruff: noqa: E501",
         "from __future__ import annotations",
         imports,
         PARSE_DATETIME_BLOCK.strip("\n"),
@@ -337,6 +334,9 @@ BASE_HEADER = '''"""Base client classes with the full generated API surface.
 {note}
 """
 
+# E501 only: spec-provided docstrings embed markdown tables that
+# cannot be wrapped without breaking them; everything else in this
+# file obeys the line limit and stays lint-gated
 # ruff: noqa: E501
 
 from __future__ import annotations
@@ -347,7 +347,7 @@ import platform
 import sys
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterable, Iterator
+from collections.abc import AsyncGenerator, Iterable, Iterator
 from contextlib import aclosing
 from datetime import datetime
 from pathlib import Path
@@ -792,7 +792,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         self,
         spec: RequestSpec,
         auto_decompress: bool = True,
-    ) -> AsyncIterator[bytes]:
+    ) -> AsyncGenerator[bytes, None]:
         """Execute the request and yield response body chunks.
 
         With ``auto_decompress=False`` the body is yielded exactly as
@@ -908,7 +908,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         spid: int | None = None,
         since: int | None = None,
         timeout: float | None = None,
-    ) -> AsyncIterator[OperationEvent]:
+    ) -> AsyncGenerator[OperationEvent, None]:
         """Stream operation events with transparent reconnection.
 
         Wraps :meth:`iter_operation_events` (``follow=True``): network
@@ -1067,7 +1067,7 @@ def emit_call_method(op: OpDef, async_mode: bool) -> list[str]:
 
 def emit_stream_method(op: OpDef, async_mode: bool) -> list[str]:
     prefix = "async " if async_mode else ""
-    iterator = "AsyncIterator[bytes]" if async_mode else "Iterator[bytes]"
+    iterator = "AsyncGenerator[bytes, None]" if async_mode else "Iterator[bytes]"
     lines = [
         f"{prefix}def {op.name}_stream({method_signature(op)}) -> {iterator}:",
     ]
@@ -1097,7 +1097,7 @@ COMPRESSED_ARG_DOC = (
 
 def emit_stream_only_method(op: OpDef, async_mode: bool) -> list[str]:
     prefix = "async " if async_mode else ""
-    iterator = "AsyncIterator[bytes]" if async_mode else "Iterator[bytes]"
+    iterator = "AsyncGenerator[bytes, None]" if async_mode else "Iterator[bytes]"
     signature = method_signature(op)
     separator = ", " if "*" in signature else ", *, "
     signature = f"{signature}{separator}compressed: bool = False"
@@ -1129,7 +1129,9 @@ def emit_stream_only_method(op: OpDef, async_mode: bool) -> list[str]:
 def emit_sse_method(op: OpDef, async_mode: bool) -> list[str]:
     prefix = "async " if async_mode else ""
     iterator = (
-        "AsyncIterator[OperationEvent]" if async_mode else "Iterator[OperationEvent]"
+        "AsyncGenerator[OperationEvent, None]"
+        if async_mode
+        else "Iterator[OperationEvent]"
     )
     loop = "async for" if async_mode else "for"
     lines = [
@@ -1202,7 +1204,7 @@ def emit_iter_method(op: OpDef, async_mode: bool) -> list[str]:
     filters = [a for a in op.args if a.py_name not in ("limit", "offset")]
     prefix = "async " if async_mode else ""
     awaited = "await " if async_mode else ""
-    iterator = f"AsyncIterator[{item}]" if async_mode else f"Iterator[{item}]"
+    iterator = f"AsyncGenerator[{item}, None]" if async_mode else f"Iterator[{item}]"
     signature_parts = ["self", "*"]
     signature_parts.extend(
         f"{a.py_name}: {a.annotation} = {a.default}" for a in filters
@@ -1425,6 +1427,9 @@ def render_spec_info(ir: SpecIR) -> str:
         f"\n{GENERATED_NOTE}\n\n"
         ".. code-block:: yaml\n\n"
         f'{indented}\n"""\n\n'
+        # the docstring embeds the raw spec verbatim: its long lines,
+        # trailing whitespace and unicode are the upstream document,
+        # not our code - suppressed file-wide by necessity
         "# ruff: noqa: E501, W291, W293, RUF002\n\n"
         "from __future__ import annotations\n\n"
         f"DEFAULT_BASE_URL = {ir.default_base_url!r}\n\n"

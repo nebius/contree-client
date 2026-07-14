@@ -68,21 +68,27 @@ test("archives stream as tar bytes", async () => {
 });
 
 test("a truncated compressed stream ends without hanging", async () => {
-  // unlike the Python client (DecompressionError), fetch decodes gzip
-  // itself and is lenient about a missing trailer: the truncated tail
-  // is silently dropped - assert the stream at least terminates short
+  // fetch decodes gzip itself; on a missing trailer newer undici
+  // silently drops the truncated tail while older releases (node
+  // 18.17) raise mid-stream. Either way the stream must terminate:
+  // assert it ends short or errors, never hangs
   const chunks = [];
-  for await (const chunk of client.inspectImageArchive(
-    TRUNCATED_IMAGE_UUID,
-    "/etc",
-  )) {
-    chunks.push(chunk);
+  let failed = false;
+  try {
+    for await (const chunk of client.inspectImageArchive(
+      TRUNCATED_IMAGE_UUID,
+      "/etc",
+    )) {
+      chunks.push(chunk);
+    }
+  } catch {
+    failed = true;
   }
   const intact = [];
   for await (const chunk of client.inspectImageArchive(IMAGE_UUID, "/etc")) {
     intact.push(chunk);
   }
-  assert.ok(concat(chunks).length < concat(intact).length);
+  assert.ok(failed || concat(chunks).length < concat(intact).length);
 });
 
 test("SSE events arrive typed and in order", async () => {

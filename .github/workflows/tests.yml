@@ -62,8 +62,11 @@ jobs:
           uv run python -m api_generator --lang js --package client-js/lib
 
       - name: Type check the generated client
+        # from client/ so its pyproject applies: python-version 3.10
+        # and respect-ignore-files=false (the generated package is
+        # gitignored - ty would otherwise scan zero files)
         if: env.CONTREE_SPEC != ''
-        run: uv run ty check client/contree_client
+        run: cd client && uv run --project .. ty check contree_client
 
       - name: Run the codegen test suite
         # spec-dependent by design: loader, IR, emitters, the wheel

@@ -32,7 +32,7 @@ from __future__ import annotations
 import inspect
 import ssl
 from collections import deque
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -268,7 +268,7 @@ class ContreeAsyncClient(MockMixin, base.ContreeAsyncClient):
         self,
         spec: RequestSpec,
         auto_decompress: bool = True,
-    ) -> AsyncIterator[bytes]:
+    ) -> AsyncGenerator[bytes, None]:
         raise unmocked(spec)
 
     async def close(self) -> None:

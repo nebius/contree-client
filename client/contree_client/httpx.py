@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ssl
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, Iterator
 
 import httpx
 
@@ -185,7 +185,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         self,
         spec: RequestSpec,
         auto_decompress: bool = True,
-    ) -> AsyncIterator[bytes]:
+    ) -> AsyncGenerator[bytes, None]:
         url = self.build_url(spec)
         async with self._client.stream(
             spec.method,

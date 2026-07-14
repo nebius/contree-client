@@ -51,6 +51,11 @@ markers = [
 [tool.ty.environment]
 python-version = "3.10"
 
+[tool.ty.src]
+# the generated package is gitignored and ty honors ignore files by
+# default - without this the check silently scans zero files
+respect-ignore-files = false
+
 [tool.ruff]
 line-length = 88
 target-version = "py310"

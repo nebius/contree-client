@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import ssl
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import suppress
 
 import aiohttp
@@ -103,7 +103,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         self,
         spec: RequestSpec,
         auto_decompress: bool = True,
-    ) -> AsyncIterator[bytes]:
+    ) -> AsyncGenerator[bytes, None]:
         url = self.build_url(spec)
         async with self._get_session().request(
             spec.method,

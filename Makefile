@@ -31,7 +31,7 @@ generate:
 	uv run python -m api_generator $(if $(SPEC),--spec "$(SPEC)") --package $(PACKAGE)
 	uv run ruff format --check client
 	uv run ruff check client
-	uv run ty check $(PACKAGE)
+	cd client && uv run --project .. ty check contree_client
 
 # Codegen runs prettier and `node --check` on its output itself; the
 # tsc pass lives in lint-js (it needs the whole package context).
