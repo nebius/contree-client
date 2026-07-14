@@ -181,7 +181,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node-version: ["18.17", "20", "22", "24"]
+        # "18" resolves to the latest 18.x: early 18.x test runners
+        # never fire the root after() hook and their undici errors on
+        # truncated gzip - the library itself still supports >=18.17
+        node-version: ["18", "20", "22", "24"]
 
     steps:
       - uses: actions/checkout@v5
