@@ -89,15 +89,28 @@ test("a truncated compressed stream ends without hanging", async () => {
 test("a connect dropped on a stale socket is retried", async () => {
   // the stub closes the first connection without writing a byte -
   // exactly what a reused keep-alive socket the server already closed
-  // looks like; the idempotent connect must retry, not fail
-  const events = [];
-  for await (const event of client.iterOperationEvents(RESET_OPERATION_UUID)) {
-    events.push(event);
+  // looks like; the idempotent connect must retry, not fail. A
+  // dedicated stub gives this test a fresh origin: fetch pools
+  // per-origin, and a genuinely stale socket left by an earlier test
+  // (a real possibility on Windows) would eat the single transparent
+  // reconnect this test is about
+  const local = await startStub();
+  const isolated = new ContreeClient("test-token", { baseUrl: local.baseUrl });
+  try {
+    const events = [];
+    for await (const event of isolated.iterOperationEvents(
+      RESET_OPERATION_UUID,
+    )) {
+      events.push(event);
+    }
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ["init", "spawn", "exit"],
+    );
+  } finally {
+    await isolated.close();
+    local.stop();
   }
-  assert.deepEqual(
-    events.map((event) => event.type),
-    ["init", "spawn", "exit"],
-  );
 });
 
 test("SSE events arrive typed and in order", async () => {
