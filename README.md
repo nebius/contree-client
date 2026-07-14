@@ -44,9 +44,9 @@ make build        # sdist + wheel of client/ into dist/
 
 ## Live integration tests
 
-`make test-live` talks to a real Contree API and performs write
-operations (upload, tag, import, spawn, cancel) — never point it at
-production. Credentials resolve through the standard Contree
+`make test-live` (= `test-live-python` + `test-live-js`) talks to a
+real Contree API and performs write operations (upload, tag, import,
+spawn, cancel) — never point it at production. Credentials resolve through the standard Contree
 conventions:
 
 - environment first: `CONTREE_TOKEN` (or `NEBIUS_API_KEY`) plus
@@ -58,8 +58,12 @@ conventions:
 
 `.github/workflows/tests.yml` runs lint, type checks, the Python
 suite on Linux/macOS/Windows across Python 3.10–3.14, the node suite
-across Node 18.17–24 on the same three platforms, the documentation
-build and (when the secrets are present) the live integration job.
+across Node 18.17–24 on the same three platforms and the
+documentation build. Live integration is one separate job covering
+both languages (when the secrets are present), serialized
+repository-wide through a concurrency group — the token allows only
+8 concurrent runs and a single concurrent import — with 300 s
+per-test timeouts on top of the job limit.
 
 `.github/workflows/publish.yml` publishes on a GitHub release: the
 tag (`vX.Y.Z`) sets both package versions, the packages are generated

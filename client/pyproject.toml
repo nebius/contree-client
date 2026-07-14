@@ -29,6 +29,7 @@ dev = [
     "contree-client[urllib3,requests,aiohttp,httpx]",
     "pytest>=8",
     "pytest-cov>=7.1.0",
+    "pytest-timeout>=2.3",
     "markdown-pytest[async]>=0.3",
     "types-requests",
 ]

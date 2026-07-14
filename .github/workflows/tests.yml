@@ -175,16 +175,23 @@ jobs:
         run: make docs docs-mintlify
 
   integration:
-    name: Integration (live API)
-    # Linux only, serialized with the unit jobs: these tests perform
-    # WRITE operations (upload, spawn, cancel) against the endpoint in
-    # the CONTREE_URL secret - never point it at production
+    name: Integration (live API, python + js)
+    # One job for both languages, Linux only. These tests perform
+    # WRITE operations (upload, spawn, cancel, one import) against the
+    # endpoint in the CONTREE_URL secret - never point it at
+    # production. The token allows only 8 concurrent runs and 1
+    # concurrent import, so live runs are serialized repository-wide:
+    # the concurrency group is a semaphore of exactly one.
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [test-python]
+    needs: [test-python, test-js]
+    concurrency:
+      group: contree-live-api
+      cancel-in-progress: false
     env:
       CONTREE_TOKEN: ${{ secrets.CONTREE_TOKEN }}
       CONTREE_URL: ${{ secrets.CONTREE_URL }}
+      CONTREE_PROJECT: ${{ secrets.CONTREE_PROJECT }}
     steps:
       - uses: actions/checkout@v5
 
@@ -196,13 +203,26 @@ jobs:
       - name: Set up Python
         run: uv python install ${{ env.DEFAULT_PYTHON }}
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
       - name: Install dependencies
-        run: uv sync
+        run: |
+          uv sync
+          npm ci --prefix client-js --no-audit --no-fund
 
-      - name: Generate the client package
+      - name: Generate the client packages
         if: env.CONTREE_SPEC != '' && env.CONTREE_TOKEN != ''
-        run: uv run python -m api_generator --package client/contree_client
+        run: |
+          uv run python -m api_generator --package client/contree_client
+          uv run python -m api_generator --lang js --package client-js/lib
 
-      - name: Run integration tests
+      - name: Run Python integration tests
         if: env.CONTREE_SPEC != '' && env.CONTREE_TOKEN != ''
-        run: uv run pytest -v --tb=short -m integration client
+        run: uv run pytest -v --tb=short -m integration client --timeout 300
+
+      - name: Run JS integration tests
+        if: env.CONTREE_SPEC != '' && env.CONTREE_TOKEN != ''
+        run: cd client-js && node --test --test-timeout=300000 "test/live/*.test.mjs"

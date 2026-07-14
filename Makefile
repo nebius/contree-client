@@ -18,7 +18,8 @@ JS_GENERATED = \
     $(JS_PACKAGE)/specInfo.js $(JS_PACKAGE)/specInfo.d.ts \
     $(JS_PACKAGE)/index.js $(JS_PACKAGE)/index.d.ts
 .PHONY: all generate generate-js js lint lint-js typecheck \
-    test test-python test-js test-live coverage docs docs-mintlify \
+    test test-python test-js test-live test-live-python test-live-js \
+    coverage docs docs-mintlify \
     docs-view build clean
 
 all: generate generate-js lint lint-js typecheck test
@@ -67,11 +68,18 @@ test-python: generate
 test-js: generate-js
 	cd client-js && node --test "test/*.test.mjs"
 
-# live tests against the real Contree API through the active
-# contree-cli profile; they perform WRITE operations (upload, tag,
-# import, spawn, cancel) - never point this at production
-test-live: generate
-	uv run pytest -v client -m integration
+# live tests against a real Contree API (CONTREE_TOKEN/CONTREE_URL or
+# the active saved profile); they perform WRITE operations (upload,
+# tag, import, spawn, cancel) - never point this at production
+test-live: test-live-python test-live-js
+
+# per-test timeouts: a hung live call must fail the test, not stall
+# the whole run (the in-test waits go up to 180s)
+test-live-python: generate
+	uv run pytest -v client -m integration --timeout 300
+
+test-live-js: generate-js
+	cd client-js && node --test --test-timeout=300000 "test/live/*.test.mjs"
 
 coverage: generate
 	uv run pytest -q client docs -m "not integration" \
