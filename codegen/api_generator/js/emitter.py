@@ -1741,10 +1741,15 @@ class JsEmitter(Emitter):
         # levels up (client-js/node_modules); prettier is best-effort
         # here - `make lint-js` is the hard formatting/tsc gate
         package_root = paths[0].parent.parent
-        prettier = package_root / "node_modules" / ".bin" / "prettier"
-        if prettier.exists():
+        # shutil.which resolves the platform launcher (prettier.CMD on
+        # Windows - executing the extensionless POSIX shim there dies
+        # with WinError 193)
+        prettier = shutil.which(
+            "prettier", path=str(package_root / "node_modules" / ".bin")
+        )
+        if prettier is not None:
             subprocess.run(
-                [str(prettier), "--write", *[str(path) for path in paths]],
+                [prettier, "--write", *[str(path) for path in paths]],
                 check=True,
             )
         for path in paths:

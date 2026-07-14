@@ -25,7 +25,7 @@
   "scripts": {
     "format": "prettier --write lib test",
     "lint": "prettier --check lib test && tsc --noEmit",
-    "test": "node --test \"test/*.test.mjs\"",
+    "test": "node --test test/*.test.mjs",
     "prepack": "node --input-type=module -e \"await import(new URL('./lib/index.js', 'file://' + process.cwd() + '/').href); await import(new URL('./lib/testing.js', 'file://' + process.cwd() + '/').href);\""
   },
   "devDependencies": {

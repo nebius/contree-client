@@ -66,7 +66,7 @@ test-python: generate
 
 # the node suites spawn the python stub server themselves
 test-js: generate-js
-	cd client-js && node --test "test/*.test.mjs"
+	cd client-js && node --test test/*.test.mjs
 
 # live tests against a real Contree API (CONTREE_TOKEN/CONTREE_URL or
 # the active saved profile); they perform WRITE operations (upload,
@@ -79,7 +79,7 @@ test-live-python: generate
 	uv run pytest -v client -m integration --timeout 300
 
 test-live-js: generate-js
-	cd client-js && node --test --test-timeout=300000 "test/live/*.test.mjs"
+	cd client-js && node --test --test-timeout=300000 test/live/*.test.mjs
 
 coverage: generate
 	uv run pytest -q client docs -m "not integration" \

@@ -124,8 +124,11 @@ def parse_datetime(value: str) -> datetime:
     if v.endswith(("Z", "z")):
         v = v[:-1] + "+00:00"
     match = FRACTION_RE.match(v)
-    if match and len(match.group(2)) > 6:
-        v = f"{match.group(1)}.{match.group(2)[:6]}{match.group(3)}"
+    if match:
+        # python 3.10 fromisoformat accepts only 3- or 6-digit
+        # fractions: trim nanoseconds AND zero-pad short fractions
+        fraction = match.group(2)[:6].ljust(6, "0")
+        v = f"{match.group(1)}.{fraction}{match.group(3)}"
     return datetime.fromisoformat(v)
 
 

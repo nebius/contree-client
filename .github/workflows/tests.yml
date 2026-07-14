@@ -9,16 +9,99 @@ on:
 env:
   DEFAULT_PYTHON: "3.14"
   FORCE_COLOR: "1"
-  # the OpenAPI spec location is a repository secret, never stored in
-  # the repo; without it every spec-dependent test skips cleanly (PRs
-  # from forks still get lint/typecheck and the offline unit tests)
-  CONTREE_SPEC: ${{ secrets.CONTREE_SPEC }}
 
 defaults:
   run:
     shell: bash
 
 jobs:
+  build:
+    # codegen runs exactly once, on one Python: both packages are
+    # generated, gated and PACKAGED here - a wheel for Python, the
+    # npm tarball for JS. Every other job verifies those artifacts,
+    # never loose files and never a second codegen run (and the
+    # matrices do not need the CONTREE_SPEC secret at all).
+    name: Generate and Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CONTREE_SPEC: ${{ secrets.CONTREE_SPEC }}
+    outputs:
+      built: ${{ steps.flag.outputs.built }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.DEFAULT_PYTHON }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
+      - name: Install dependencies
+        run: |
+          uv sync
+          npm ci --prefix client-js --no-audit --no-fund
+
+      - name: Report spec availability
+        id: flag
+        # forks and external PRs get no secrets: downstream jobs then
+        # run only the offline parts
+        run: echo "built=${{ env.CONTREE_SPEC != '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate the client packages
+        if: env.CONTREE_SPEC != ''
+        run: |
+          uv run python -m api_generator --package client/contree_client
+          uv run python -m api_generator --lang js --package client-js/lib
+
+      - name: Type check the generated client
+        if: env.CONTREE_SPEC != ''
+        run: uv run ty check client/contree_client
+
+      - name: Run the generator test suite
+        # spec-dependent by design: loader, IR, emitters, the wheel
+        # gate (builds a wheel and imports it from an isolated env)
+        if: env.CONTREE_SPEC != ''
+        run: >
+          uv run pytest -v --tb=short
+          client/tests/test_ir.py
+          client/tests/test_loader.py
+          client/tests/test_main.py
+          client/tests/test_naming.py
+          client/tests/test_js_reference.py
+          client/tests/test_wheel.py
+
+      - name: Build the packages
+        if: env.CONTREE_SPEC != ''
+        run: |
+          uv build client --out-dir dist
+          cd client-js && npm pack --pack-destination ../dist
+
+      - name: Upload the Python distribution
+        if: env.CONTREE_SPEC != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-python
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+      - name: Upload the npm tarball
+        if: env.CONTREE_SPEC != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-js
+          path: dist/*.tgz
+          if-no-files-found: error
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -42,36 +125,14 @@ jobs:
       - name: Ruff check
         run: uv run ruff check codegen client/tests conftest.py
 
-  typecheck:
-    name: Type Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install ${{ env.DEFAULT_PYTHON }}
-
-      - name: Install dependencies
-        run: uv sync
-
       - name: Run ty (codegen)
         run: uv run ty check codegen/api_generator
-
-      - name: Generate and ty (client)
-        if: env.CONTREE_SPEC != ''
-        run: |
-          uv run python -m api_generator --package client/contree_client
-          uv run ty check client/contree_client
 
   test-python:
     name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    needs: build
     strategy:
       fail-fast: false
       matrix:
@@ -92,17 +153,31 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Generate the client package
-        if: env.CONTREE_SPEC != ''
-        run: uv run python -m api_generator --package client/contree_client
+      - name: Download the Python distribution
+        if: needs.build.outputs.built == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-python
+          path: dist
+
+      - name: Install the built wheel
+        # the tests then exercise the exact artifact: the incomplete
+        # source package is removed so nothing can shadow the wheel
+        if: needs.build.outputs.built == 'true'
+        run: |
+          rm -rf client/contree_client
+          uv pip install --force-reinstall "$(ls dist/*.whl)[urllib3,requests,aiohttp,httpx]"
 
       - name: Run tests
-        run: uv run pytest -v --tb=short -m "not integration" client docs
+        run: >
+          uv run --no-sync pytest -v --tb=short --timeout 300
+          -m "not integration" client docs
 
   test-js:
     name: Node ${{ matrix.node-version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    needs: build
     strategy:
       fail-fast: false
       matrix:
@@ -129,26 +204,39 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       - name: Install dependencies
-        run: |
-          uv sync
-          npm ci --prefix client-js --no-audit --no-fund
+        run: npm ci --prefix client-js --no-audit --no-fund
 
-      - name: Generate the client package
-        if: env.CONTREE_SPEC != ''
-        run: uv run python -m api_generator --lang js --package client-js/lib
+      - name: Download the npm tarball
+        if: needs.build.outputs.built == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-js
+          path: dist
+
+      - name: Unpack the built tarball
+        # the tests then exercise the exact packed bytes
+        if: needs.build.outputs.built == 'true'
+        run: |
+          tar -xzf dist/*.tgz
+          rm -rf client-js/lib
+          mv package/lib client-js/lib
 
       - name: Run tests
-        if: env.CONTREE_SPEC != ''
-        run: cd client-js && node --test "test/*.test.mjs"
+        # the shell expands the glob: node itself only learned to in
+        # recent releases
+        if: needs.build.outputs.built == 'true'
+        run: cd client-js && node --test test/*.test.mjs
 
       - name: Strict type check
-        if: env.CONTREE_SPEC != ''
+        if: needs.build.outputs.built == 'true'
         run: cd client-js && npx tsc --noEmit && npx prettier --check lib test
 
   docs:
     name: Documentation
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      CONTREE_SPEC: ${{ secrets.CONTREE_SPEC }}
     steps:
       - uses: actions/checkout@v5
 
@@ -171,20 +259,24 @@ jobs:
           npm ci --prefix client-js --no-audit --no-fund
 
       - name: Build documentation (HTML + Mintlify)
+        # self-contained: autodoc imports the generated package and
+        # the JS reference page is emitted next to it, so this job
+        # generates from the spec itself
         if: env.CONTREE_SPEC != ''
         run: make docs docs-mintlify
 
   integration:
     name: Integration (live API, python + js)
-    # One job for both languages, Linux only. These tests perform
-    # WRITE operations (upload, spawn, cancel, one import) against the
+    # One job for both languages, Linux only, independent of the unit
+    # matrices (runs in parallel with them). These tests perform WRITE
+    # operations (upload, spawn, cancel, one import) against the
     # endpoint in the CONTREE_URL secret - never point it at
     # production. The token allows only 8 concurrent runs and 1
     # concurrent import, so live runs are serialized repository-wide:
     # the concurrency group is a semaphore of exactly one.
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [test-python, test-js]
+    needs: build
     concurrency:
       group: contree-live-api
       cancel-in-progress: false
@@ -213,16 +305,29 @@ jobs:
           uv sync
           npm ci --prefix client-js --no-audit --no-fund
 
-      - name: Generate the client packages
-        if: env.CONTREE_SPEC != '' && env.CONTREE_TOKEN != ''
+      - name: Download the distributions
+        if: needs.build.outputs.built == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Install the built artifacts
+        if: needs.build.outputs.built == 'true'
         run: |
-          uv run python -m api_generator --package client/contree_client
-          uv run python -m api_generator --lang js --package client-js/lib
+          rm -rf client/contree_client
+          uv pip install --force-reinstall "$(ls dist/*.whl)[urllib3,requests,aiohttp,httpx]"
+          tar -xzf dist/*.tgz
+          rm -rf client-js/lib
+          mv package/lib client-js/lib
 
       - name: Run Python integration tests
-        if: env.CONTREE_SPEC != '' && env.CONTREE_TOKEN != ''
-        run: uv run pytest -v --tb=short -m integration client --timeout 300
+        if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
+        run: >
+          uv run --no-sync pytest -v --tb=short --timeout 300
+          -m integration client
 
       - name: Run JS integration tests
-        if: env.CONTREE_SPEC != '' && env.CONTREE_TOKEN != ''
-        run: cd client-js && node --test --test-timeout=300000 "test/live/*.test.mjs"
+        if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
+        run: cd client-js && node --test --test-timeout=300000 test/live/*.test.mjs

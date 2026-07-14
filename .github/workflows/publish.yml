@@ -109,7 +109,7 @@ jobs:
         # check; prepack re-imports the entrypoints at pack time
         run: |
           cd client-js
-          node --test "test/*.test.mjs"
+          node --test test/*.test.mjs
           npx tsc --noEmit
 
       - name: Publish to npm

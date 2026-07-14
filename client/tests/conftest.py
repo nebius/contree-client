@@ -71,17 +71,30 @@ def spec_source(tmp_path_factory: pytest.TempPathFactory) -> str:
 
 @pytest.fixture(scope="session")
 def generated_package(request: pytest.FixtureRequest) -> ModuleType:
-    """Import the package, regenerating it first in the dev repo.
+    """Import the package, regenerating it first when possible.
 
-    Inside the distribution sdist the generated modules are already
-    baked into src/, so the fixture simply imports them (and no spec
-    is required).
+    Three layouts work: the dev repo with CONTREE_SPEC exported
+    (regenerate from the fresh spec), a checkout with pregenerated
+    sources (a CI artifact built once on one job), and the
+    distribution sdist where the modules are baked in and no
+    generator ships at all.
     """
-    if HAVE_GENERATOR:
+    if HAVE_GENERATOR and os.environ.get("CONTREE_SPEC"):
         generate(
             request.getfixturevalue("spec_source"),
             CLIENT_ROOT / "contree_client",
         )
+    else:
+        # no spec: the package must already be complete - pregenerated
+        # sources, the sdist, or an installed wheel (CI removes the
+        # source tree and installs the built artifact instead)
+        try:
+            importlib.import_module("contree_client.base")
+        except ImportError:
+            pytest.skip(
+                "the generated contree_client package is not available;"
+                " export CONTREE_SPEC or install the built wheel"
+            )
     return importlib.import_module("contree_client")
 
 

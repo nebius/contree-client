@@ -422,3 +422,17 @@ def test_to_dict_encodes_containers_recursively(models: ModuleType) -> None:
     assert encoded["times"] == [moment.isoformat()] * 2
     assert encoded["statuses"] == ["SUCCESS"]
     assert "2026-01-01" in text
+
+
+def test_parse_datetime_fraction_widths(models: ModuleType) -> None:
+    """python 3.10 fromisoformat accepts only 3- or 6-digit fractions:
+    the parser must normalize 1..9-digit ones (the server emits .10)."""
+    for raw, micro in (
+        ("2026-06-08T20:00:00.1+00:00", 100000),
+        ("2026-06-08T20:00:00.10+00:00", 100000),
+        ("2026-06-08T20:00:00.1234+00:00", 123400),
+        ("2026-06-08T20:00:00.123456789Z", 123456),
+        ("2026-06-08T20:00:00Z", 0),
+    ):
+        parsed = models.parse_datetime(raw)
+        assert parsed.microsecond == micro, raw
