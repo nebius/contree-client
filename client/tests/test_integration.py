@@ -352,12 +352,15 @@ def test_cancel_running_operation(
     if not (permissions.get("spawn_disposable") or permissions.get("spawn")):
         pytest.skip("token lacks spawn permissions")
     models = importlib.import_module("contree_client.models")
+    # long enough that the command cannot finish before the cancel
+    # lands (a `sleep 60` once raced the cancel and won: SUCCESS);
+    # wait_terminal still gives up after 180s if the cancel is lost
     response = sync_client.spawn_instance(
-        "sleep 60",
+        "sleep 600",
         str(sample_image.uuid),
         shell=True,
         disposable=True,
-        timeout=90,
+        timeout=630,
     )
     sync_client.cancel_operation(str(response.uuid))
     operation = wait_terminal(
