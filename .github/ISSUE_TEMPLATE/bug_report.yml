@@ -1,0 +1,60 @@
+name: Bug report
+description: Something in the Python or JavaScript client does not work as documented
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug!
+        Please do **not** report security vulnerabilities here - use
+        [private security advisories](https://github.com/nebius/contree-client/security/advisories/new) instead.
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      options:
+        - contree-client (Python)
+        - contree-client (JavaScript)
+        - both / not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Package version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime
+      description: Python or Node.js version, plus the HTTP backend for Python (http, urllib3, requests, httpx, aiohttp).
+      placeholder: "Python 3.12 / httpx 0.27, or Node.js 22.11"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 24.04 / macOS 15 / Windows 11"
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: The smallest code snippet that reproduces the problem.
+      render: python
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or traceback
+      description: Relevant output. Remember to redact tokens and other secrets.
+      render: shell

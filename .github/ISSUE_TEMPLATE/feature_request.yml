@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest an improvement for the Python or JavaScript client
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      options:
+        - contree-client (Python)
+        - contree-client (JavaScript)
+        - both
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that the client makes hard or impossible?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like it to work? A sketch of the desired API is welcome.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
