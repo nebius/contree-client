@@ -101,9 +101,12 @@ docs-view: docs-mintlify
 # generated modules baked in, tests and its own pyproject/README.
 # tests/test_wheel.py is the gate against an incomplete artifact:
 # it builds a wheel and imports it from an isolated environment.
-build: generate
+# the js tarball comes from npm pack (its prepack script import-checks
+# lib/); both artifacts land in dist/, same as CI.
+build: generate generate-js
 	rm -rf dist
 	uv build client --out-dir dist
+	cd client-js && npm pack --pack-destination ../dist
 
 clean:
 	rm -rf build dist $(GENERATED) $(JS_GENERATED)

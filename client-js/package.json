@@ -3,6 +3,13 @@
   "version": "0.1.0",
   "description": "JavaScript client for the Contree API, generated from the OpenAPI spec",
   "homepage": "https://contree.dev/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nebius/contree-client.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nebius/contree-client/issues"
+  },
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
