@@ -493,6 +493,16 @@ def js_local(name: str) -> str:
     return name + "_" if name in JS_RESERVED else name
 
 
+def js_arg(name: str) -> str:
+    """The local identifier of a required (positional) argument.
+
+    Every rendering of a required argument — signatures, call sites,
+    .d.ts declarations and doc pages — must agree on this name, so
+    they all go through here.
+    """
+    return js_local(camel(name))
+
+
 def required_args(op: OpDef) -> list[str]:
     return [arg.py_name for arg in op.args if arg.default is None]
 
@@ -514,7 +524,7 @@ def js_params(op: OpDef, destructure: bool) -> str:
     arrive in a trailing options object - destructured in builders,
     passed through whole in client methods.
     """
-    parts = [js_local(camel(name)) for name in required_args(op)]
+    parts = [js_arg(name) for name in required_args(op)]
     optionals = optional_args(op)
     if optionals:
         if destructure:
@@ -532,7 +542,7 @@ def js_params(op: OpDef, destructure: bool) -> str:
 def js_reference(op: OpDef, py_name: str) -> str:
     """How a builder body refers to the argument *py_name*."""
     if py_name in required_args(op):
-        return js_local(camel(py_name))
+        return js_arg(py_name)
     return js_local(py_name)
 
 
@@ -729,7 +739,7 @@ def option_ts_entries(op: OpDef) -> str:
 
 def ts_params(op: OpDef) -> str:
     parts = [
-        f"{camel(arg.py_name)}: {ts_type(arg.annotation)}"
+        f"{js_arg(arg.py_name)}: {ts_type(arg.annotation)}"
         for arg in op.args
         if arg.default is None
     ]
@@ -1322,7 +1332,7 @@ ITER_METHOD_JS = """
 
 
 def method_call_args(op: OpDef) -> str:
-    parts = [camel(name) for name in required_args(op)]
+    parts = [js_arg(name) for name in required_args(op)]
     if optional_args(op):
         parts.append("options")
     return ", ".join(parts)
@@ -1575,7 +1585,7 @@ def indented(lines: list[str], pad: str = "   ") -> list[str]:
 
 
 def op_signature(op: OpDef) -> str:
-    parts = [camel(name) for name in required_args(op)]
+    parts = [js_arg(name) for name in required_args(op)]
     if optional_args(op):
         parts.append("options?")
     return ", ".join(parts)
@@ -1604,7 +1614,7 @@ def render_op_reference(op: OpDef) -> str:
     body.append("")
     for arg in op.args:
         if arg.default is None:
-            name = f"param {camel(arg.py_name)}"
+            name = f"param {js_arg(arg.py_name)}"
         else:
             name = f"param options.{arg.py_name}"
         doc = " ".join(sanitize_doc(arg.doc, escape=False).split())
@@ -1613,7 +1623,7 @@ def render_op_reference(op: OpDef) -> str:
     body.extend(rst_field("returns", f"``{op_returns(op)}``"))
     lines.extend(indented(body))
     if op.stream_variant:
-        stream_sig = ", ".join(camel(name) for name in required_args(op))
+        stream_sig = ", ".join(js_arg(name) for name in required_args(op))
         stream_name = camel(f"{op.name}_stream")
         lines.append("")
         lines.append(f".. js:method:: ContreeClient.{stream_name}({stream_sig})")
