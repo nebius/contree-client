@@ -1000,11 +1000,6 @@ export class ContreeClient {{
     if (policy === null) {{
       return await this._reconnecting(spec);
     }}
-    if (!spec.idempotent && !policy.retryUnsafe) {{
-      // a lost response after a non-idempotent request (POST) could
-      // mean a second execution server-side
-      return await this.request(spec);
-    }}
     if (
       typeof ReadableStream !== "undefined" &&
       spec.body instanceof ReadableStream
@@ -1012,6 +1007,13 @@ export class ContreeClient {{
       // a stream cannot be replayed: single attempt
       return await this.request(spec);
     }}
+    // a lost response after a non-idempotent request (POST) could
+    // mean a second execution server-side: never blind-retry unless
+    // the caller explicitly opted into that risk. 425 Too Early and
+    // 429 Too Many Requests are the exceptions - the backend's
+    // contract guarantees both mean the request was rejected before
+    // any processing, so replaying is always safe.
+    const replaySafe = spec.idempotent || policy.retryUnsafe;
     const delays = retryDelays(policy.delays);
     let attempts = 0;
     for (;;) {{
@@ -1023,6 +1025,7 @@ export class ContreeClient {{
         response = await this.request(spec);
       }} catch (error) {{
         if (
+          !replaySafe ||
           !this._transportRetryable(error) ||
           this._transportNonretryable(error) ||
           exhausted
@@ -1033,6 +1036,9 @@ export class ContreeClient {{
         continue;
       }}
       if (!policy.retryableStatus(response.status) || exhausted) {{
+        return response;
+      }}
+      if (!replaySafe && response.status !== 425 && response.status !== 429) {{
         return response;
       }}
       const retryAfter = retryAfterDelay(response);

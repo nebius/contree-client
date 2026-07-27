@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import importlib
 import io
@@ -67,7 +68,13 @@ def live(
 @pytest.fixture(scope="session")
 def sync_client(integration_profile: Any) -> Iterator[Any]:
     sync = importlib.import_module("contree_client.sync")
-    with sync.ContreeClient.from_profile(integration_profile) as client:
+    runtime = importlib.import_module("contree_client.runtime")
+    # a default RetryPolicy transparently absorbs 425 Too Early - e.g.
+    # the brief window after an operation goes EXECUTING where the
+    # guest control channel is still coming up
+    with sync.ContreeClient.from_profile(
+        integration_profile, retry=runtime.RetryPolicy()
+    ) as client:
         yield client
 
 
@@ -81,11 +88,21 @@ def sample_image(sync_client: Any) -> Any:
     images = sync_client.list_images(tagged=True, limit=100).images
     if not images:
         pytest.skip("no tagged images available in this namespace")
+    busybox = next(
+        (c for c in images if c.tag and "busybox" in c.tag),
+        None,
+    )
+    if busybox is not None:
+        return busybox
+    # no busybox tag: some catalogs carry stale entries whose object
+    # storage sync never completed, so prefer the first candidate that
+    # is demonstrably real (a cheap check_image_file probe) over
+    # images[0] blindly - falls back to images[0] if none check out
     return next(
         (
             candidate
             for candidate in images
-            if candidate.tag and "busybox" in candidate.tag
+            if sync_client.check_image_file(str(candidate.uuid), "/etc/passwd")
         ),
         images[0],
     )
@@ -123,6 +140,51 @@ def wait_terminal(
         if time.monotonic() > deadline:
             pytest.fail(f"operation {operation_id} did not finish in time")
         time.sleep(2)
+
+
+def wait_running(
+    client: Any,
+    models: ModuleType,
+    operation_id: str,
+    deadline_seconds: float = 30.0,
+) -> None:
+    """Wait until the parent instance is EXECUTING/ASSIGNED - a
+    freshly spawned operation is 202 Accepted, not yet a live target
+    for `operation_subprocess_create`."""
+    deadline = time.monotonic() + deadline_seconds
+    while True:
+        status = client.get_operation_status(operation_id, inflight=True).status
+        if status in (
+            models.OperationStatus.EXECUTING,
+            models.OperationStatus.ASSIGNED,
+        ):
+            return
+        if isinstance(status, models.OperationStatus) and status.is_terminal():
+            pytest.fail(f"operation {operation_id} finished before going EXECUTING")
+        if time.monotonic() > deadline:
+            pytest.fail(f"operation {operation_id} never reached EXECUTING/ASSIGNED")
+        time.sleep(1)
+
+
+def wait_subprocess_terminal(
+    client: Any,
+    operation_id: str,
+    spid: int,
+    deadline_seconds: float = 30.0,
+) -> Any:
+    """Wait until `spid`'s folded result carries a real exit_code or
+    signal - both start at -1 (sentinel: still running)."""
+    deadline = time.monotonic() + deadline_seconds
+    while True:
+        result = client.operation_subprocess(operation_id, spid)
+        state = result.state
+        if state is not ... and (
+            state.exit_code != -1 or state.signal not in (..., -1)
+        ):
+            return result
+        if time.monotonic() > deadline:
+            pytest.fail(f"subprocess {spid} of {operation_id} did not finish in time")
+        time.sleep(1)
 
 
 # -- read-only API across every adapter --------------------------------------
@@ -190,6 +252,30 @@ def test_inspect_image_list_root(live: Invoke, sample_image: Any) -> None:
     assert listing.path == "/"
     assert listing.files
     assert any(item.is_dir for item in listing.files)
+
+
+def test_inspect_image_grep(live: Invoke, sample_image: Any) -> None:
+    if not live("check_image_file", str(sample_image.uuid), "/etc/passwd"):
+        pytest.skip("/etc/passwd not present in the sample image")
+    result = live(
+        "inspect_image_grep",
+        str(sample_image.uuid),
+        "root",
+        path="/etc/passwd",
+    )
+    assert result.path == "/etc/passwd"
+    assert "root" in result.patterns
+    assert result.matches
+    assert all(match.path.endswith("passwd") for match in result.matches)
+    assert any("root" in match.line_text for match in result.matches)
+
+    absent = live(
+        "inspect_image_grep",
+        str(sample_image.uuid),
+        f"definitely-not-there-{uuid.uuid4().hex}",
+        path="/etc/passwd",
+    )
+    assert absent.matches == []
 
 
 def test_check_image_file(
@@ -450,3 +536,68 @@ def test_resolve_image_live(sync_client: Any, sample_image: Any) -> None:
     if sample_image.tag:
         resolved = sync_client.resolve_image(f"tag:{sample_image.tag}")
         assert resolved == str(sample_image.uuid)
+
+
+def test_operation_subprocess_lifecycle(
+    sync_client: Any,
+    permissions: dict[str, bool],
+    sample_image: Any,
+    generated_package: ModuleType,
+) -> None:
+    """One parent instance hosts three execs in turn: a quick command
+    read back through the folded result, a `cat` whose stdin is fed
+    out-of-band, and a long sleep killed by signal - mirroring how one
+    VM serves multiple subprocesses without spawning three instances."""
+    if not (permissions.get("spawn_disposable") or permissions.get("spawn")):
+        pytest.skip("token lacks spawn permissions")
+    models = importlib.import_module("contree_client.models")
+    marker = f"contree-client-subprocess-{uuid.uuid4().hex[:12]}"
+
+    response = sync_client.spawn_instance(
+        "sleep 90",
+        str(sample_image.uuid),
+        shell=True,
+        disposable=True,
+        timeout=120,
+    )
+    operation_id = str(response.uuid)
+    try:
+        wait_running(sync_client, models, operation_id)
+
+        # -- exec a quick subprocess and read its folded result --
+        spid = sync_client.operation_subprocess_create(
+            operation_id, f"echo {marker}", shell=True
+        )
+        assert spid >= 2
+        result = wait_subprocess_terminal(sync_client, operation_id, spid)
+        assert result.state.exit_code == 0
+        assert marker in stream_text(result.stdout)
+
+        # -- write to a subprocess's stdin out-of-band, then close it --
+        cat_spid = sync_client.operation_subprocess_create(
+            operation_id,
+            "cat",
+            stdin=models.ClosableStreamRepr(value="", close=False),
+        )
+        sync_client.operation_subprocess_stdin(
+            operation_id, cat_spid, f"{marker}-stdin\n", close=True
+        )
+        cat_result = wait_subprocess_terminal(sync_client, operation_id, cat_spid)
+        assert f"{marker}-stdin" in stream_text(cat_result.stdout)
+
+        # -- kill a long-lived subprocess --
+        kill_spid = sync_client.operation_subprocess_create(
+            operation_id, "sleep 60", shell=True
+        )
+        sync_client.operation_subprocess_kill(operation_id, kill_spid, signal="TERM")
+        killed = wait_subprocess_terminal(sync_client, operation_id, kill_spid)
+        # a killed process reports its signal (exit_code stays -1)
+        assert killed.state.signal not in (..., None, 0, -1)
+    finally:
+        # best-effort cleanup: the token may lack `cancel`, and the
+        # parent's own `sleep 90` may have already run out by the time
+        # we get here - a 409 (already completed) is not a test failure
+        exceptions = importlib.import_module("contree_client.exceptions")
+        if permissions.get("cancel"):
+            with contextlib.suppress(exceptions.ConflictError):
+                sync_client.cancel_operation(operation_id)

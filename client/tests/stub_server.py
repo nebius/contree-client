@@ -455,6 +455,16 @@ def route(request: Captured, attempts: collections.Counter[str]) -> Reply:
             attempts["flaky-spawn"] += 1
             if attempts["flaky-spawn"] == 1:
                 return json_reply(500, {"error": "boom", "status": 500})
+        if payload.get("command") == "flaky-425":
+            # 425/429 are the backend's always-safe-to-replay statuses
+            # even for a POST - see RetryPolicy.statuses
+            attempts["flaky-425-spawn"] += 1
+            if attempts["flaky-425-spawn"] == 1:
+                return json_reply(425, {"error": "too early", "status": 425})
+        if payload.get("command") == "flaky-429":
+            attempts["flaky-429-spawn"] += 1
+            if attempts["flaky-429-spawn"] == 1:
+                return json_reply(429, {"error": "slow down", "status": 429})
         return json_reply(
             201,
             {"uuid": OPERATION_UUID, **payload},
