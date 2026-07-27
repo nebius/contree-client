@@ -595,11 +595,13 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         policy = self.retry
         if policy is None:
             return self.request(spec)
-        if not spec.idempotent and not policy.retry_unsafe:
-            # a lost response after a non-idempotent request (POST)
-            # could mean a second execution server-side: never replay
-            # unless the caller explicitly opted into that risk
-            return self.request(spec)
+        # a lost response after a non-idempotent request (POST) could
+        # mean a second execution server-side: never blind-retry
+        # unless the caller explicitly opted into that risk. 425 Too
+        # Early and 429 Too Many Requests are the exceptions - the
+        # backend's contract guarantees both mean the request was
+        # rejected before any processing, so replaying is always safe.
+        replay_safe = spec.idempotent or policy.retry_unsafe
         delays = retry_generator(policy.delays)
         # a retry must replay exactly the bytes the first attempt sent
         start = body_start(spec)
@@ -612,7 +614,8 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
             try:
                 response = self.request(spec)
             except self.retryable_errors as exc:
-                if isinstance(exc, self.nonretryable_errors) or exhausted:
+                unretryable = isinstance(exc, self.nonretryable_errors)
+                if not replay_safe or unretryable or exhausted:
                     raise
                 delay = next(delays)
                 self.log.warning(
@@ -624,6 +627,8 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                 rewind_body(spec, start)
                 continue
             if not policy.retryable_status(response.status) or exhausted:
+                return response
+            if not replay_safe and response.status not in (425, 429):
                 return response
             retry_after = retry_after_delay(response)
             delay = retry_after if retry_after is not None else next(delays)
@@ -833,11 +838,13 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         policy = self.retry
         if policy is None:
             return await self.request(spec)
-        if not spec.idempotent and not policy.retry_unsafe:
-            # a lost response after a non-idempotent request (POST)
-            # could mean a second execution server-side: never replay
-            # unless the caller explicitly opted into that risk
-            return await self.request(spec)
+        # a lost response after a non-idempotent request (POST) could
+        # mean a second execution server-side: never blind-retry
+        # unless the caller explicitly opted into that risk. 425 Too
+        # Early and 429 Too Many Requests are the exceptions - the
+        # backend's contract guarantees both mean the request was
+        # rejected before any processing, so replaying is always safe.
+        replay_safe = spec.idempotent or policy.retry_unsafe
         delays = retry_generator(policy.delays)
         # a retry must replay exactly the bytes the first attempt sent
         start = body_start(spec)
@@ -850,7 +857,8 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
             try:
                 response = await self.request(spec)
             except self.retryable_errors as exc:
-                if isinstance(exc, self.nonretryable_errors) or exhausted:
+                unretryable = isinstance(exc, self.nonretryable_errors)
+                if not replay_safe or unretryable or exhausted:
                     raise
                 delay = next(delays)
                 self.log.warning(
@@ -862,6 +870,8 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 rewind_body(spec, start)
                 continue
             if not policy.retryable_status(response.status) or exhausted:
+                return response
+            if not replay_safe and response.status not in (425, 429):
                 return response
             retry_after = retry_after_delay(response)
             delay = retry_after if retry_after is not None else next(delays)

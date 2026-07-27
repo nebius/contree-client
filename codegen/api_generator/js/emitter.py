@@ -475,6 +475,34 @@ def render_models_dts(ir: SpecIR) -> str:
 # ---------------------------------------------------------------------------
 
 
+# ECMAScript reserved words cannot be bare locals, but stay legal as
+# object keys: the options property keeps the wire name (`case`) while
+# destructuring aliases it (`{ case: case_ }`) for use in the body
+JS_RESERVED = frozenset({
+    "arguments", "await", "break", "case", "catch", "class", "const",
+    "continue", "debugger", "default", "delete", "do", "else", "enum",
+    "eval", "export", "extends", "false", "finally", "for", "function",
+    "if", "implements", "import", "in", "instanceof", "interface",
+    "let", "new", "null", "package", "private", "protected", "public",
+    "return", "static", "super", "switch", "this", "throw", "true",
+    "try", "typeof", "var", "void", "while", "with", "yield",
+})  # fmt: skip
+
+
+def js_local(name: str) -> str:
+    return name + "_" if name in JS_RESERVED else name
+
+
+def js_arg(name: str) -> str:
+    """The local identifier of a required (positional) argument.
+
+    Every rendering of a required argument — signatures, call sites,
+    .d.ts declarations and doc pages — must agree on this name, so
+    they all go through here.
+    """
+    return js_local(camel(name))
+
+
 def required_args(op: OpDef) -> list[str]:
     return [arg.py_name for arg in op.args if arg.default is None]
 
@@ -496,12 +524,13 @@ def js_params(op: OpDef, destructure: bool) -> str:
     arrive in a trailing options object - destructured in builders,
     passed through whole in client methods.
     """
-    parts = [camel(name) for name in required_args(op)]
+    parts = [js_arg(name) for name in required_args(op)]
     optionals = optional_args(op)
     if optionals:
         if destructure:
             entries = ", ".join(
-                name if default is None else f"{name} = {default}"
+                (name if js_local(name) == name else f"{name}: {js_local(name)}")
+                + ("" if default is None else f" = {default}")
                 for name, default in optionals
             )
             parts.append(f"{{ {entries} }} = {{}}")
@@ -513,8 +542,8 @@ def js_params(op: OpDef, destructure: bool) -> str:
 def js_reference(op: OpDef, py_name: str) -> str:
     """How a builder body refers to the argument *py_name*."""
     if py_name in required_args(op):
-        return camel(py_name)
-    return py_name
+        return js_arg(py_name)
+    return js_local(py_name)
 
 
 def render_build_fn(op: OpDef) -> str:
@@ -553,7 +582,9 @@ def render_build_fn(op: OpDef) -> str:
             body.append("}")
     if op.body_kind == "json_model":
         ctor = ", ".join(
-            f"{name}: {camel(name)}" if name in required_args(op) else name
+            name
+            if js_reference(op, name) == name
+            else f"{name}: {js_reference(op, name)}"
             for name in [arg.py_name for arg in op.args]
             if name != "content"
         )
@@ -573,7 +604,7 @@ def render_build_fn(op: OpDef) -> str:
         if param.where == "path":
             path = path.replace(
                 "{" + param.json_name + "}",
-                "${quotePath(" + camel(param.py_name) + ")}",
+                "${quotePath(" + js_reference(op, param.py_name) + ")}",
             )
     spec_fields = [
         f'method: "{op.http_method}"',
@@ -625,10 +656,11 @@ def render_parse_fn(op: OpDef) -> str | None:
             f"  return jsonArray(response).map((item) => {op.response_model}.fromWire(item));",
             "}",
         ]
-    elif kind == "uuid_field":
+    elif kind in ("str_field", "int_field"):
+        cast = "String" if kind == "str_field" else "Number"
         body += [
             f"if ({success}) {{",
-            '  return String(jsonObject(response)["uuid"]);',
+            f'  return {cast}(jsonObject(response)["{op.response_model}"]);',
             "}",
         ]
     elif kind == "location":
@@ -707,7 +739,7 @@ def option_ts_entries(op: OpDef) -> str:
 
 def ts_params(op: OpDef) -> str:
     parts = [
-        f"{camel(arg.py_name)}: {ts_type(arg.annotation)}"
+        f"{js_arg(arg.py_name)}: {ts_type(arg.annotation)}"
         for arg in op.args
         if arg.default is None
     ]
@@ -968,11 +1000,6 @@ export class ContreeClient {{
     if (policy === null) {{
       return await this._reconnecting(spec);
     }}
-    if (!spec.idempotent && !policy.retryUnsafe) {{
-      // a lost response after a non-idempotent request (POST) could
-      // mean a second execution server-side
-      return await this.request(spec);
-    }}
     if (
       typeof ReadableStream !== "undefined" &&
       spec.body instanceof ReadableStream
@@ -980,6 +1007,13 @@ export class ContreeClient {{
       // a stream cannot be replayed: single attempt
       return await this.request(spec);
     }}
+    // a lost response after a non-idempotent request (POST) could
+    // mean a second execution server-side: never blind-retry unless
+    // the caller explicitly opted into that risk. 425 Too Early and
+    // 429 Too Many Requests are the exceptions - the backend's
+    // contract guarantees both mean the request was rejected before
+    // any processing, so replaying is always safe.
+    const replaySafe = spec.idempotent || policy.retryUnsafe;
     const delays = retryDelays(policy.delays);
     let attempts = 0;
     for (;;) {{
@@ -991,6 +1025,7 @@ export class ContreeClient {{
         response = await this.request(spec);
       }} catch (error) {{
         if (
+          !replaySafe ||
           !this._transportRetryable(error) ||
           this._transportNonretryable(error) ||
           exhausted
@@ -1001,6 +1036,9 @@ export class ContreeClient {{
         continue;
       }}
       if (!policy.retryableStatus(response.status) || exhausted) {{
+        return response;
+      }}
+      if (!replaySafe && response.status !== 425 && response.status !== 429) {{
         return response;
       }}
       const retryAfter = retryAfterDelay(response);
@@ -1300,7 +1338,7 @@ ITER_METHOD_JS = """
 
 
 def method_call_args(op: OpDef) -> str:
-    parts = [camel(name) for name in required_args(op)]
+    parts = [js_arg(name) for name in required_args(op)]
     if optional_args(op):
         parts.append("options")
     return ", ".join(parts)
@@ -1553,7 +1591,7 @@ def indented(lines: list[str], pad: str = "   ") -> list[str]:
 
 
 def op_signature(op: OpDef) -> str:
-    parts = [camel(name) for name in required_args(op)]
+    parts = [js_arg(name) for name in required_args(op)]
     if optional_args(op):
         parts.append("options?")
     return ", ".join(parts)
@@ -1582,7 +1620,7 @@ def render_op_reference(op: OpDef) -> str:
     body.append("")
     for arg in op.args:
         if arg.default is None:
-            name = f"param {camel(arg.py_name)}"
+            name = f"param {js_arg(arg.py_name)}"
         else:
             name = f"param options.{arg.py_name}"
         doc = " ".join(sanitize_doc(arg.doc, escape=False).split())
@@ -1591,7 +1629,7 @@ def render_op_reference(op: OpDef) -> str:
     body.extend(rst_field("returns", f"``{op_returns(op)}``"))
     lines.extend(indented(body))
     if op.stream_variant:
-        stream_sig = ", ".join(camel(name) for name in required_args(op))
+        stream_sig = ", ".join(js_arg(name) for name in required_args(op))
         stream_name = camel(f"{op.name}_stream")
         lines.append("")
         lines.append(f".. js:method:: ContreeClient.{stream_name}({stream_sig})")

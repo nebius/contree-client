@@ -247,6 +247,21 @@ def test_post_is_not_retried_by_default(
     assert len(spawns) == 1
 
 
+@pytest.mark.parametrize("command", ["flaky-425", "flaky-429"])
+def test_post_retried_on_425_and_429_without_retry_unsafe(
+    command: str,
+    invoke_retry: Callable[..., Any],
+    stub_server: StubServer,
+) -> None:
+    """425/429 are a backend contract: the request was rejected before
+    any processing, so even a POST replays without `retry_unsafe`."""
+    response = invoke_retry("spawn_instance", command, "tag:busybox:latest")
+    assert str(response.uuid)
+
+    spawns = [c for c in stub_server.captured if c.path == "/v1/instances"]
+    assert len(spawns) == 2
+
+
 def test_post_retried_with_explicit_retry_unsafe(
     generated_package: ModuleType,
     stub_server: StubServer,

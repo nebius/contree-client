@@ -996,9 +996,10 @@ class OperationBuilder:
             doc = f"{doc} Example: ``{example}``.".strip()
 
         if where == "path":
-            path_args.append(ArgDef(py, "str", None, doc=doc))
+            annotation = "int" if schema.get("type") == "integer" else "str"
+            path_args.append(ArgDef(py, annotation, None, doc=doc))
             path_py_names[json_name] = py
-            op.params.append(ParamDef(json_name, py, "path", "str", required=True))
+            op.params.append(ParamDef(json_name, py, "path", annotation, required=True))
             return
 
         if where == "header":
@@ -1126,8 +1127,6 @@ class OperationBuilder:
         """Return (kind, success_status, model_name)."""
         if method == "head":
             return "bool", "200", None
-        if op_id == "importImage":
-            return "uuid_field", "201", None
         if op_id == "inspectFindImageByTag":
             return "location", "302", None
         for code in ("200", "201"):
@@ -1147,14 +1146,40 @@ class OperationBuilder:
                         raise ValueError(f"unsupported array response in {op_id}")
                     return "list_model", code, item
                 rname = ref_name(schema)
-                if rname is None:
+                if rname is not None:
+                    return "model", code, rname
+                scalar = self.single_scalar_field(schema)
+                if scalar is None:
                     raise ValueError(f"unsupported inline response in {op_id}")
-                return "model", code, rname
+                field_name, py_type = scalar
+                return f"{py_type}_field", code, field_name
             return "none", code, None
         for code in ("204", "202"):
             if code in responses:
                 return "none", code, None
         raise ValueError(f"cannot infer response kind for {op_id}")
+
+    def single_scalar_field(self, schema: dict[str, Any]) -> tuple[str, str] | None:
+        """The (name, py_type) of a lone required scalar property.
+
+        Some operations answer with a one-field envelope instead of a
+        named model — ``importImage`` (``{"uuid": ...}``) and
+        ``operationSubprocessCreate`` (``{"spid": ...}``); the wrapped
+        scalar is the value callers actually want, so the client
+        unwraps it.  Returns None for any other inline shape.
+        """
+        if schema.get("type") != "object":
+            return None
+        required = schema.get("required") or []
+        properties = schema.get("properties") or {}
+        if len(required) != 1 or set(properties) != set(required):
+            return None
+        (name,) = required
+        prop = self.spec.deref(properties[name])
+        py_type = {"string": "str", "integer": "int"}.get(prop.get("type", ""))
+        if py_type is None:
+            return None
+        return name, py_type
 
     def return_annotation(self, kind: str, model: str | None) -> str:
         if kind == "model":
@@ -1163,7 +1188,8 @@ class OperationBuilder:
         if kind == "list_model":
             return f"list[{model}]"
         return {
-            "uuid_field": "str",
+            "str_field": "str",
+            "int_field": "int",
             "location": "str",
             "bool": "bool",
             "bytes": "bytes",
@@ -1199,10 +1225,11 @@ class OperationBuilder:
                 f"{INDENT}]",
                 raise_line,
             ]
-        if kind == "uuid_field":
+        if kind in ("str_field", "int_field"):
+            cast = kind.removesuffix("_field")
             return [
                 success_line,
-                f'{INDENT}return str(json_object(response)["uuid"])',
+                f'{INDENT}return {cast}(json_object(response)["{model}"])',
                 raise_line,
             ]
         if kind == "location":

@@ -142,6 +142,24 @@ test("retry policy retries 5xx and honors Retry-After", async () => {
   await retrying.close();
 });
 
+test("425/429 replay a POST even without retryUnsafe", async () => {
+  // both mean the backend rejected the request before any processing
+  // (a documented contract, not just RFC 8470 for 425) - the stub
+  // fails the first attempt only, so success proves the client retried
+  const retrying = new ContreeClient("test-token", {
+    baseUrl: stub.baseUrl,
+    retry: new RetryPolicy({ delays: [0] }),
+  });
+  const early = await retrying.spawnInstance("flaky-425", "tag:busybox:latest");
+  assert.equal(early.uuid, OPERATION_UUID);
+  const throttled = await retrying.spawnInstance(
+    "flaky-429",
+    "tag:busybox:latest",
+  );
+  assert.equal(throttled.uuid, OPERATION_UUID);
+  await retrying.close();
+});
+
 test("userAgent carries identity first", () => {
   const identified = new ContreeClient("tok", {
     baseUrl: "http://localhost:1",

@@ -47,10 +47,15 @@ export function* retryDelays(delays = RETRY_DELAYS) {
   }
 }
 
-/** Opt-in retries for transient failures of buffered requests. */
+/** Opt-in retries for transient failures of buffered requests.
+ *
+ * 425 (Too Early) and 429 (Too Many Requests) are a backend contract:
+ * both mean the request was rejected before any processing, so
+ * replaying them is always safe - even for a POST the caller hasn't
+ * opted into unsafe retries for (see `call()`). */
 export class RetryPolicy {
   constructor({
-    statuses = [410, 425],
+    statuses = [410, 425, 429],
     serverErrors = true,
     delays = RETRY_DELAYS,
     maxAttempts = 10,

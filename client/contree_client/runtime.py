@@ -276,13 +276,18 @@ class RetryPolicy:
     ``Last-Event-Id`` (see ``follow_operation_events``).
     """
 
-    statuses: tuple[int, ...] = (410, 425)
+    # 425 (Too Early) and 429 (Too Many Requests) are a backend
+    # contract: both mean the request was rejected before any
+    # processing, so replaying them is always safe - even for a POST
+    # the caller hasn't opted into unsafe retries for (see `call()`)
+    statuses: tuple[int, ...] = (410, 425, 429)
     server_errors: bool = True
     delays: tuple[float, ...] = RETRY_DELAYS
     # finite by default: unbounded retries are an explicit choice
     max_attempts: int | None = 10
     # non-idempotent requests (POST) are replayed only when the caller
-    # explicitly accepts the double-execution risk
+    # explicitly accepts the double-execution risk - except 425/429,
+    # which are always safe to replay (see `call()`)
     retry_unsafe: bool = False
 
     def __post_init__(self) -> None:
@@ -361,7 +366,7 @@ def retry_after_delay(response: ResponseData) -> float | None:
     return parse_retry_after(response.headers.get("retry-after"))
 
 
-def quote_path(value: str) -> str:
+def quote_path(value: str | int) -> str:
     return quote(str(value), safe="")
 
 
