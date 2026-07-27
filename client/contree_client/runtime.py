@@ -361,7 +361,7 @@ def retry_after_delay(response: ResponseData) -> float | None:
     return parse_retry_after(response.headers.get("retry-after"))
 
 
-def quote_path(value: str) -> str:
+def quote_path(value: str | int) -> str:
     return quote(str(value), safe="")
 
 

@@ -475,6 +475,24 @@ def render_models_dts(ir: SpecIR) -> str:
 # ---------------------------------------------------------------------------
 
 
+# ECMAScript reserved words cannot be bare locals, but stay legal as
+# object keys: the options property keeps the wire name (`case`) while
+# destructuring aliases it (`{ case: case_ }`) for use in the body
+JS_RESERVED = frozenset({
+    "arguments", "await", "break", "case", "catch", "class", "const",
+    "continue", "debugger", "default", "delete", "do", "else", "enum",
+    "eval", "export", "extends", "false", "finally", "for", "function",
+    "if", "implements", "import", "in", "instanceof", "interface",
+    "let", "new", "null", "package", "private", "protected", "public",
+    "return", "static", "super", "switch", "this", "throw", "true",
+    "try", "typeof", "var", "void", "while", "with", "yield",
+})  # fmt: skip
+
+
+def js_local(name: str) -> str:
+    return name + "_" if name in JS_RESERVED else name
+
+
 def required_args(op: OpDef) -> list[str]:
     return [arg.py_name for arg in op.args if arg.default is None]
 
@@ -496,12 +514,13 @@ def js_params(op: OpDef, destructure: bool) -> str:
     arrive in a trailing options object - destructured in builders,
     passed through whole in client methods.
     """
-    parts = [camel(name) for name in required_args(op)]
+    parts = [js_local(camel(name)) for name in required_args(op)]
     optionals = optional_args(op)
     if optionals:
         if destructure:
             entries = ", ".join(
-                name if default is None else f"{name} = {default}"
+                (name if js_local(name) == name else f"{name}: {js_local(name)}")
+                + ("" if default is None else f" = {default}")
                 for name, default in optionals
             )
             parts.append(f"{{ {entries} }} = {{}}")
@@ -513,8 +532,8 @@ def js_params(op: OpDef, destructure: bool) -> str:
 def js_reference(op: OpDef, py_name: str) -> str:
     """How a builder body refers to the argument *py_name*."""
     if py_name in required_args(op):
-        return camel(py_name)
-    return py_name
+        return js_local(camel(py_name))
+    return js_local(py_name)
 
 
 def render_build_fn(op: OpDef) -> str:
@@ -553,7 +572,9 @@ def render_build_fn(op: OpDef) -> str:
             body.append("}")
     if op.body_kind == "json_model":
         ctor = ", ".join(
-            f"{name}: {camel(name)}" if name in required_args(op) else name
+            name
+            if js_reference(op, name) == name
+            else f"{name}: {js_reference(op, name)}"
             for name in [arg.py_name for arg in op.args]
             if name != "content"
         )
@@ -573,7 +594,7 @@ def render_build_fn(op: OpDef) -> str:
         if param.where == "path":
             path = path.replace(
                 "{" + param.json_name + "}",
-                "${quotePath(" + camel(param.py_name) + ")}",
+                "${quotePath(" + js_reference(op, param.py_name) + ")}",
             )
     spec_fields = [
         f'method: "{op.http_method}"',
@@ -625,10 +646,11 @@ def render_parse_fn(op: OpDef) -> str | None:
             f"  return jsonArray(response).map((item) => {op.response_model}.fromWire(item));",
             "}",
         ]
-    elif kind == "uuid_field":
+    elif kind in ("str_field", "int_field"):
+        cast = "String" if kind == "str_field" else "Number"
         body += [
             f"if ({success}) {{",
-            '  return String(jsonObject(response)["uuid"]);',
+            f'  return {cast}(jsonObject(response)["{op.response_model}"]);',
             "}",
         ]
     elif kind == "location":

@@ -67,6 +67,18 @@ def test_import_image_returns_uuid(ir: SpecIR) -> None:
     assert 'json_object(response)["uuid"]' in op.parse_src
 
 
+def test_subprocess_create_returns_spid(ir: SpecIR) -> None:
+    op = op_by_name(ir, "operation_subprocess_create")
+    assert op.return_annotation == "int"
+    assert 'int(json_object(response)["spid"])' in op.parse_src
+
+
+def test_integer_path_param_annotated_int(ir: SpecIR) -> None:
+    op = op_by_name(ir, "operation_subprocess")
+    spid = next(arg for arg in op.args if arg.py_name == "spid")
+    assert spid.annotation == "int"
+
+
 def test_download_has_stream_variant(ir: SpecIR) -> None:
     op = op_by_name(ir, "inspect_image_download")
     assert op.kind == "bytes"
