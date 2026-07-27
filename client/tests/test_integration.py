@@ -18,6 +18,7 @@ import contextlib
 import hashlib
 import importlib
 import io
+import sys
 import tarfile
 import time
 import uuid
@@ -81,6 +82,35 @@ def sync_client(integration_profile: Any) -> Iterator[Any]:
 @pytest.fixture(scope="session")
 def permissions(sync_client: Any) -> dict[str, bool]:
     return dict(sync_client.whoami().permissions)
+
+
+@pytest.fixture
+def track_operation(
+    request: pytest.FixtureRequest, sync_client: Any
+) -> Iterator[Callable[[str], None]]:
+    """Register an operation id to dump its event log if the test fails.
+
+    A terminal ``error`` string alone often does not explain a
+    backend-side failure - the raw event log (spawn/stdout/stderr/exit
+    timing) usually does. Call the fixture value with each operation
+    id worth diagnosing; nothing is printed for a passing test.
+    """
+    tracked: list[str] = []
+
+    yield tracked.append
+
+    report = getattr(request.node, "rep_call", None)
+    if report is None or not report.failed:
+        return
+    # pytest captures and shows stderr for a failing test by default,
+    # same as the traceback it wraps around
+    for operation_id in tracked:
+        sys.stderr.write(f"\n--- events for operation {operation_id} ---\n")
+        try:
+            for event in sync_client.iter_operation_events(operation_id):
+                sys.stderr.write(f"{event}\n")
+        except Exception as error:  # diagnostics only, must not mask the real failure
+            sys.stderr.write(f"(failed to fetch events: {error!r})\n")
 
 
 @pytest.fixture(scope="session")
@@ -357,7 +387,14 @@ def test_events_of_finished_operation(
     operation = candidates[0]
     try:
         events = live("iter_operation_events", operation.uuid, collect=True)
-    except (exceptions.GoneError, exceptions.TooEarlyError) as error:
+    except (
+        exceptions.GoneError,
+        exceptions.TooEarlyError,
+        exceptions.SSEStreamError,
+    ) as error:
+        # a cancelled operation's log can be dropped server-side (an
+        # in-band sse_error frame, not a clean 410) - either way there
+        # is nothing left to assert against
         pytest.skip(f"event log not available: {error}")
     assert events
     assert all(event.type for event in events)
@@ -401,6 +438,7 @@ def test_import_image_idempotent(
     sync_client: Any,
     permissions: dict[str, bool],
     generated_package: ModuleType,
+    track_operation: Callable[[str], None],
 ) -> None:
     """Importing an unchanged public image completes and yields a
     result image (the spec promises a fast no-op re-import)."""
@@ -411,6 +449,7 @@ def test_import_image_idempotent(
         url="docker://docker.io/library/busybox:latest"
     )
     operation_id = sync_client.import_image(registry, timeout=240)
+    track_operation(operation_id)
     operation = wait_terminal(
         sync_client,
         models,
@@ -432,6 +471,7 @@ def test_cancel_running_operation(
     permissions: dict[str, bool],
     sample_image: Any,
     generated_package: ModuleType,
+    track_operation: Callable[[str], None],
 ) -> None:
     if not permissions.get("cancel"):
         pytest.skip("token lacks cancel permission")
@@ -448,6 +488,7 @@ def test_cancel_running_operation(
         disposable=True,
         timeout=630,
     )
+    track_operation(str(response.uuid))
     sync_client.cancel_operation(str(response.uuid))
     operation = wait_terminal(
         sync_client,
@@ -543,6 +584,7 @@ def test_operation_subprocess_lifecycle(
     permissions: dict[str, bool],
     sample_image: Any,
     generated_package: ModuleType,
+    track_operation: Callable[[str], None],
 ) -> None:
     """One parent instance hosts three execs in turn: a quick command
     read back through the folded result, a `cat` whose stdin is fed
@@ -561,6 +603,7 @@ def test_operation_subprocess_lifecycle(
         timeout=120,
     )
     operation_id = str(response.uuid)
+    track_operation(operation_id)
     try:
         wait_running(sync_client, models, operation_id)
 

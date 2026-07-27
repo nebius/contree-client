@@ -166,3 +166,16 @@ def invoke(
     backend: str = request.param
     base_url = stub_server.base_url
     return make_invoke(backend, lambda: make_client(backend, base_url))
+
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> Any:
+    """Stash each phase's report on the item as ``rep_<phase>``.
+
+    The standard recipe for a fixture that needs to know whether the
+    test it wraps failed - see ``track_operation`` in
+    ``test_integration.py``.
+    """
+    outcome = yield
+    report = outcome.get_result()
+    setattr(item, f"rep_{report.when}", report)
