@@ -79,6 +79,56 @@ def test_integer_path_param_annotated_int(ir: SpecIR) -> None:
     assert spid.annotation == "int"
 
 
+def test_grep_repeatable_query_params_accept_sequences() -> None:
+    spec = make_synthetic_spec(
+        {},
+        paths={
+            "/inspect/{image_uuid}/grep": {
+                "get": {
+                    "operationId": "inspectImageGrep",
+                    "parameters": [
+                        {
+                            "name": "image_uuid",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "pattern",
+                            "in": "query",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "path",
+                            "in": "query",
+                            "schema": {"type": "string"},
+                        },
+                        {
+                            "name": "glob",
+                            "in": "query",
+                            "schema": {"type": "string"},
+                        },
+                    ],
+                    "responses": {"204": {"description": "No content"}},
+                }
+            }
+        },
+    )
+    op = op_by_name(build_ir(spec), "inspect_image_grep")
+    args = {arg.py_name: arg for arg in op.args}
+    params = {param.py_name: param for param in op.params}
+
+    assert args["pattern"].annotation == "str | Sequence[str]"
+    for name in ("path", "glob"):
+        assert args[name].annotation == "str | Sequence[str] | None"
+
+    for name in ("pattern", "path", "glob"):
+        assert params[name].repeatable
+
+    assert "query: dict[str, str | Sequence[str]] = {}" in op.build_src
+
+
 def test_download_has_stream_variant(ir: SpecIR) -> None:
     op = op_by_name(ir, "inspect_image_download")
     assert op.kind == "bytes"
@@ -125,13 +175,13 @@ def test_operation_instance_metadata_merged(ir: SpecIR) -> None:
     assert {"command", "image", "result", "env"} <= field_names
 
 
-def make_synthetic_spec(schemas: dict) -> object:
+def make_synthetic_spec(schemas: dict, *, paths: dict | None = None) -> Spec:
     status_enum = {"type": "string", "enum": ["SUCCESS", "FAILED"]}
     return Spec(
         {
             "info": {"version": "0"},
             "servers": [{"variables": {"baseUrl": {"default": "https://x.dev"}}}],
-            "paths": {},
+            "paths": paths or {},
             "components": {
                 "schemas": {
                     "OperationSummary": {

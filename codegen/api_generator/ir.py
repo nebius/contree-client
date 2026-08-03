@@ -35,6 +35,13 @@ NESTED_NAME_OVERRIDES = {
 SKIP_OPERATIONS = {"inspectRedirect", "inspectImageRedirect"}
 # archives can be arbitrarily large: stream-only, never buffered
 STREAM_ONLY_OPERATIONS = {"inspectImageArchive"}
+# The server accepts duplicate keys for these parameters, but the current
+# OpenAPI document still declares each item as a scalar string.
+REPEATABLE_QUERY_PARAMS = {
+    ("inspect_image_grep", "pattern"),
+    ("inspect_image_grep", "path"),
+    ("inspect_image_grep", "glob"),
+}
 OPERATION_NAME_OVERRIDES = {
     "whoAmI": "whoami",
     "getOperationEvents": "iter_operation_events",
@@ -789,6 +796,7 @@ class ParamDef:
     where: str  # path | query | header
     style: str = "str"
     required: bool = False
+    repeatable: bool = False
 
 
 @dataclass
@@ -931,7 +939,12 @@ class OperationBuilder:
 
         build_body: list[str] = []
         if query_lines:
-            build_body.append("query: dict[str, str] = {}")
+            query_value_type = (
+                "str | Sequence[str]"
+                if any(param.repeatable for param in op.params)
+                else "str"
+            )
+            build_body.append(f"query: dict[str, {query_value_type}] = {{}}")
             build_body.extend(query_lines)
         if header_lines:
             build_body.append("headers: dict[str, str] = {}")
@@ -1028,7 +1041,10 @@ class OperationBuilder:
             return
 
         required = bool(param.get("required"))
-        if schema.get("type") == "integer":
+        repeatable = (op.name, json_name) in REPEATABLE_QUERY_PARAMS
+        if repeatable:
+            annotation, value, style = "str | Sequence[str]", py, "str"
+        elif schema.get("type") == "integer":
             annotation, value, style = "int", f"str({py})", "int"
         elif schema.get("enum"):
             values = schema["enum"]
@@ -1044,7 +1060,16 @@ class OperationBuilder:
                 annotation, value, style = literal_of(values).annotation, py, "enum"
         else:
             annotation, value, style = "str", py, "str"
-        op.params.append(ParamDef(json_name, py, "query", style, required=required))
+        op.params.append(
+            ParamDef(
+                json_name,
+                py,
+                "query",
+                style,
+                required=required,
+                repeatable=repeatable,
+            )
+        )
         if required:
             op.args.append(ArgDef(py, annotation, None, doc=doc))
             query_lines.append(f'query["{json_name}"] = {value}')
