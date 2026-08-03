@@ -2,12 +2,25 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  encodeQuery,
   parseRetryAfter,
   RETRY_DELAYS,
   RetryPolicy,
   SSEParser,
 } from "../lib/runtime.js";
 import { SSEStreamError } from "../lib/errors.js";
+
+test("encodeQuery preserves repeated values", () => {
+  assert.equal(
+    encodeQuery({
+      pattern: ["^root:", "^bin:"],
+      path: ["/etc/passwd", "/etc/group"],
+      case: "sensitive",
+    }),
+    "pattern=%5Eroot%3A&pattern=%5Ebin%3A" +
+      "&path=/etc/passwd&path=/etc/group&case=sensitive",
+  );
+});
 
 test("parseRetryAfter: delta seconds, dates, garbage and infinities", () => {
   assert.equal(parseRetryAfter("7"), 7);

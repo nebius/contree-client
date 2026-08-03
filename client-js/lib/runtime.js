@@ -140,9 +140,11 @@ export function quotePath(value) {
 
 export function encodeQuery(query) {
   return Object.entries(query)
-    .map(
-      ([key, value]) =>
-        `${encodeURIComponent(key)}=${encodeURIComponent(value).replaceAll("%2F", "/")}`,
+    .flatMap(([key, value]) =>
+      (Array.isArray(value) ? value : [value]).map(
+        (item) =>
+          `${encodeURIComponent(key)}=${encodeURIComponent(item).replaceAll("%2F", "/")}`,
+      ),
     )
     .join("&");
 }
