@@ -9,7 +9,7 @@ import logging
 import math
 import re
 import zlib
-from collections.abc import AsyncIterator, Iterable, Iterator
+from collections.abc import AsyncIterator, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -146,7 +146,7 @@ class RequestSpec:
 
     method: str
     path: str
-    query: dict[str, str] = field(default_factory=dict)
+    query: dict[str, str | Sequence[str]] = field(default_factory=dict)
     headers: dict[str, str] = field(default_factory=dict)
     body: bytes | IO[bytes] | None = None
     content_type: str | None = None
@@ -370,8 +370,8 @@ def quote_path(value: str | int) -> str:
     return quote(str(value), safe="")
 
 
-def encode_query(query: dict[str, str]) -> str:
-    return urlencode(query, safe="/", quote_via=quote)
+def encode_query(query: dict[str, str | Sequence[str]]) -> str:
+    return urlencode(query, doseq=True, safe="/", quote_via=quote)
 
 
 def format_time_param(value: str | int | float | datetime) -> str:
