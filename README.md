@@ -27,6 +27,23 @@ response parsers and client methods. The hand-written modules provide stable
 transport behavior, including authentication profiles, retries, streaming,
 error handling and test doubles.
 
+Both clients follow the same runtime flow:
+
+```text
+client method
+    │
+    ▼
+generated request builder → transport runtime → ConTree /v1 API
+                                                │
+                                                ▼
+typed model ← generated response parser ← HTTP response
+```
+
+Buffered requests pass through the runtime's logging, error mapping and
+optional retry handling. Streaming requests keep the response open and parse
+server-sent events into typed operation events. Higher-level helpers reconnect
+interrupted event streams and resume from the last received event.
+
 Generated API files are ignored by Git. Builds validate them before packaging
 them with the maintained runtime code. End users install complete Python or
 JavaScript packages and do not need the generator.
