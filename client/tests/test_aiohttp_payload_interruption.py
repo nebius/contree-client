@@ -202,3 +202,33 @@ def test_follow_operation_events_preserves_socket_timeout_before_deadline(
 ) -> None:
     with pytest.raises(aiohttp.SocketTimeoutError, match="read stalled"):
         asyncio.run(follow_after_socket_timeout(delay=0.0, timeout=1.0))
+
+
+async def wait_after_socket_timeout(delay: float, timeout: float) -> None:
+    module = importlib.import_module("contree_client.aiohttp")
+    client = module.ContreeAsyncClient("test-token", base_url="http://127.0.0.1")
+
+    async def interrupted_events(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(delay)
+        raise aiohttp.SocketTimeoutError("read stalled")
+        yield  # pragma: no cover - makes this an async generator
+
+    client.follow_operation_events = interrupted_events
+    try:
+        await client.wait_operation(PAYLOAD_TIMEOUT_OPERATION_UUID, timeout=timeout)
+    finally:
+        await client.close()
+
+
+def test_wait_operation_normalizes_socket_timeout_at_its_deadline(
+    generated_package: ModuleType,
+) -> None:
+    with pytest.raises(TimeoutError, match=PAYLOAD_TIMEOUT_OPERATION_UUID):
+        asyncio.run(wait_after_socket_timeout(delay=0.05, timeout=0.01))
+
+
+def test_wait_operation_preserves_socket_timeout_before_its_deadline(
+    generated_package: ModuleType,
+) -> None:
+    with pytest.raises(aiohttp.SocketTimeoutError, match="read stalled"):
+        asyncio.run(wait_after_socket_timeout(delay=0.0, timeout=1.0))

@@ -905,10 +905,17 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         *timeout* seconds elapse first.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
-        async for event in self.follow_operation_events(
-            operation_id, timeout=timeout
-        ):
-            self.log.debug("wait_operation: event %s %s", event.id, event.type)
+        try:
+            async for event in self.follow_operation_events(
+                operation_id, timeout=timeout
+            ):
+                self.log.debug("wait_operation: event %s %s", event.id, event.type)
+        except (TimeoutError, *self.nonretryable_errors) as exc:
+            if deadline is None or time.monotonic() < deadline:
+                raise
+            raise TimeoutError(
+                f"operation {operation_id} did not complete within {timeout}s"
+            ) from exc
         if deadline is None:
             return await self.get_operation_status(operation_id)
         remaining = deadline - time.monotonic()
