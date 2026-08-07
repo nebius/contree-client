@@ -213,7 +213,7 @@ async def wait_after_socket_timeout(delay: float, timeout: float) -> None:
         raise aiohttp.SocketTimeoutError("read stalled")
         yield  # pragma: no cover - makes this an async generator
 
-    client.follow_operation_events = interrupted_events
+    client.iter_operation_events = interrupted_events
     try:
         await client.wait_operation(PAYLOAD_TIMEOUT_OPERATION_UUID, timeout=timeout)
     finally:
