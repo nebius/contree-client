@@ -220,7 +220,7 @@ async def wait_after_socket_timeout(delay: float, timeout: float) -> None:
         await client.close()
 
 
-def test_wait_operation_normalizes_socket_timeout_at_its_deadline(
+def test_wait_operation_deadline_preempts_later_socket_timeout(
     generated_package: ModuleType,
 ) -> None:
     with pytest.raises(TimeoutError, match=PAYLOAD_TIMEOUT_OPERATION_UUID):

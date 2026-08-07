@@ -904,34 +904,25 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         ``OperationResponse``. Raises :class:`TimeoutError` when
         *timeout* seconds elapse first.
         """
-        deadline = None if timeout is None else time.monotonic() + timeout
-        try:
-            async for event in self.follow_operation_events(
-                operation_id, timeout=timeout
-            ):
+        async def wait_and_fetch() -> OperationResponse:
+            async for event in self.follow_operation_events(operation_id):
                 self.log.debug("wait_operation: event %s %s", event.id, event.type)
-        except (TimeoutError, *self.nonretryable_errors) as exc:
-            if deadline is None or time.monotonic() < deadline:
-                raise
-            raise TimeoutError(
-                f"operation {operation_id} did not complete within {timeout}s"
-            ) from exc
-        if deadline is None:
             return await self.get_operation_status(operation_id)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError(
-                f"operation {operation_id} did not complete within {timeout}s"
-            )
+
+        if timeout is None:
+            return await wait_and_fetch()
+        task = asyncio.create_task(wait_and_fetch())
         try:
-            return await asyncio.wait_for(
-                self.get_operation_status(operation_id),
-                timeout=remaining,
-            )
-        except asyncio.TimeoutError as exc:
-            raise TimeoutError(
-                f"operation {operation_id} did not complete within {timeout}s"
-            ) from exc
+            done, _pending = await asyncio.wait((task,), timeout=timeout)
+            if task in done:
+                return task.result()
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        raise TimeoutError(
+            f"operation {operation_id} did not complete within {timeout}s"
+        )
 
     async def follow_operation_events(
         self,
