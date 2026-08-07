@@ -904,11 +904,27 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         ``OperationResponse``. Raises :class:`TimeoutError` when
         *timeout* seconds elapse first.
         """
+        deadline = None if timeout is None else time.monotonic() + timeout
         async for event in self.follow_operation_events(
             operation_id, timeout=timeout
         ):
             self.log.debug("wait_operation: event %s %s", event.id, event.type)
-        return await self.get_operation_status(operation_id)
+        if deadline is None:
+            return await self.get_operation_status(operation_id)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"operation {operation_id} did not complete within {timeout}s"
+            )
+        try:
+            return await asyncio.wait_for(
+                self.get_operation_status(operation_id),
+                timeout=remaining,
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"operation {operation_id} did not complete within {timeout}s"
+            ) from exc
 
     async def follow_operation_events(
         self,
@@ -942,6 +958,21 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                     f" within {timeout}s"
                 )
 
+        async def operation_terminal_before_deadline() -> bool:
+            if deadline is None:
+                return await self.operation_terminal(operation_id)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                check_deadline()
+            try:
+                return await asyncio.wait_for(
+                    self.operation_terminal(operation_id),
+                    timeout=remaining,
+                )
+            except asyncio.TimeoutError:
+                check_deadline()
+                raise
+
         while True:
             check_deadline()
             events_before = last_id
@@ -974,7 +1005,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 retryable = exc.status in (410, 425) or 500 <= exc.status < 600
                 if not retryable:
                     raise
-                if await self.operation_terminal(operation_id):
+                if await operation_terminal_before_deadline():
                     return
                 self.log.warning("stream connect failed (%d): %s", exc.status, exc)
                 retry_after = exc.retry_after
@@ -990,10 +1021,13 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 self.log.warning("stream broken (last_id=%s): %s", last_id, exc)
             # the stream ended or broke without a completion frame:
             # the retry must not outlive the operation itself
-            if await self.operation_terminal(operation_id):
+            if await operation_terminal_before_deadline():
                 return
             if last_id == events_before:
-                await asyncio.sleep(TIGHT_LOOP_FLOOR)
+                delay = TIGHT_LOOP_FLOOR
+                if deadline is not None:
+                    delay = min(delay, max(0.0, deadline - time.monotonic()))
+                await asyncio.sleep(delay)
 
     async def resolve_image(self, ref: str) -> str:
         """Resolve an image reference to a UUID.

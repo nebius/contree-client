@@ -32,11 +32,17 @@ RETRY_AFTER_OPERATION_UUID = "00000000-0000-0000-0000-000000000425"
 PENDING_OPERATION_UUID = "00000000-0000-0000-0000-0000000e4ec1"
 EXECUTING_OPERATION_UUID = "00000000-0000-0000-0000-0000000e4ec2"
 RECONNECT_OPERATION_UUID = "00000000-0000-0000-0000-00000000ec0e"
+PAYLOAD_INTERRUPTION_OPERATION_UUID = "00000000-0000-0000-0000-00000000badd"
+PAYLOAD_TIMEOUT_OPERATION_UUID = "00000000-0000-0000-0000-00000000dead"
+PAYLOAD_STALLED_STATUS_OPERATION_UUID = "00000000-0000-0000-0000-0000000057a1"
+PAYLOAD_FORBIDDEN_OPERATION_UUID = "00000000-0000-0000-0000-000000000403"
+PAYLOAD_FINAL_STATUS_OPERATION_UUID = "00000000-0000-0000-0000-00000000f1a1"
 CLOSING_OPERATION_UUID = "00000000-0000-0000-0000-0000000c105e"
 DROPPING_OPERATION_UUID = "00000000-0000-0000-0000-00000000d40b"
 KEEPALIVE_OPERATION_UUID = "00000000-0000-0000-0000-0000000cee9a"
 RESET_OPERATION_UUID = "00000000-0000-0000-0000-000000000e5e"
 SSE_HANG_SECONDS = 10.0
+STATUS_HANG_SECONDS = 2.0
 FILE_UUID = "a9165a5d-5c86-4bd8-8ee4-ae46c19cf45d"
 KNOWN_SHA256 = "a" * 64
 CREATED_AT = "2024-01-01T12:00:00+00:00"
@@ -285,6 +291,9 @@ class Reply:
     hang: float = 0.0
     # simulate a peer dying mid-transfer: the gzip trailer never comes
     truncate_gzip: bool = False
+    # simulate invalid HTTP chunk framing: close without the terminal
+    # zero-length chunk after delivering all declared chunks
+    truncate_chunked: bool = False
     # serve a normal keepalive response, then silently close the TCP
     # connection - the client only finds out when it tries to reuse it
     drop_after: bool = False
@@ -398,6 +407,106 @@ def route(request: Captured, attempts: collections.Counter[str]) -> Reply:
             status=200,
             content_type="text/event-stream",
             stream_chunks=chunks,
+        )
+
+    if (
+        path == f"/v1/operations/{PAYLOAD_INTERRUPTION_OPERATION_UUID}"
+        and method == "GET"
+    ):
+        status = "EXECUTING" if attempt == 1 else "SUCCESS"
+        return json_reply(
+            200,
+            {
+                **OPERATION_RESPONSE,
+                "uuid": PAYLOAD_INTERRUPTION_OPERATION_UUID,
+                "status": status,
+            },
+        )
+
+    if path == f"/v1/operations/{PAYLOAD_INTERRUPTION_OPERATION_UUID}/events":
+        if attempt == 1:
+            return Reply(
+                status=200,
+                content_type="text/event-stream",
+                stream_chunks=[sse_frame(EVENT_INIT), sse_frame(EVENT_SPAWN)],
+                truncate_chunked=True,
+            )
+        return Reply(
+            status=200,
+            content_type="text/event-stream",
+            stream_chunks=RESUMED_SSE_FRAMES,
+        )
+
+    if path == f"/v1/operations/{PAYLOAD_TIMEOUT_OPERATION_UUID}" and method == "GET":
+        return json_reply(
+            200,
+            {
+                **OPERATION_RESPONSE,
+                "uuid": PAYLOAD_TIMEOUT_OPERATION_UUID,
+                "status": "EXECUTING",
+            },
+        )
+
+    if path == f"/v1/operations/{PAYLOAD_TIMEOUT_OPERATION_UUID}/events":
+        chunks = [sse_frame(EVENT_INIT)] if attempt == 1 else [b": keepalive\n\n"]
+        return Reply(
+            status=200,
+            content_type="text/event-stream",
+            stream_chunks=chunks,
+            truncate_chunked=True,
+        )
+
+    if (
+        path == f"/v1/operations/{PAYLOAD_STALLED_STATUS_OPERATION_UUID}"
+        and method == "GET"
+    ):
+        time.sleep(STATUS_HANG_SECONDS)
+        return json_reply(
+            200,
+            {
+                **OPERATION_RESPONSE,
+                "uuid": PAYLOAD_STALLED_STATUS_OPERATION_UUID,
+                "status": "EXECUTING",
+            },
+        )
+
+    if path == f"/v1/operations/{PAYLOAD_STALLED_STATUS_OPERATION_UUID}/events":
+        return Reply(
+            status=200,
+            content_type="text/event-stream",
+            stream_chunks=[b": keepalive\n\n"],
+            truncate_chunked=True,
+        )
+
+    if path == f"/v1/operations/{PAYLOAD_FORBIDDEN_OPERATION_UUID}/events":
+        return Reply(
+            status=403,
+            content_type="application/json",
+            stream_chunks=[b'{"error":"forbidden","status":403}'],
+            truncate_chunked=True,
+        )
+
+    if (
+        path == f"/v1/operations/{PAYLOAD_FINAL_STATUS_OPERATION_UUID}"
+        and method == "GET"
+    ):
+        if attempt > 1:
+            time.sleep(STATUS_HANG_SECONDS)
+        return json_reply(
+            200,
+            {
+                **OPERATION_RESPONSE,
+                "uuid": PAYLOAD_FINAL_STATUS_OPERATION_UUID,
+                "status": "SUCCESS",
+            },
+        )
+
+    if path == f"/v1/operations/{PAYLOAD_FINAL_STATUS_OPERATION_UUID}/events":
+        return Reply(
+            status=200,
+            content_type="text/event-stream",
+            stream_chunks=[b": keepalive\n\n"],
+            truncate_chunked=True,
         )
 
     if path == "/v1/images" and method == "GET":
@@ -677,7 +786,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         if method != "HEAD" and payload:
-            self.wfile.write(payload)
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
+                self.wfile.write(payload)
         if reply.drop_after:
             self.close_connection = True
 
@@ -708,9 +818,10 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(0.01)
             if reply.hang:
                 time.sleep(reply.hang)
-            if not reply.truncate_gzip:
-                self.write_chunk(compressor.flush(zlib.Z_FINISH))
-            self.write_chunk(b"")
+            if not reply.truncate_chunked:
+                if not reply.truncate_gzip:
+                    self.write_chunk(compressor.flush(zlib.Z_FINISH))
+                self.write_chunk(b"")
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
