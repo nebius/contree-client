@@ -1017,6 +1017,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 continue
             except self.retryable_errors as exc:
                 if isinstance(exc, self.nonretryable_errors):
+                    check_deadline()
                     raise
                 self.log.warning("stream broken (last_id=%s): %s", last_id, exc)
             # the stream ended or broke without a completion frame:
