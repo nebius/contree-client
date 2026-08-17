@@ -247,6 +247,15 @@ RETRY_DELAYS = (0.1, 0.2, 0.5, 1.0, 2.0, 5.0)
 # returning immediate empty streams does not spin the client
 TIGHT_LOOP_FLOOR = 0.5
 
+# the events route itself doesn't exist for this operation/server
+# (malformed request an older backend rejects, or a reverse proxy
+# that never forwards it) rather than merely being down: reconnecting
+# will never succeed, but the operation itself may still complete -
+# degrade to polling instead of failing the whole wait. 401/403 are
+# deliberately excluded: an auth/permission failure here likely means
+# the whole client is broken, not just this route, so it still raises
+EVENTS_UNAVAILABLE_STATUSES = frozenset({400, 404, 405, 406})
+
 
 def retry_generator(delays: tuple[float, ...] = RETRY_DELAYS) -> Iterator[float]:
     """An endless ladder of backoff delays.

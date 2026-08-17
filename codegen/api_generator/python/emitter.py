@@ -367,6 +367,7 @@ from .exceptions import (
 {model_imports}
 from .profiles import AUTH_TYPE_IAM, Profile, ProfileError, resolve_profile
 from .runtime import (
+    EVENTS_UNAVAILABLE_STATUSES,
     TIGHT_LOOP_FLOOR,
     BodyFormatter,
     HeaderFormatter,
@@ -682,10 +683,13 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         (410/425/5xx) reconnect from the last received event id, so no
         event is delivered twice; before every reconnect the operation
         status is probed and iteration ends if it already became
-        terminal. Other API errors (404, 403, ...) propagate.
+        terminal. A status meaning the events endpoint itself doesn't
+        exist for this operation/server (400/404/405/406) stops
+        reconnecting and instead polls :meth:`get_operation_status`
+        until the operation is terminal. Other API errors propagate.
         Iteration also ends after the ``completion`` event. *timeout*
-        bounds the whole wait; it is enforced between events and
-        reconnect cycles and raises :class:`TimeoutError`.
+        bounds the whole wait; it is enforced between events, reconnect
+        cycles and polling, and raises :class:`TimeoutError`.
         """
         last_id = last_event_id
         delays = retry_generator()
@@ -722,6 +726,23 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                     last_id = exc.last_event_id
                 self.log.warning("stream error (last_id=%s): %s", last_id, exc)
             except ContreeAPIError as exc:
+                if exc.status in EVENTS_UNAVAILABLE_STATUSES:
+                    # the endpoint is gone, not just failing: reconnecting
+                    # the same request will never work, but the operation
+                    # may still finish - stop touching /events and poll
+                    # status instead for the rest of this wait
+                    self.log.warning(
+                        "events endpoint unavailable (%d), falling back"
+                        " to polling",
+                        exc.status,
+                    )
+                    while not self.operation_terminal(operation_id):
+                        check_deadline()
+                        delay = next(delays)
+                        if deadline is not None:
+                            delay = min(delay, max(0.0, deadline - time.monotonic()))
+                        time.sleep(delay)
+                    return
                 retryable = exc.status in (410, 425) or 500 <= exc.status < 600
                 if not retryable:
                     raise
@@ -941,10 +962,13 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         (410/425/5xx) reconnect from the last received event id, so no
         event is delivered twice; before every reconnect the operation
         status is probed and iteration ends if it already became
-        terminal. Other API errors (404, 403, ...) propagate.
+        terminal. A status meaning the events endpoint itself doesn't
+        exist for this operation/server (400/404/405/406) stops
+        reconnecting and instead polls :meth:`get_operation_status`
+        until the operation is terminal. Other API errors propagate.
         Iteration also ends after the ``completion`` event. *timeout*
-        bounds the whole wait; it is enforced between events and
-        reconnect cycles and raises :class:`TimeoutError`.
+        bounds the whole wait; it is enforced between events, reconnect
+        cycles and polling, and raises :class:`TimeoutError`.
         """
         last_id = last_event_id
         delays = retry_generator()
@@ -1001,6 +1025,22 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                     last_id = exc.last_event_id
                 self.log.warning("stream error (last_id=%s): %s", last_id, exc)
             except ContreeAPIError as exc:
+                if exc.status in EVENTS_UNAVAILABLE_STATUSES:
+                    # the endpoint is gone, not just failing: reconnecting
+                    # the same request will never work, but the operation
+                    # may still finish - stop touching /events and poll
+                    # status instead for the rest of this wait
+                    self.log.warning(
+                        "events endpoint unavailable (%d), falling back"
+                        " to polling",
+                        exc.status,
+                    )
+                    while not await operation_terminal_before_deadline():
+                        delay = next(delays)
+                        if deadline is not None:
+                            delay = min(delay, max(0.0, deadline - time.monotonic()))
+                        await asyncio.sleep(delay)
+                    return
                 retryable = exc.status in (410, 425) or 500 <= exc.status < 600
                 if not retryable:
                     raise

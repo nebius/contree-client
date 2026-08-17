@@ -800,6 +800,7 @@ import {{
 }} from "./errors.js";
 import {{ AUTH_TYPE_IAM, ProfileError, resolveProfile }} from "./profiles.js";
 import {{
+  EVENTS_UNAVAILABLE_STATUSES,
   IS_NODE,
   SSEParser,
   TIGHT_LOOP_FLOOR,
@@ -1193,8 +1194,12 @@ export class ContreeClient {{
 
   /** Stream operation events with transparent reconnection: network
    * drops, in-band SSE error frames and retryable API statuses
-   * (410/425/5xx) reconnect from the last received event id; other
-   * API errors propagate. Ends after the `completion` event. */
+   * (410/425/5xx) reconnect from the last received event id. A status
+   * meaning the events endpoint itself doesn't exist for this
+   * operation/server (400/404/405/406) stops reconnecting and
+   * instead polls operationTerminal() until the operation is
+   * terminal. Other API errors propagate. Ends after the `completion`
+   * event. */
   async *followOperationEvents(
     operationId,
     {{ last_event_id = null, spid = null, since = null, timeout = null }} = {{}},
@@ -1234,6 +1239,24 @@ export class ContreeClient {{
             lastId = error.lastEventId;
           }}
         }} else if (error instanceof ContreeAPIError) {{
+          if (EVENTS_UNAVAILABLE_STATUSES.has(error.status)) {{
+            // the endpoint is gone, not just failing: reconnecting the
+            // same request will never work, but the operation may
+            // still finish - stop touching /events and poll status
+            // instead for the rest of this wait
+            while (!(await this.operationTerminal(operationId))) {{
+              checkDeadline();
+              let pollDelay = delays.next().value;
+              if (deadline !== null) {{
+                pollDelay = Math.min(
+                  pollDelay,
+                  Math.max(0, deadline - monotonic()),
+                );
+              }}
+              await sleep(pollDelay);
+            }}
+            return;
+          }}
           const retryable =
             error.status === 410 ||
             error.status === 425 ||

@@ -38,6 +38,17 @@ export const RETRY_DELAYS = Object.freeze([0.1, 0.2, 0.5, 1.0, 2.0, 5.0]);
 // returning immediate empty streams does not spin the client
 export const TIGHT_LOOP_FLOOR = 0.5;
 
+// the events route itself doesn't exist for this operation/server
+// (malformed request an older backend rejects, or a reverse proxy
+// that never forwards it) rather than merely being down: reconnecting
+// will never succeed, but the operation itself may still complete -
+// degrade to polling instead of failing the whole wait. 401/403 are
+// deliberately excluded: an auth/permission failure here likely means
+// the whole client is broken, not just this route, so it still throws
+export const EVENTS_UNAVAILABLE_STATUSES = Object.freeze(
+  new Set([400, 404, 405, 406]),
+);
+
 /** An endless ladder of backoff delays: the ladder is walked once and
  * then the tail delay repeats forever. */
 export function* retryDelays(delays = RETRY_DELAYS) {
