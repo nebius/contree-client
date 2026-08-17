@@ -818,7 +818,11 @@ import {{
   sleep,
 }} from "./runtime.js";
 import {{ DEFAULT_BASE_URL }} from "./specInfo.js";
-import {{ OperationEvent, isTerminalStatus }} from "./models.js";
+import {{
+  EventDataCompletion,
+  OperationEvent,
+  isTerminalStatus,
+}} from "./models.js";
 import * as operations from "./operations.js";
 
 /** Contree API client on top of the platform fetch.
@@ -1196,10 +1200,11 @@ export class ContreeClient {{
    * drops, in-band SSE error frames and retryable API statuses
    * (410/425/5xx) reconnect from the last received event id. A status
    * meaning the events endpoint itself doesn't exist for this
-   * operation/server (400/404/405/406) stops reconnecting and
-   * instead polls operationTerminal() until the operation is
-   * terminal. Other API errors propagate. Ends after the `completion`
-   * event. */
+   * operation/server (400/404/405/406) stops reconnecting and instead
+   * polls getOperationStatus() until the operation is terminal, then
+   * yields a synthesized `completion` event built from that status
+   * (there is no real event log to relay). Other API errors
+   * propagate. Ends after the `completion` event. */
   async *followOperationEvents(
     operationId,
     {{ last_event_id = null, spid = null, since = null, timeout = null }} = {{}},
@@ -1244,8 +1249,49 @@ export class ContreeClient {{
             // same request will never work, but the operation may
             // still finish - stop touching /events and poll status
             // instead for the rest of this wait
-            while (!(await this.operationTerminal(operationId))) {{
+            for (;;) {{
               checkDeadline();
+              let response;
+              try {{
+                response = await this.getOperationStatus(operationId);
+              }} catch (pollError) {{
+                if (
+                  !(pollError instanceof ContreeError) &&
+                  !this._transportRetryable(pollError)
+                ) {{
+                  throw pollError;
+                }}
+                response = null;
+              }}
+              if (
+                response !== null &&
+                response.status !== undefined &&
+                isTerminalStatus(response.status)
+              ) {{
+                // no event log to relay, but a caller of
+                // followOperationEvents must still observe a terminal
+                // completion rather than nothing at all
+                lastId = lastId === null ? 0 : lastId + 1;
+                yield new OperationEvent({{
+                  id: lastId,
+                  ts: new Date(),
+                  type: "completion",
+                  data: new EventDataCompletion({{
+                    status: response.status,
+                    duration_ms:
+                      typeof response.duration === "number"
+                        ? Math.round(response.duration * 1000)
+                        : 0,
+                    result_image_uuid: response.result_image_uuid,
+                    error: response.error,
+                    image_size_bytes:
+                      typeof response.image_size === "number"
+                        ? response.image_size
+                        : undefined,
+                  }}),
+                }});
+                return;
+              }}
               let pollDelay = delays.next().value;
               if (deadline !== null) {{
                 pollDelay = Math.min(
@@ -1255,7 +1301,6 @@ export class ContreeClient {{
               }}
               await sleep(pollDelay);
             }}
-            return;
           }}
           const retryable =
             error.status === 410 ||

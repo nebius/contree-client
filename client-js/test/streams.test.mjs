@@ -165,6 +165,21 @@ test("waitOperation falls back to polling when the events route is missing", asy
   assert.equal(operation.status, OperationStatus.SUCCESS);
 });
 
+test("followOperationEvents yields a completion event when the events route is missing", async () => {
+  // there is no event log to relay, but the caller must still see a
+  // terminal completion event, not an iterator that silently ends
+  const events = [];
+  for await (const event of client.followOperationEvents(
+    EVENTS_UNAVAILABLE_OPERATION_UUID,
+  )) {
+    events.push(event);
+  }
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "completion");
+  assert.ok(events[0].data instanceof EventDataCompletion);
+  assert.equal(events[0].data.status, OperationStatus.SUCCESS);
+});
+
 test("the polling fallback still honors the deadline when the operation never finishes", async () => {
   // events unavailable and the operation never finishes: the polling
   // fallback must still honor the deadline instead of spinning forever

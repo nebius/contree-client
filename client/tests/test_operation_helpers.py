@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -80,6 +81,21 @@ def test_wait_operation_falls_back_to_polling_when_events_missing(
     status_requests = [c for c in stub_server.captured if c.path == status_path]
     # polled until terminal, plus wait_operation's own final fetch
     assert len(status_requests) >= 3
+
+
+def test_follow_operation_events_yields_completion_when_events_missing(
+    invoke: Callable[..., Any], stub_server: StubServer, models: ModuleType
+) -> None:
+    # there is no event log to relay, but the caller must still see a
+    # terminal completion event, not an iterator that silently ends
+    events = invoke(
+        "follow_operation_events", EVENTS_UNAVAILABLE_OPERATION_UUID, collect=True
+    )
+
+    assert len(events) == 1
+    assert events[0].type == "completion"
+    assert isinstance(events[0].data, models.EventDataCompletion)
+    assert str(events[0].data.status) == "SUCCESS"
 
 
 def test_wait_operation_polling_fallback_respects_timeout(

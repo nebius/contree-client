@@ -259,7 +259,7 @@ def render_models(ir: SpecIR) -> str:
             "from collections.abc import Callable",
             "from contextlib import suppress",
             "from dataclasses import asdict, dataclass, field, fields",
-            "from datetime import datetime",
+            "from datetime import datetime, timezone",
             "from enum import Enum",
             "from types import EllipsisType",
             "from typing import Any, Literal, TypeVar",
@@ -295,7 +295,7 @@ def render_operations(ir: SpecIR) -> str:
         [
             "import json",
             "from collections.abc import Sequence",
-            "from datetime import datetime",
+            "from datetime import datetime, timezone",
             "from types import EllipsisType",
             "from typing import IO, Any, Literal",
             "",
@@ -350,7 +350,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Iterable, Iterator, Sequence
 from contextlib import aclosing
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import EllipsisType, TracebackType
 from typing import IO, Any, Literal, TypeVar
@@ -736,13 +736,46 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                         " to polling",
                         exc.status,
                     )
-                    while not self.operation_terminal(operation_id):
+                    while True:
                         check_deadline()
+                        try:
+                            response = self.get_operation_status(operation_id)
+                        except (ContreeError, *self.retryable_errors):
+                            response = None
+                        if (
+                            response is not None
+                            and not isinstance(response.status, EllipsisType)
+                            and response.status.is_terminal()
+                        ):
+                            # no event log to relay, but a caller of
+                            # follow_operation_events must still observe a
+                            # terminal completion rather than nothing at all
+                            last_id = 0 if last_id is None else last_id + 1
+                            duration = response.duration
+                            image_size = response.image_size
+                            yield OperationEvent(
+                                id=last_id,
+                                ts=datetime.now(timezone.utc),
+                                type="completion",
+                                data=EventDataCompletion(
+                                    status=response.status,
+                                    duration_ms=round(duration * 1000)
+                                    if isinstance(duration, (int, float))
+                                    else 0,
+                                    result_image_uuid=response.result_image_uuid,
+                                    error=response.error,
+                                    image_size_bytes=(
+                                        image_size
+                                        if isinstance(image_size, int)
+                                        else ...
+                                    ),
+                                ),
+                            )
+                            return
                         delay = next(delays)
                         if deadline is not None:
                             delay = min(delay, max(0.0, deadline - time.monotonic()))
                         time.sleep(delay)
-                    return
                 retryable = exc.status in (410, 425) or 500 <= exc.status < 600
                 if not retryable:
                     raise
@@ -996,6 +1029,24 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 check_deadline()
                 raise
 
+        async def operation_status_before_deadline() -> OperationResponse | None:
+            try:
+                if deadline is None:
+                    return await self.get_operation_status(operation_id)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    check_deadline()
+                try:
+                    return await asyncio.wait_for(
+                        self.get_operation_status(operation_id),
+                        timeout=remaining,
+                    )
+                except asyncio.TimeoutError:
+                    check_deadline()
+                    raise
+            except (ContreeError, *self.retryable_errors):
+                return None
+
         while True:
             check_deadline()
             events_before = last_id
@@ -1035,12 +1086,42 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                         " to polling",
                         exc.status,
                     )
-                    while not await operation_terminal_before_deadline():
+                    while True:
+                        response = await operation_status_before_deadline()
+                        if (
+                            response is not None
+                            and not isinstance(response.status, EllipsisType)
+                            and response.status.is_terminal()
+                        ):
+                            # no event log to relay, but a caller of
+                            # follow_operation_events must still observe a
+                            # terminal completion rather than nothing at all
+                            last_id = 0 if last_id is None else last_id + 1
+                            duration = response.duration
+                            image_size = response.image_size
+                            yield OperationEvent(
+                                id=last_id,
+                                ts=datetime.now(timezone.utc),
+                                type="completion",
+                                data=EventDataCompletion(
+                                    status=response.status,
+                                    duration_ms=round(duration * 1000)
+                                    if isinstance(duration, (int, float))
+                                    else 0,
+                                    result_image_uuid=response.result_image_uuid,
+                                    error=response.error,
+                                    image_size_bytes=(
+                                        image_size
+                                        if isinstance(image_size, int)
+                                        else ...
+                                    ),
+                                ),
+                            )
+                            return
                         delay = next(delays)
                         if deadline is not None:
                             delay = min(delay, max(0.0, deadline - time.monotonic()))
                         await asyncio.sleep(delay)
-                    return
                 retryable = exc.status in (410, 425) or 500 <= exc.status < 600
                 if not retryable:
                     raise
