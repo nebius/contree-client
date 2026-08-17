@@ -118,4 +118,14 @@ jobs:
           npx tsc --noEmit
 
       - name: Publish to npm
-        run: cd client-js && npm publish --provenance --access public
+        env:
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          NPM_DIST_TAG="latest"
+          if [[ "$IS_PRERELEASE" == "true" || "$VERSION" == *-* ]]; then
+            NPM_DIST_TAG="dev"
+          fi
+          cd client-js
+          npm publish --provenance --access public --tag "$NPM_DIST_TAG"

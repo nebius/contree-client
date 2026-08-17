@@ -35,6 +35,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
     retryable_errors = (
         aiohttp.ClientConnectionError,
         aiohttp.ServerConnectionError,
+        aiohttp.ClientPayloadError,
     )
     nonretryable_errors = (TimeoutError, asyncio.TimeoutError)
 
@@ -126,7 +127,12 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         ) as response:
             self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status)
             if not 200 <= response.status < 300:
-                body = await response.read()
+                try:
+                    body = await response.read()
+                except self.retryable_errors:
+                    # The status is authoritative even when its optional
+                    # diagnostic body is interrupted.
+                    body = b""
                 # auto_decompress=False applies to the payload only:
                 # the error body must still be decoded, or the parsed
                 # server message is lost
