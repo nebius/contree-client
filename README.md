@@ -12,14 +12,14 @@ Source and build tooling for the Contree API clients:
 The repository combines a shared OpenAPI generator with hand-written runtime
 code for both clients:
 
-```text
-OpenAPI specification
-        │
-        ▼
-loader → shared intermediate representation
-        │
-        ├──→ Python emitter → models, operations and client interfaces
-        └──→ JavaScript emitter → ESM modules and TypeScript declarations
+```mermaid
+flowchart TD
+    SPEC[OpenAPI specification] --> LOADER[Loader]
+    LOADER --> IR[Shared intermediate representation]
+    IR --> PY[Python emitter]
+    IR --> JS[JavaScript emitter]
+    PY --> PY_OUT[Models, operations, and client interfaces]
+    JS --> JS_OUT[ESM modules and TypeScript declarations]
 ```
 
 The generated modules contain the API-specific models, request builders,
@@ -29,14 +29,14 @@ error handling and test doubles.
 
 Both clients follow the same runtime flow:
 
-```text
-client method
-    │
-    ▼
-generated request builder → transport runtime → ConTree /v1 API
-                                                │
-                                                ▼
-typed model ← generated response parser ← HTTP response
+```mermaid
+flowchart LR
+    METHOD[Client method] --> BUILDER[Generated request builder]
+    BUILDER --> RUNTIME[Transport runtime]
+    RUNTIME --> API[ConTree /v1 API]
+    API --> RESPONSE[HTTP response]
+    RESPONSE --> PARSER[Generated response parser]
+    PARSER --> MODEL[Typed model]
 ```
 
 Buffered requests pass through the runtime's logging, error mapping and
