@@ -22,6 +22,24 @@ def test_reserved_word_param_is_aliased(spec_source: str) -> None:
     assert 'query["case"] = case_;' in src
 
 
+def test_repeatable_query_params_accept_arrays() -> None:
+    op = OpDef(
+        name="inspect_image_grep",
+        http_method="GET",
+        path="/inspect/{image_uuid}/grep",
+        summary="",
+        args=[
+            ArgDef("pattern", "str | Sequence[str]", None),
+            ArgDef("path", "str | Sequence[str] | None", "None"),
+            ArgDef("glob", "str | Sequence[str] | None", "None"),
+        ],
+    )
+
+    assert "pattern: string | readonly string[]" in ts_params(op)
+    assert "path?: string | readonly string[]" in ts_params(op)
+    assert "glob?: string | readonly string[]" in ts_params(op)
+
+
 def test_scalar_field_response_unwrapped(spec_source: str) -> None:
     ir = build_ir(load_spec(spec_source))
     op = next(o for o in ir.operations if o.name == "operation_subprocess_create")

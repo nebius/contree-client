@@ -21,7 +21,7 @@ export type RequestBody =
 export interface RequestSpec {
   method: string;
   path: string;
-  query?: Record<string, string>;
+  query?: Record<string, string | readonly string[]>;
   headers?: Record<string, string>;
   body?: RequestBody;
   contentType?: string | null;
@@ -58,7 +58,9 @@ export declare function sleep(seconds: number): Promise<void>;
 export declare function monotonic(): number;
 export declare function isUuid(ref: string): boolean;
 export declare function quotePath(value: unknown): string;
-export declare function encodeQuery(query: Record<string, string>): string;
+export declare function encodeQuery(
+  query: Record<string, string | readonly string[]>,
+): string;
 export declare function formatTimeParam(value: string | number | Date): string;
 export declare function parseDatetime(value: string): Date;
 export declare function bytesToText(bytes: Uint8Array): string;

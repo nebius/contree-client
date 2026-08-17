@@ -26,6 +26,20 @@ def test_format_time_param(runtime: ModuleType) -> None:
     assert runtime.format_time_param("1h") == "1h"
 
 
+def test_encode_query_preserves_repeated_values(runtime: ModuleType) -> None:
+    assert (
+        runtime.encode_query(
+            {
+                "pattern": ["^root:", "^bin:"],
+                "path": ("/etc/passwd", "/etc/group"),
+                "case": "sensitive",
+            }
+        )
+        == "pattern=%5Eroot%3A&pattern=%5Ebin%3A"
+        "&path=/etc/passwd&path=/etc/group&case=sensitive"
+    )
+
+
 def test_json_object_rejects_array(
     runtime: ModuleType,
     exceptions: ModuleType,

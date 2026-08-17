@@ -294,6 +294,7 @@ def render_operations(ir: SpecIR) -> str:
     imports = "\n".join(
         [
             "import json",
+            "from collections.abc import Sequence",
             "from datetime import datetime",
             "from types import EllipsisType",
             "from typing import IO, Any, Literal",
@@ -347,7 +348,7 @@ import platform
 import sys
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Iterable, Iterator
+from collections.abc import AsyncGenerator, Iterable, Iterator, Sequence
 from contextlib import aclosing
 from datetime import datetime
 from pathlib import Path

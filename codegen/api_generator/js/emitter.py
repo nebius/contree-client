@@ -131,6 +131,8 @@ def ts_type(annotation: str) -> str:
         return TS_ATOMS[atom]
     if atom.startswith("list["):
         return f"{ts_type(atom[5:-1])}[]"
+    if atom.startswith("Sequence["):
+        return f"readonly {ts_type(atom[9:-1])}[]"
     if atom.startswith("dict[str, "):
         return f"Record<string, {ts_type(atom[10:-1])}>"
     if atom.startswith("Literal["):
