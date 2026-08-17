@@ -13,6 +13,15 @@ Generated API files are ignored by Git.
 
 Set `CONTREE_SPEC` to the OpenAPI specification URL or local path:
 
+```mermaid
+flowchart TD
+    A[Set CONTREE_SPEC] --> B[Run make]
+    B --> C[Generate API files]
+    B --> D[Run checks and tests]
+    A --> E[Run make docs]
+    A --> F[Run make build]
+```
+
 ```sh
 export CONTREE_SPEC=path/to/api.yaml
 
