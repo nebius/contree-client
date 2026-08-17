@@ -41,6 +41,8 @@ CLOSING_OPERATION_UUID = "00000000-0000-0000-0000-0000000c105e"
 DROPPING_OPERATION_UUID = "00000000-0000-0000-0000-00000000d40b"
 KEEPALIVE_OPERATION_UUID = "00000000-0000-0000-0000-0000000cee9a"
 RESET_OPERATION_UUID = "00000000-0000-0000-0000-000000000e5e"
+EVENTS_UNAVAILABLE_OPERATION_UUID = "00000000-0000-0000-0000-00000000eee0"
+EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID = "00000000-0000-0000-0000-00000000eee1"
 SSE_HANG_SECONDS = 10.0
 STATUS_HANG_SECONDS = 2.0
 FILE_UUID = "a9165a5d-5c86-4bd8-8ee4-ae46c19cf45d"
@@ -408,6 +410,49 @@ def route(request: Captured, attempts: collections.Counter[str]) -> Reply:
             content_type="text/event-stream",
             stream_chunks=chunks,
         )
+
+    if (
+        path == f"/v1/operations/{EVENTS_UNAVAILABLE_OPERATION_UUID}"
+        and method == "GET"
+    ):
+        # the operation itself progresses and finishes normally; only
+        # its /events route is missing
+        status = "EXECUTING" if attempt < 3 else "SUCCESS"
+        return json_reply(
+            200,
+            {
+                **OPERATION_RESPONSE,
+                "uuid": EVENTS_UNAVAILABLE_OPERATION_UUID,
+                "status": status,
+            },
+        )
+
+    if path == f"/v1/operations/{EVENTS_UNAVAILABLE_OPERATION_UUID}/events":
+        # no /events route at all for this operation (older backend,
+        # or a reverse proxy that doesn't forward it): reconnecting
+        # this exact request will never succeed, but the operation
+        # itself is healthy - the client must fall back to polling
+        # get_operation_status instead of failing the whole wait
+        return json_reply(404, {"error": "not found", "status": 404})
+
+    if (
+        path == f"/v1/operations/{EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID}"
+        and method == "GET"
+    ):
+        # same missing-events situation, but the operation itself
+        # never finishes - the polling fallback must still honor the
+        # caller's deadline instead of looping forever
+        return json_reply(
+            200,
+            {
+                **OPERATION_RESPONSE,
+                "uuid": EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID,
+                "status": "EXECUTING",
+            },
+        )
+
+    if path == f"/v1/operations/{EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID}/events":
+        return json_reply(404, {"error": "not found", "status": 404})
 
     if (
         path == f"/v1/operations/{PAYLOAD_INTERRUPTION_OPERATION_UUID}"

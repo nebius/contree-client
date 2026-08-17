@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import { ContreeClient } from "../lib/client.js";
+import { ContreeAPIError } from "../lib/errors.js";
 import {
   EventDataCompletion,
   EventDataExit,
@@ -11,6 +12,8 @@ import {
 import { bytesToText } from "../lib/runtime.js";
 import {
   DOWNLOAD_CONTENT,
+  EVENTS_UNAVAILABLE_OPERATION_UUID,
+  EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID,
   IMAGE_UUID,
   OPERATION_UUID,
   RECONNECT_OPERATION_UUID,
@@ -151,4 +154,41 @@ test("followOperationEvents resumes after an in-band stream error", async () => 
 test("waitOperation drains the stream and fetches the terminal status", async () => {
   const operation = await client.waitOperation(OPERATION_UUID);
   assert.equal(operation.status, OperationStatus.SUCCESS);
+});
+
+test("waitOperation falls back to polling when the events route is missing", async () => {
+  // /events 404s outright (older backend, proxy that drops the route,
+  // ...); the operation itself still finishes
+  const operation = await client.waitOperation(
+    EVENTS_UNAVAILABLE_OPERATION_UUID,
+  );
+  assert.equal(operation.status, OperationStatus.SUCCESS);
+});
+
+test("followOperationEvents yields a completion event when the events route is missing", async () => {
+  // there is no event log to relay, but the caller must still see a
+  // terminal completion event, not an iterator that silently ends
+  const events = [];
+  for await (const event of client.followOperationEvents(
+    EVENTS_UNAVAILABLE_OPERATION_UUID,
+  )) {
+    events.push(event);
+  }
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "completion");
+  assert.ok(events[0].data instanceof EventDataCompletion);
+  assert.equal(events[0].data.status, OperationStatus.SUCCESS);
+});
+
+test("the polling fallback still honors the deadline when the operation never finishes", async () => {
+  // events unavailable and the operation never finishes: the polling
+  // fallback must still honor the deadline instead of spinning forever
+  await assert.rejects(
+    client.waitOperation(EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID, {
+      timeout: 0.3,
+    }),
+    (error) =>
+      error instanceof ContreeAPIError &&
+      error.message.includes(EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID),
+  );
 });
