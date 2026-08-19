@@ -160,6 +160,19 @@ test("425/429 replay a POST even without retryUnsafe", async () => {
   await retrying.close();
 });
 
+test("a null token sends no Authorization header", () => {
+  const spec = { method: "GET", path: "/health" };
+  const anonymous = new ContreeClient(null, {
+    baseUrl: "http://localhost:1",
+  });
+  assert.equal(anonymous.token, null);
+  assert.equal("Authorization" in anonymous.buildHeaders(spec), false);
+  const authorized = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+  });
+  assert.equal(authorized.buildHeaders(spec).Authorization, "Bearer tok");
+});
+
 test("userAgent carries identity first", () => {
   const identified = new ContreeClient("tok", {
     baseUrl: "http://localhost:1",

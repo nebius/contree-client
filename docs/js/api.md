@@ -38,6 +38,10 @@ const client = new ContreeClient(token, {
 });
 ```
 
+The token may be `null`, just like the project: the client then sends
+no `Authorization` header, which is what the endpoints that need no
+authentication expect.
+
 `fetch` is the single customization point — wrap the platform fetch
 to add an undici dispatcher (TLS options, proxies) in Node or a mock
 in tests:
