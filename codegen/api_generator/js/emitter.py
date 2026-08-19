@@ -831,6 +831,10 @@ import * as operations from "./operations.js";
  * unlike the Python adapters there is exactly one transport. Pass a
  * custom `fetch` implementation (undici dispatcher wrappers, MSW,
  * ...) via the constructor options to customize it.
+ *
+ * `token` may be null, like `project`: the client then sends no
+ * `Authorization` header, which is all the endpoints that need no
+ * authentication want.
  */
 export class ContreeClient {{
   constructor(
@@ -851,7 +855,7 @@ export class ContreeClient {{
         `unsupported baseUrl scheme ${{parsed.protocol}} in ${{baseUrl}}: use http:// or https://`,
       );
     }}
-    this.token = token;
+    this.token = token ?? null;
     this.baseUrl = baseUrl.replace(/\\/+$/, "");
     this.project = project;
     this.timeout = timeout;
@@ -901,8 +905,11 @@ export class ContreeClient {{
   }}
 
   buildHeaders(spec) {{
-    const headers = {{ Authorization: `Bearer ${{this.token}}` }};
-    if (this.project !== null) {{
+    const headers = {{}};
+    if (this.token) {{
+      headers["Authorization"] = `Bearer ${{this.token}}`;
+    }}
+    if (this.project) {{
       headers["Project"] = this.project;
     }}
     if (spec.contentType) {{
@@ -1525,13 +1532,13 @@ export interface ContreeClientOptions {
 }
 
 export declare class ContreeClient {
-  token: string;
+  token: string | null;
   baseUrl: string;
   project: string | null;
   timeout: number | null;
   retry: RetryPolicy | null;
   identity: string | null;
-  constructor(token: string, options?: ContreeClientOptions);
+  constructor(token: string | null, options?: ContreeClientOptions);
   static fromProfile(
     profile?: string | Profile | null,
     options?: ContreeClientOptions & { configPath?: string | null },
