@@ -9,11 +9,36 @@ class ContreeError(Exception):
     """Base class for all contree-client errors."""
 
 
-class DecompressionError(ContreeError):
+class ContreeTransportError(ContreeError):
+    """Wire-level error base; each backend's subclass also inherits its
+    matching native exception type. Construct via :meth:`wrap`."""
+
+    @classmethod
+    def wrap(cls, original: BaseException) -> BaseException:
+        """Build an instance from *original*; return it unwrapped on failure."""
+        try:
+            return cls(*original.args)
+        except Exception:
+            return original
+
+
+class ContreeConnectionError(ContreeTransportError):
+    """Failed to establish or maintain the connection."""
+
+
+class ContreeTimeoutError(ContreeTransportError):
+    """A connect, read or overall deadline elapsed."""
+
+
+class ContreeStreamError(ContreeTransportError):
+    """The response body arrived but could not be consumed correctly."""
+
+
+class DecompressionError(ContreeStreamError):
     """The compressed response body ended prematurely or is corrupt."""
 
 
-class SSEStreamError(ContreeError):
+class SSEStreamError(ContreeStreamError):
     """The server terminated an SSE stream with an in-band error frame.
 
     Per the API convention this is the in-band equivalent of a 410:
@@ -31,7 +56,11 @@ class SSEStreamError(ContreeError):
         self.last_event_id = last_event_id
 
 
-class ContreeAPIError(ContreeError):
+class ContreeHTTPError(ContreeTransportError):
+    """A full HTTP response with a status line was received."""
+
+
+class ContreeAPIError(ContreeHTTPError):
     """An HTTP error response returned by the Contree API."""
 
     def __init__(

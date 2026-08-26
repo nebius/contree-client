@@ -11,6 +11,7 @@ from contextlib import suppress
 import aiohttp
 
 from . import base
+from .exceptions import ContreeConnectionError, ContreeStreamError, ContreeTimeoutError
 from .runtime import (
     CHUNK_SIZE,
     RequestSpec,
@@ -21,6 +22,20 @@ from .runtime import (
 )
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
+
+
+class ContreeAiohttpConnectionError(
+    ContreeConnectionError, aiohttp.ClientConnectionError
+):
+    """A `ContreeConnectionError` that is also an `aiohttp.ClientConnectionError`."""
+
+
+class ContreeAiohttpTimeoutError(ContreeTimeoutError, TimeoutError):
+    """A `ContreeTimeoutError` that is also a stdlib `TimeoutError`."""
+
+
+class ContreeAiohttpStreamError(ContreeStreamError, aiohttp.ClientPayloadError):
+    """A `ContreeStreamError` that is also an `aiohttp.ClientPayloadError`."""
 
 
 class ContreeAsyncClient(base.ContreeAsyncClient):
@@ -85,20 +100,27 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     async def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
-        async with self._get_session().request(
-            spec.method,
-            url,
-            data=spec.body,
-            headers=self.build_headers(spec),
-            allow_redirects=False,
-            timeout=aiohttp.ClientTimeout(total=self.timeout),
-        ) as response:
-            body = await response.read()
-            return ResponseData(
-                status=response.status,
-                headers={k.lower(): v for k, v in response.headers.items()},
-                body=body,
-            )
+        try:
+            async with self._get_session().request(
+                spec.method,
+                url,
+                data=spec.body,
+                headers=self.build_headers(spec),
+                allow_redirects=False,
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+            ) as response:
+                body = await response.read()
+                return ResponseData(
+                    status=response.status,
+                    headers={k.lower(): v for k, v in response.headers.items()},
+                    body=body,
+                )
+        except self.nonretryable_errors as exc:
+            raise ContreeAiohttpTimeoutError.wrap(exc) from exc
+        except aiohttp.ClientPayloadError as exc:
+            raise ContreeAiohttpStreamError.wrap(exc) from exc
+        except self.retryable_errors as exc:
+            raise ContreeAiohttpConnectionError.wrap(exc) from exc
 
     async def stream(
         self,
@@ -106,49 +128,58 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         auto_decompress: bool = True,
     ) -> AsyncGenerator[bytes, None]:
         url = self.build_url(spec)
-        async with self._get_session().request(
-            spec.method,
-            url,
-            data=spec.body,
-            headers=self.build_headers(spec),
-            allow_redirects=False,
-            auto_decompress=auto_decompress,
-            timeout=aiohttp.ClientTimeout(
-                total=None,
-                sock_connect=self.timeout,
-                # only SSE may idle (bounded by spec.read_timeout
-                # when a deadline is set); downloads must time out
-                sock_read=(
-                    spec.read_timeout
-                    if spec.accept == "text/event-stream"
-                    else self.timeout
+        try:
+            async with self._get_session().request(
+                spec.method,
+                url,
+                data=spec.body,
+                headers=self.build_headers(spec),
+                allow_redirects=False,
+                auto_decompress=auto_decompress,
+                timeout=aiohttp.ClientTimeout(
+                    total=None,
+                    sock_connect=self.timeout,
+                    # only SSE may idle (bounded by spec.read_timeout
+                    # when a deadline is set); downloads must time out
+                    sock_read=(
+                        spec.read_timeout
+                        if spec.accept == "text/event-stream"
+                        else self.timeout
+                    ),
                 ),
-            ),
-        ) as response:
-            self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status)
-            if not 200 <= response.status < 300:
-                try:
-                    body = await response.read()
-                except self.retryable_errors:
-                    # The status is authoritative even when its optional
-                    # diagnostic body is interrupted.
-                    body = b""
-                # auto_decompress=False applies to the payload only:
-                # the error body must still be decoded, or the parsed
-                # server message is lost
-                encoding = (response.headers.get("Content-Encoding") or "").lower()
-                if not auto_decompress and encoding == "gzip":
-                    with suppress(gzip.BadGzipFile, OSError):
-                        body = gzip.decompress(body)
-                raise error_for_response(
-                    ResponseData(
-                        status=response.status,
-                        headers={k.lower(): v for k, v in response.headers.items()},
-                        body=body,
-                    )
+            ) as response:
+                self.log.debug(
+                    "%s %s -> %d (stream)", spec.method, url, response.status
                 )
-            async for chunk in response.content.iter_chunked(CHUNK_SIZE):
-                yield chunk
+                if not 200 <= response.status < 300:
+                    try:
+                        body = await response.read()
+                    except self.retryable_errors:
+                        # The status is authoritative even when its optional
+                        # diagnostic body is interrupted.
+                        body = b""
+                    # auto_decompress=False applies to the payload only:
+                    # the error body must still be decoded, or the parsed
+                    # server message is lost
+                    encoding = (response.headers.get("Content-Encoding") or "").lower()
+                    if not auto_decompress and encoding == "gzip":
+                        with suppress(gzip.BadGzipFile, OSError):
+                            body = gzip.decompress(body)
+                    raise error_for_response(
+                        ResponseData(
+                            status=response.status,
+                            headers={k.lower(): v for k, v in response.headers.items()},
+                            body=body,
+                        )
+                    )
+                async for chunk in response.content.iter_chunked(CHUNK_SIZE):
+                    yield chunk
+        except self.nonretryable_errors as exc:
+            raise ContreeAiohttpTimeoutError.wrap(exc) from exc
+        except aiohttp.ClientPayloadError as exc:
+            raise ContreeAiohttpStreamError.wrap(exc) from exc
+        except self.retryable_errors as exc:
+            raise ContreeAiohttpConnectionError.wrap(exc) from exc
 
     async def close(self) -> None:
         if (

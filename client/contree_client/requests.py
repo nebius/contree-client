@@ -10,6 +10,7 @@ import requests
 import requests.adapters
 
 from . import base
+from .exceptions import ContreeConnectionError, ContreeTimeoutError
 from .runtime import (
     CHUNK_SIZE,
     RequestSpec,
@@ -20,6 +21,36 @@ from .runtime import (
 )
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
+
+
+class ContreeRequestsConnectionError(ContreeConnectionError, requests.ConnectionError):
+    """A `ContreeConnectionError` that is also a `requests.ConnectionError`."""
+
+    @classmethod
+    def wrap(cls, original: BaseException) -> BaseException:
+        try:
+            wrapped = cls(*original.args)
+            if isinstance(original, requests.RequestException):
+                wrapped.response = original.response
+                wrapped.request = original.request
+        except Exception:
+            return original
+        return wrapped
+
+
+class ContreeRequestsTimeoutError(ContreeTimeoutError, requests.Timeout):
+    """A `ContreeTimeoutError` that is also a `requests.Timeout`."""
+
+    @classmethod
+    def wrap(cls, original: BaseException) -> BaseException:
+        try:
+            wrapped = cls(*original.args)
+            if isinstance(original, requests.RequestException):
+                wrapped.response = original.response
+                wrapped.request = original.request
+        except Exception:
+            return original
+        return wrapped
 
 
 class SSLContextAdapter(requests.adapters.HTTPAdapter):
@@ -76,15 +107,20 @@ class ContreeClient(base.ContreeSyncClient):
 
     def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
-        response = self._session.request(
-            spec.method,
-            url,
-            data=spec.body,
-            # requests only accepts a mapping: duplicates collapse
-            headers=dict(self.build_headers(spec)),
-            timeout=self.timeout,
-            allow_redirects=False,
-        )
+        try:
+            response = self._session.request(
+                spec.method,
+                url,
+                data=spec.body,
+                # requests only accepts a mapping: duplicates collapse
+                headers=dict(self.build_headers(spec)),
+                timeout=self.timeout,
+                allow_redirects=False,
+            )
+        except self.nonretryable_errors as exc:
+            raise ContreeRequestsTimeoutError.wrap(exc) from exc
+        except self.retryable_errors as exc:
+            raise ContreeRequestsConnectionError.wrap(exc) from exc
         return ResponseData(
             status=response.status_code,
             headers={k.lower(): v for k, v in response.headers.items()},
@@ -99,16 +135,21 @@ class ContreeClient(base.ContreeSyncClient):
             spec.read_timeout if spec.accept == "text/event-stream" else self.timeout
         )
         timeout = None if self.timeout is None else (self.timeout, read_timeout)
-        response = self._session.request(
-            spec.method,
-            url,
-            data=spec.body,
-            # requests only accepts a mapping: duplicates collapse
-            headers=dict(self.build_headers(spec)),
-            timeout=timeout,
-            allow_redirects=False,
-            stream=True,
-        )
+        try:
+            response = self._session.request(
+                spec.method,
+                url,
+                data=spec.body,
+                # requests only accepts a mapping: duplicates collapse
+                headers=dict(self.build_headers(spec)),
+                timeout=timeout,
+                allow_redirects=False,
+                stream=True,
+            )
+        except self.nonretryable_errors as exc:
+            raise ContreeRequestsTimeoutError.wrap(exc) from exc
+        except self.retryable_errors as exc:
+            raise ContreeRequestsConnectionError.wrap(exc) from exc
         self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status_code)
         if not 200 <= response.status_code < 300:
             with response:
@@ -128,12 +169,17 @@ class ContreeClient(base.ContreeSyncClient):
     ) -> Iterator[bytes]:
         response = self._open_stream(spec)
         with response:
-            if auto_decompress:
-                yield from response.iter_content(CHUNK_SIZE)
-            else:
-                # iter_content always decodes; go one level down to
-                # the underlying urllib3 response for the wire bytes
-                yield from response.raw.stream(CHUNK_SIZE, decode_content=False)
+            try:
+                if auto_decompress:
+                    yield from response.iter_content(CHUNK_SIZE)
+                else:
+                    # iter_content always decodes; go one level down to
+                    # the underlying urllib3 response for the wire bytes
+                    yield from response.raw.stream(CHUNK_SIZE, decode_content=False)
+            except self.nonretryable_errors as exc:
+                raise ContreeRequestsTimeoutError.wrap(exc) from exc
+            except self.retryable_errors as exc:
+                raise ContreeRequestsConnectionError.wrap(exc) from exc
 
     def close(self) -> None:
         if self.__owns_session:

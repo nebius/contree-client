@@ -8,6 +8,7 @@ from collections.abc import Iterator
 import urllib3
 
 from . import base
+from .exceptions import ContreeConnectionError, ContreeTimeoutError
 from .runtime import (
     CHUNK_SIZE,
     RequestSpec,
@@ -18,6 +19,16 @@ from .runtime import (
 )
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
+
+
+class ContreeUrllib3ConnectionError(
+    ContreeConnectionError, urllib3.exceptions.HTTPError
+):
+    """A `ContreeConnectionError` that is also a `urllib3.exceptions.HTTPError`."""
+
+
+class ContreeUrllib3TimeoutError(ContreeTimeoutError, urllib3.exceptions.TimeoutError):
+    """A `ContreeTimeoutError` that is also a `urllib3.exceptions.TimeoutError`."""
 
 
 class ContreeClient(base.ContreeSyncClient):
@@ -75,17 +86,26 @@ class ContreeClient(base.ContreeSyncClient):
 
     def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
-        response = self._http.request(
-            spec.method,
-            url,
-            body=spec.body,
-            headers=self._request_headers(spec),
-            timeout=self.timeout,
-            redirect=False,
-            retries=False,
-            preload_content=True,
-            decode_content=True,
-        )
+        try:
+            response = self._http.request(
+                spec.method,
+                url,
+                body=spec.body,
+                headers=self._request_headers(spec),
+                timeout=self.timeout,
+                redirect=False,
+                retries=False,
+                preload_content=True,
+                decode_content=True,
+            )
+        except urllib3.exceptions.NewConnectionError as exc:
+            # urllib3 subclasses this from ConnectTimeoutError; refused/
+            # unreachable is not a deadline elapsing
+            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+        except self.nonretryable_errors as exc:
+            raise ContreeUrllib3TimeoutError.wrap(exc) from exc
+        except self.retryable_errors as exc:
+            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
         return ResponseData(
             status=response.status,
             headers={k.lower(): v for k, v in response.headers.items()},
@@ -99,24 +119,33 @@ class ContreeClient(base.ContreeSyncClient):
     ) -> Iterator[bytes]:
         decode_content = auto_decompress
         url = self.build_url(spec)
-        response = self._http.request(
-            spec.method,
-            url,
-            body=spec.body,
-            headers=self._request_headers(spec),
-            timeout=urllib3.Timeout(
-                connect=self.timeout,
-                # only SSE may idle (bounded by spec.read_timeout when
-                # a deadline is set); downloads must time out
-                read=spec.read_timeout
-                if spec.accept == "text/event-stream"
-                else self.timeout,
-            ),
-            redirect=False,
-            retries=False,
-            preload_content=False,
-            decode_content=decode_content,
-        )
+        try:
+            response = self._http.request(
+                spec.method,
+                url,
+                body=spec.body,
+                headers=self._request_headers(spec),
+                timeout=urllib3.Timeout(
+                    connect=self.timeout,
+                    # only SSE may idle (bounded by spec.read_timeout when
+                    # a deadline is set); downloads must time out
+                    read=spec.read_timeout
+                    if spec.accept == "text/event-stream"
+                    else self.timeout,
+                ),
+                redirect=False,
+                retries=False,
+                preload_content=False,
+                decode_content=decode_content,
+            )
+        except urllib3.exceptions.NewConnectionError as exc:
+            # urllib3 subclasses this from ConnectTimeoutError; refused/
+            # unreachable is not a deadline elapsing
+            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+        except self.nonretryable_errors as exc:
+            raise ContreeUrllib3TimeoutError.wrap(exc) from exc
+        except self.retryable_errors as exc:
+            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
         try:
             self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status)
             if not 200 <= response.status < 300:
@@ -128,6 +157,14 @@ class ContreeClient(base.ContreeSyncClient):
                     )
                 )
             yield from response.stream(CHUNK_SIZE, decode_content=decode_content)
+        except urllib3.exceptions.NewConnectionError as exc:
+            # urllib3 subclasses this from ConnectTimeoutError; refused/
+            # unreachable is not a deadline elapsing
+            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+        except self.nonretryable_errors as exc:
+            raise ContreeUrllib3TimeoutError.wrap(exc) from exc
+        except self.retryable_errors as exc:
+            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
         finally:
             # close before releasing: an aborted stream must not put a
             # half-read connection back into the pool
