@@ -17,7 +17,7 @@ export declare class ContreeClient extends GeneratedClient {
   mocks: Map<string, Outcome[]>;
   calls: Call[];
   constructedWith: {
-    token: string;
+    token: string | null;
     baseUrl: string;
     project: string | null;
     timeout: number | null;
@@ -25,7 +25,7 @@ export declare class ContreeClient extends GeneratedClient {
     identity: string | null;
   };
   constructor(
-    token?: string,
+    token?: string | null,
     options?: ConstructorParameters<typeof GeneratedClient>[1],
   );
   mock(
