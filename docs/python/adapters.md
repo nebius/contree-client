@@ -441,6 +441,19 @@ client = ContreeAsyncClient(
 
 ::::
 
+## Transport errors
+
+Every adapter's connection and timeout errors (see [Error
+handling](api.md#transport-errors)) are also an instance of that
+backend's own native exception type, so code already written against
+a specific backend keeps working unchanged.
+
+One gotcha: requests classifies a stalled *read* on an already-open
+stream as its own `ConnectionError`, not `Timeout` - that is requests'
+own choice, not a contree-client one - so a stalled `stream()`
+download on this backend raises `ContreeConnectionError`, not
+`ContreeTimeoutError`.
+
 ## User-Agent
 
 Every request carries `contree-client/<version> <transport>/<version>

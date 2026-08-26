@@ -633,6 +633,51 @@ except ContreeAPIError as error:
 `410 → GoneError`, `422 → UnprocessableEntityError`,
 `425 → TooEarlyError`, `5xx → ServerError`.
 
+### Transport errors
+
+Every contree-client exception is a {class}`~contree_client.ContreeError`:
+
+```
+ContreeError
+└── ContreeTransportError
+    ├── ContreeConnectionError   # refused, unreachable, DNS failure
+    ├── ContreeTimeoutError      # connect/read/overall deadline elapsed
+    ├── ContreeStreamError       # the body arrived but was unreadable
+    │   ├── DecompressionError   # corrupt/truncated compressed body
+    │   └── SSEStreamError       # in-band SSE error frame
+    └── ContreeHTTPError         # a response with a status line arrived
+        └── ContreeAPIError      # the status/subclasses documented above
+```
+
+Connection and timeout errors are also an instance of the backend's
+own exception type - catching the transport library's exception
+directly keeps working unchanged, so this is an additive, non-breaking
+way to catch every backend uniformly:
+
+<!--
+name: test_transport_error_handling;
+fixtures: client
+```python
+from contree_client.requests import ContreeRequestsConnectionError
+
+client.mock("whoami", error=ContreeRequestsConnectionError("connection refused"))
+```
+-->
+```python
+import requests
+
+from contree_client import ContreeConnectionError
+
+try:
+    client.whoami()
+except ContreeConnectionError as error:
+    # this backend's own requests.ConnectionError still matches too
+    assert isinstance(error, requests.ConnectionError)
+```
+
+See [Transport adapters](adapters.md#transport-errors) for a caveat on
+one backend.
+
 ## Models
 
 Models are plain dataclasses generated from the spec. `from_dict`

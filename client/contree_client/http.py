@@ -25,6 +25,7 @@ from collections.abc import Callable, Iterator
 from urllib.parse import urlsplit
 
 from . import base
+from .exceptions import ContreeConnectionError, ContreeTimeoutError
 from .runtime import (
     CHUNK_SIZE,
     RequestSpec,
@@ -37,6 +38,15 @@ from .runtime import (
 )
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
+
+
+class ContreeHttpConnectionError(ContreeConnectionError, OSError):
+    """A `ContreeConnectionError` that is also an `OSError`."""
+
+
+class ContreeHttpTimeoutError(ContreeTimeoutError, TimeoutError):
+    """A `ContreeTimeoutError` that is also a stdlib `TimeoutError`."""
+
 
 # the reused keepalive connection may have been closed by the server
 # while it sat in the pool; these surface exactly that and warrant one
@@ -271,11 +281,19 @@ class ContreeClient(base.ContreeSyncClient):
                     self.log.debug("stale pooled connection, resending: %s", exc)
                     rewind_body(spec, start)
                     continue
+                if isinstance(exc, self.nonretryable_errors):
+                    raise ContreeHttpTimeoutError.wrap(exc) from exc
+                if isinstance(exc, self.retryable_errors):
+                    raise ContreeHttpConnectionError.wrap(exc) from exc
                 raise
         try:
             data = read_response(response)
-        except BaseException:
+        except BaseException as exc:
             self._pool.discard(connection)
+            if isinstance(exc, self.nonretryable_errors):
+                raise ContreeHttpTimeoutError.wrap(exc) from exc
+            if isinstance(exc, self.retryable_errors):
+                raise ContreeHttpConnectionError.wrap(exc) from exc
             raise
         # the body is fully drained: the connection is reusable unless
         # the server asked to close it (`Connection: close` sets
@@ -295,8 +313,12 @@ class ContreeClient(base.ContreeSyncClient):
         connection = self._connect()
         try:
             response = self._send_on(connection, spec)
-        except BaseException:
+        except BaseException as exc:
             connection.close()
+            if isinstance(exc, self.nonretryable_errors):
+                raise ContreeHttpTimeoutError.wrap(exc) from exc
+            if isinstance(exc, self.retryable_errors):
+                raise ContreeHttpConnectionError.wrap(exc) from exc
             raise
         try:
             self.log.debug(
@@ -326,6 +348,12 @@ class ContreeClient(base.ContreeSyncClient):
                 chunk = decoder.decompress(raw)
                 if chunk:
                     yield chunk
+        except BaseException as exc:
+            if isinstance(exc, self.nonretryable_errors):
+                raise ContreeHttpTimeoutError.wrap(exc) from exc
+            if isinstance(exc, self.retryable_errors):
+                raise ContreeHttpConnectionError.wrap(exc) from exc
+            raise
         finally:
             connection.close()
 
