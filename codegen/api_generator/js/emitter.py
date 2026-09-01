@@ -1869,9 +1869,13 @@ export {
   RETRY_DELAYS,
   RetryPolicy,
   SSEParser,
+  base64ToBytes,
+  bytesToBase64,
+  bytesToText,
   parseDatetime,
   parseRetryAfter,
   sha256,
+  textToBytes,
 } from "./runtime.js";
 export { ContreeClient } from "./client.js";
 export * as operations from "./operations.js";
@@ -1889,9 +1893,13 @@ export {
   RETRY_DELAYS,
   RetryPolicy,
   SSEParser,
+  base64ToBytes,
+  bytesToBase64,
+  bytesToText,
   parseDatetime,
   parseRetryAfter,
   sha256,
+  textToBytes,
 } from "./runtime.js";
 export type { RequestSpec, ResponseData, RequestBody } from "./runtime.js";
 export { ContreeClient, ContreeClientOptions } from "./client.js";

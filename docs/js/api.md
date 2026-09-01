@@ -25,6 +25,7 @@ trailing options object.
 
 ## The client
 
+<!-- name: api_client; fixtures: token, customFetch -->
 ```js
 import { ContreeClient, RetryPolicy } from "contree-client";
 
