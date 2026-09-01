@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import ssl
 from collections.abc import Iterator
+from functools import lru_cache
 from typing import Any
 
 import requests
 import requests.adapters
 
 from . import base
-from .exceptions import ContreeConnectionError, ContreeTimeoutError
+from .exceptions import (
+    ContreeConnectionError,
+    ContreeHTTPError,
+    ContreeProtocolError,
+    ContreeSSLError,
+    ContreeTimeoutError,
+    ContreeTransportError,
+    DecompressionError,
+)
 from .runtime import (
     CHUNK_SIZE,
     RequestSpec,
@@ -35,6 +44,7 @@ class ContreeRequestsConnectionError(ContreeConnectionError, requests.Connection
                 wrapped.request = original.request
         except Exception:
             return original
+        wrapped.__cause__ = original
         return wrapped
 
 
@@ -50,7 +60,142 @@ class ContreeRequestsTimeoutError(ContreeTimeoutError, requests.Timeout):
                 wrapped.request = original.request
         except Exception:
             return original
+        wrapped.__cause__ = original
         return wrapped
+
+
+class ContreeRequestsSSLError(
+    ContreeSSLError,
+    ContreeRequestsConnectionError,
+    requests.exceptions.SSLError,
+):
+    """A `ContreeSSLError` that is also a `requests.exceptions.SSLError`."""
+
+
+class ContreeRequestsProtocolError(
+    ContreeProtocolError, requests.exceptions.ChunkedEncodingError
+):
+    """A protocol error that remains a requests exception."""
+
+    def __str__(self) -> str:
+        original = self.original
+        if (
+            isinstance(original, requests.exceptions.ChunkedEncodingError)
+            and len(original.args) == 1
+            and isinstance(original.args[0], BaseException)
+        ):
+            nested = original.args[0]
+            if len(nested.args) > 1 and isinstance(nested.args[1], BaseException):
+                summary = str(nested.args[0]).strip()
+                detail = str(nested.args[1]).strip()
+                if summary and detail:
+                    return f"{summary}: {detail}"
+        return super().__str__()
+
+    @classmethod
+    def wrap(cls, original: BaseException) -> BaseException:
+        try:
+            wrapped = cls(*original.args)
+            if isinstance(original, requests.RequestException):
+                wrapped.response = original.response
+                wrapped.request = original.request
+        except Exception:
+            return original
+        wrapped.__cause__ = original
+        return wrapped
+
+
+class ContreeRequestsDecompressionError(
+    DecompressionError, requests.exceptions.ContentDecodingError
+):
+    """A decoding error that remains a requests exception."""
+
+    @classmethod
+    def wrap(cls, original: BaseException) -> BaseException:
+        try:
+            wrapped = cls(*original.args)
+            if isinstance(original, requests.RequestException):
+                wrapped.response = original.response
+                wrapped.request = original.request
+        except Exception:
+            return original
+        wrapped.__cause__ = original
+        return wrapped
+
+
+class ContreeRequestsAPIError(ContreeHTTPError, requests.exceptions.HTTPError):
+    """A `ContreeHTTPError` that is also a `requests.exceptions.HTTPError`."""
+
+    @classmethod
+    def wrap(cls, original: BaseException) -> BaseException:
+        if not isinstance(original, requests.exceptions.HTTPError):
+            return original
+        if original.response is None:
+            return original
+        try:
+            wrapped = cls(*original.args)
+            wrapped.response = original.response
+            wrapped.request = original.request
+        except Exception:
+            return original
+        wrapped.status = original.response.status_code
+        wrapped.__cause__ = original
+        return wrapped
+
+
+@lru_cache
+def translate_exc_class(
+    exc_type: type[BaseException],
+) -> type[ContreeTransportError] | None:
+    """Return the Contree hybrid class for a native exception type.
+
+    Return None when unrecognized. The cache resolves each distinct
+    type once, not on every call.
+
+    `ConnectTimeout` and `.SSLError` both subclass
+    `requests.ConnectionError` in requests' own hierarchy. Check them
+    before the generic connection-error bucket.
+    """
+    if issubclass(exc_type, requests.Timeout):
+        return ContreeRequestsTimeoutError
+    if issubclass(exc_type, requests.exceptions.SSLError):
+        return ContreeRequestsSSLError
+    if issubclass(exc_type, requests.exceptions.ContentDecodingError):
+        return ContreeRequestsDecompressionError
+    if issubclass(exc_type, requests.ConnectionError):
+        return ContreeRequestsConnectionError
+    if issubclass(exc_type, requests.exceptions.ChunkedEncodingError):
+        return ContreeRequestsProtocolError
+    if issubclass(exc_type, requests.exceptions.HTTPError):
+        return ContreeRequestsAPIError
+    return None
+
+
+def translate_error(native: BaseException) -> BaseException:
+    """Map a native requests exception to its Contree equivalent.
+    Return native unchanged when unrecognized.
+
+    An `HTTPError` without a `.response` attached never came from the
+    real request path and carries no status. Pass it through unwrapped
+    instead of returning a hollow `ContreeHTTPError`.
+    """
+    cls = translate_exc_class(type(native))
+    if cls is None:
+        return native
+    if cls is ContreeRequestsAPIError:
+        # cls comes from translate_exc_class, only for HTTPError types
+        assert isinstance(native, requests.exceptions.HTTPError)
+        response = native.response
+        if response is None:
+            return native
+        wrapped = ContreeRequestsAPIError.wrap(native)
+        if not isinstance(wrapped, ContreeRequestsAPIError):
+            return native
+        return wrapped
+    wrapped = cls.wrap(native)
+    if wrapped is native:
+        return native
+    return wrapped
 
 
 class SSLContextAdapter(requests.adapters.HTTPAdapter):
@@ -72,7 +217,7 @@ class ContreeClient(base.ContreeSyncClient):
     log = logger.getChild("requests")
     UA_TRANSPORT_LIBRARY = library_version(requests)
     retryable_errors = (requests.ConnectionError,)
-    nonretryable_errors = (requests.Timeout,)
+    nonretryable_errors = (requests.Timeout, ContreeRequestsSSLError)
 
     def __init__(
         self,
@@ -117,10 +262,11 @@ class ContreeClient(base.ContreeSyncClient):
                 timeout=self.timeout,
                 allow_redirects=False,
             )
-        except self.nonretryable_errors as exc:
-            raise ContreeRequestsTimeoutError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeRequestsConnectionError.wrap(exc) from exc
+        except requests.exceptions.RequestException as exc:
+            translated = translate_error(exc)
+            if translated is exc:
+                raise
+            raise translated from exc
         return ResponseData(
             status=response.status_code,
             headers={k.lower(): v for k, v in response.headers.items()},
@@ -146,10 +292,11 @@ class ContreeClient(base.ContreeSyncClient):
                 allow_redirects=False,
                 stream=True,
             )
-        except self.nonretryable_errors as exc:
-            raise ContreeRequestsTimeoutError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeRequestsConnectionError.wrap(exc) from exc
+        except requests.exceptions.RequestException as exc:
+            translated = translate_error(exc)
+            if translated is exc:
+                raise
+            raise translated from exc
         self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status_code)
         if not 200 <= response.status_code < 300:
             with response:
@@ -176,10 +323,11 @@ class ContreeClient(base.ContreeSyncClient):
                     # iter_content always decodes; go one level down to
                     # the underlying urllib3 response for the wire bytes
                     yield from response.raw.stream(CHUNK_SIZE, decode_content=False)
-            except self.nonretryable_errors as exc:
-                raise ContreeRequestsTimeoutError.wrap(exc) from exc
-            except self.retryable_errors as exc:
-                raise ContreeRequestsConnectionError.wrap(exc) from exc
+            except requests.exceptions.RequestException as exc:
+                translated = translate_error(exc)
+                if translated is exc:
+                    raise
+                raise translated from exc
 
     def close(self) -> None:
         if self.__owns_session:

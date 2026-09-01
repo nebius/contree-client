@@ -641,18 +641,28 @@ Every contree-client exception is a {class}`~contree_client.ContreeError`:
 ContreeError
 └── ContreeTransportError
     ├── ContreeConnectionError   # refused, unreachable, DNS failure
+    │   ├── ContreeSSLError      # TLS or certificate failure
+    │   └── ContreeConnectionClosedError
     ├── ContreeTimeoutError      # connect/read/overall deadline elapsed
-    ├── ContreeStreamError       # the body arrived but was unreadable
-    │   ├── DecompressionError   # corrupt/truncated compressed body
-    │   └── SSEStreamError       # in-band SSE error frame
+    ├── ContreeProtocolError     # invalid wire framing or response payload
+    │   └── ContreeStreamError   # compatibility base; deprecated
+    │       ├── DecompressionError
+    │       └── SSEStreamError   # in-band SSE error frame
     └── ContreeHTTPError         # a response with a status line arrived
         └── ContreeAPIError      # the status/subclasses documented above
 ```
 
-Connection and timeout errors are also an instance of the backend's
-own exception type - catching the transport library's exception
-directly keeps working unchanged, so this is an additive, non-breaking
-way to catch every backend uniformly:
+Use `ContreeProtocolError` instead of `ContreeStreamError` in new code.
+The compatibility base keeps existing stream-error handlers working.
+
+Translated errors retain the backend diagnostic text. A bare backend
+timeout uses `Request timed out` instead of an empty message. The
+`original` property exposes the native exception, which is also the
+Python exception cause.
+
+Adapter wrappers also inherit the corresponding native backend base.
+Catching the transport library's exception therefore continues to
+work:
 
 <!--
 name: test_transport_error_handling;
@@ -673,7 +683,13 @@ try:
 except ContreeConnectionError as error:
     # this backend's own requests.ConnectionError still matches too
     assert isinstance(error, requests.ConnectionError)
+    print(error)           # readable native diagnostic
+    print(error.original)  # original requests exception
 ```
+
+TLS and certificate failures are not retried. They normally require a
+configuration or trust-store change rather than another identical
+request.
 
 See [Transport adapters](adapters.md#transport-errors) for a caveat on
 one backend.

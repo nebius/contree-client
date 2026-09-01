@@ -443,10 +443,21 @@ client = ContreeAsyncClient(
 
 ## Transport errors
 
-Every adapter's connection and timeout errors (see [Error
-handling](api.md#transport-errors)) are also an instance of that
-backend's own native exception type, so code already written against
-a specific backend keeps working unchanged.
+Each adapter maps the failure categories exposed by its backend into
+the shared [error hierarchy](api.md#transport-errors). Not every
+backend provides a distinct native type for every category. Adapter
+wrappers also inherit the corresponding native backend base, so
+existing native exception handlers keep working.
+
+The wrapper preserves useful native diagnostic details and exposes the
+native exception through `error.original`. It replaces tuple-only
+diagnostics with descriptive text. Empty backend timeout messages
+become `Request timed out`.
+
+Some specialized wrappers also match the adapter's older
+`Contree*ConnectionError` class for compatibility. When one handler
+catches multiple Contree categories, put TLS, closed-connection, and
+protocol handlers before the general connection handler.
 
 One gotcha: requests classifies a stalled *read* on an already-open
 stream as its own `ConnectionError`, not `Timeout` - that is requests'

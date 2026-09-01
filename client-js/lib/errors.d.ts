@@ -1,11 +1,17 @@
 export declare class ContreeError extends Error {}
 
-export declare class SSEStreamError extends ContreeError {
+export declare class ContreeTransportError extends ContreeError {}
+export declare class ContreeProtocolError extends ContreeTransportError {}
+export declare class ContreeStreamError extends ContreeProtocolError {}
+
+export declare class SSEStreamError extends ContreeStreamError {
   lastEventId: number | null;
   constructor(message: string, options?: { lastEventId?: number | null });
 }
 
-export declare class ContreeAPIError extends ContreeError {
+export declare class ContreeHTTPError extends ContreeTransportError {}
+
+export declare class ContreeAPIError extends ContreeHTTPError {
   status: number;
   error: unknown;
   traceback: string[] | null;

@@ -36,13 +36,6 @@ def generated_package() -> ModuleType:
     installed the built wheel (the incomplete source tree removed).
     This suite never runs the generator - that is codegen/tests.
     """
-    try:
-        importlib.import_module("contree_client.base")
-    except ImportError:
-        pytest.skip(
-            "the generated contree_client package is not available;"
-            " run `make generate` or install the built wheel"
-        )
     return importlib.import_module("contree_client")
 
 

@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import ssl
 from collections.abc import Iterator
+from functools import lru_cache
 
 import urllib3
 
 from . import base
-from .exceptions import ContreeConnectionError, ContreeTimeoutError
+from .exceptions import (
+    ContreeConnectionClosedError,
+    ContreeConnectionError,
+    ContreeProtocolError,
+    ContreeSSLError,
+    ContreeTimeoutError,
+    ContreeTransportError,
+    DecompressionError,
+)
 from .runtime import (
     CHUNK_SIZE,
     RequestSpec,
@@ -31,6 +40,133 @@ class ContreeUrllib3TimeoutError(ContreeTimeoutError, urllib3.exceptions.Timeout
     """A `ContreeTimeoutError` that is also a `urllib3.exceptions.TimeoutError`."""
 
 
+class ContreeUrllib3NewConnectionError(
+    ContreeUrllib3ConnectionError, urllib3.exceptions.NewConnectionError
+):
+    """A `ContreeUrllib3ConnectionError` that is also a
+    `urllib3.exceptions.NewConnectionError`.
+
+    This is a subclass of `ContreeUrllib3ConnectionError`, not a
+    sibling. Existing `except ContreeUrllib3ConnectionError` call
+    sites still match it.
+    """
+
+    @classmethod
+    def wrap(cls, original: BaseException) -> BaseException:
+        """Build from the native instance's own attributes, not `.args`.
+
+        `NewConnectionError.__init__(conn, message)` needs two
+        positional arguments. `.args` collapses them into one combined
+        string.
+        """
+        if not isinstance(original, urllib3.exceptions.NewConnectionError):
+            return original
+        try:
+            wrapped = cls(original.conn, original._message)
+        except Exception:
+            return original
+        wrapped.__cause__ = original
+        return wrapped
+
+
+class ContreeUrllib3SSLError(
+    ContreeSSLError, ContreeUrllib3ConnectionError, urllib3.exceptions.SSLError
+):
+    """A `ContreeSSLError` that is also a `urllib3.exceptions.SSLError`."""
+
+
+class ContreeUrllib3ProtocolError(
+    ContreeProtocolError,
+    ContreeUrllib3ConnectionError,
+    urllib3.exceptions.ProtocolError,
+):
+    """A protocol error catchable through both existing hierarchies."""
+
+    def __str__(self) -> str:
+        original = self.original
+        if (
+            isinstance(original, urllib3.exceptions.ProtocolError)
+            and len(original.args) > 1
+            and isinstance(original.args[1], BaseException)
+        ):
+            summary = str(original.args[0]).strip()
+            detail = str(original.args[1]).strip()
+            if summary and detail:
+                return f"{summary} {detail}"
+        return super().__str__()
+
+
+class ContreeUrllib3ConnectionClosedError(
+    ContreeConnectionClosedError, ContreeUrllib3ProtocolError
+):
+    """A reset connection catchable through both existing hierarchies."""
+
+    def __str__(self) -> str:
+        return ContreeUrllib3ProtocolError.__str__(self)
+
+
+class ContreeUrllib3DecompressionError(
+    DecompressionError,
+    ContreeUrllib3ConnectionError,
+    urllib3.exceptions.DecodeError,
+):
+    """A decoding error catchable through both existing hierarchies."""
+
+
+@lru_cache
+def translate_exc_class(
+    exc_type: type[BaseException],
+) -> type[ContreeTransportError] | None:
+    """Return the Contree hybrid class for a native exception type.
+
+    Return None when the exception is not an urllib3 HTTP error. The
+    cache resolves each distinct type once, not on every call.
+
+    `NewConnectionError` subclasses `ConnectTimeoutError` in urllib3's
+    own hierarchy. Match it first.
+
+    This function does not cover `ProtocolError` with a
+    connection-reset cause: that depends on `__cause__`, not the type.
+    `translate_error()` handles it before it calls this cache.
+    """
+    if issubclass(exc_type, urllib3.exceptions.NewConnectionError):
+        return ContreeUrllib3NewConnectionError
+    if issubclass(exc_type, urllib3.exceptions.TimeoutError):
+        return ContreeUrllib3TimeoutError
+    if issubclass(exc_type, urllib3.exceptions.SSLError):
+        return ContreeUrllib3SSLError
+    if issubclass(exc_type, urllib3.exceptions.DecodeError):
+        return ContreeUrllib3DecompressionError
+    if issubclass(exc_type, urllib3.exceptions.ProtocolError):
+        return ContreeUrllib3ProtocolError
+    if issubclass(exc_type, urllib3.exceptions.HTTPError):
+        return ContreeUrllib3ConnectionError
+    return None
+
+
+def translate_error(native: BaseException) -> BaseException:
+    """Map a native urllib3 exception to its Contree equivalent. Return
+    native unchanged when unrecognized."""
+    nested_arg = native.args[1] if len(native.args) > 1 else None
+    caused_by_reset = (
+        isinstance(native.__cause__, ConnectionResetError)
+        or isinstance(native.__context__, ConnectionResetError)
+        or isinstance(nested_arg, ConnectionResetError)
+    )
+    if isinstance(native, urllib3.exceptions.ProtocolError) and caused_by_reset:
+        wrapped = ContreeUrllib3ConnectionClosedError.wrap(native)
+        if wrapped is native:
+            return native
+        return wrapped
+    cls = translate_exc_class(type(native))
+    if cls is None:
+        return native
+    wrapped = cls.wrap(native)
+    if wrapped is native:
+        return native
+    return wrapped
+
+
 class ContreeClient(base.ContreeSyncClient):
     """Synchronous Contree API client on top of `urllib3.PoolManager`.
 
@@ -43,7 +179,10 @@ class ContreeClient(base.ContreeSyncClient):
     log = logger.getChild("urllib3")
     UA_TRANSPORT_LIBRARY = library_version(urllib3)
     retryable_errors = (urllib3.exceptions.HTTPError,)
-    nonretryable_errors = (urllib3.exceptions.TimeoutError,)
+    nonretryable_errors = (
+        urllib3.exceptions.TimeoutError,
+        ContreeUrllib3SSLError,
+    )
 
     def __init__(
         self,
@@ -98,14 +237,11 @@ class ContreeClient(base.ContreeSyncClient):
                 preload_content=True,
                 decode_content=True,
             )
-        except urllib3.exceptions.NewConnectionError as exc:
-            # urllib3 subclasses this from ConnectTimeoutError; refused/
-            # unreachable is not a deadline elapsing
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
-        except self.nonretryable_errors as exc:
-            raise ContreeUrllib3TimeoutError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+        except urllib3.exceptions.HTTPError as exc:
+            translated = translate_error(exc)
+            if translated is exc:
+                raise
+            raise translated from exc
         return ResponseData(
             status=response.status,
             headers={k.lower(): v for k, v in response.headers.items()},
@@ -138,14 +274,11 @@ class ContreeClient(base.ContreeSyncClient):
                 preload_content=False,
                 decode_content=decode_content,
             )
-        except urllib3.exceptions.NewConnectionError as exc:
-            # urllib3 subclasses this from ConnectTimeoutError; refused/
-            # unreachable is not a deadline elapsing
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
-        except self.nonretryable_errors as exc:
-            raise ContreeUrllib3TimeoutError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+        except urllib3.exceptions.HTTPError as exc:
+            translated = translate_error(exc)
+            if translated is exc:
+                raise
+            raise translated from exc
         try:
             self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status)
             if not 200 <= response.status < 300:
@@ -157,14 +290,11 @@ class ContreeClient(base.ContreeSyncClient):
                     )
                 )
             yield from response.stream(CHUNK_SIZE, decode_content=decode_content)
-        except urllib3.exceptions.NewConnectionError as exc:
-            # urllib3 subclasses this from ConnectTimeoutError; refused/
-            # unreachable is not a deadline elapsing
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
-        except self.nonretryable_errors as exc:
-            raise ContreeUrllib3TimeoutError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+        except urllib3.exceptions.HTTPError as exc:
+            translated = translate_error(exc)
+            if translated is exc:
+                raise
+            raise translated from exc
         finally:
             # close before releasing: an aborted stream must not put a
             # half-read connection back into the pool

@@ -8,34 +8,88 @@ from typing import Any
 class ContreeError(Exception):
     """Base class for all contree-client errors."""
 
+    @property
+    def original(self) -> BaseException | None:
+        """The native exception this was translated from, if any.
+
+        Mirrors `__cause__`, which also drives Python's chained
+        traceback rendering.
+        """
+        return self.__cause__
+
 
 class ContreeTransportError(ContreeError):
     """Wire-level error base; each backend's subclass also inherits its
     matching native exception type. Construct via :meth:`wrap`."""
 
+    def __str__(self) -> str:
+        """Preserve the native diagnostic text on translated errors."""
+        original = self.original
+        return str(original) if original is not None else super().__str__()
+
     @classmethod
     def wrap(cls, original: BaseException) -> BaseException:
         """Build an instance from *original*; return it unwrapped on failure."""
         try:
-            return cls(*original.args)
+            wrapped = cls(*original.args)
         except Exception:
             return original
+        wrapped.__cause__ = original
+        return wrapped
 
 
 class ContreeConnectionError(ContreeTransportError):
     """Failed to establish or maintain the connection."""
 
+    def __str__(self) -> str:
+        return super().__str__() or "Connection failed"
+
+
+class ContreeSSLError(ContreeConnectionError):
+    """The TLS handshake or certificate verification failed."""
+
+    def __str__(self) -> str:
+        return ContreeTransportError.__str__(self) or "TLS connection failed"
+
+
+class ContreeConnectionClosedError(ContreeConnectionError):
+    """The peer closed the connection."""
+
+    def __str__(self) -> str:
+        return ContreeTransportError.__str__(self) or "Peer closed the connection"
+
 
 class ContreeTimeoutError(ContreeTransportError):
     """A connect, read or overall deadline elapsed."""
 
+    def __str__(self) -> str:
+        """Supply a message when a backend raises a bare timeout."""
+        return super().__str__() or "Request timed out"
 
-class ContreeStreamError(ContreeTransportError):
-    """The response body arrived but could not be consumed correctly."""
+
+class ContreeProtocolError(ContreeTransportError):
+    """The request or response violates the wire protocol.
+
+    Examples include malformed framing, broken chunked encoding, and
+    a corrupt response payload.
+    """
+
+    def __str__(self) -> str:
+        return super().__str__() or "Protocol error"
+
+
+class ContreeStreamError(ContreeProtocolError):
+    """Compatibility base for response-body and SSE stream errors.
+
+    Deprecated: catch :class:`ContreeProtocolError` for new code.
+    """
 
 
 class DecompressionError(ContreeStreamError):
     """The compressed response body ended prematurely or is corrupt."""
+
+    def __str__(self) -> str:
+        return ContreeTransportError.__str__(self) or "Response decompression failed"
 
 
 class SSEStreamError(ContreeStreamError):
@@ -58,6 +112,13 @@ class SSEStreamError(ContreeStreamError):
 
 class ContreeHTTPError(ContreeTransportError):
     """A full HTTP response with a status line was received."""
+
+    status: int
+
+    @classmethod
+    def wrap(cls, original: BaseException) -> BaseException:
+        """Require backend subclasses to reconstruct status metadata."""
+        return original
 
 
 class ContreeAPIError(ContreeHTTPError):

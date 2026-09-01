@@ -427,14 +427,18 @@ def render_models_js(ir: SpecIR) -> str:
         HEADER,
         'import { base64ToBytes, bytesToBase64, bytesToText, parseDatetime, textToBytes } from "./runtime.js";',
         f"export const OPERATION_EVENT_TYPES = Object.freeze([{event_types}]);",
-        "/** Operation lifecycle state. */\n"
-        f"export const OperationStatus = Object.freeze({{\n{statuses},\n}});",
+        (
+            "/** Operation lifecycle state. */\n"
+            f"export const OperationStatus = Object.freeze({{\n{statuses},\n}});"
+        ),
         f"export const TERMINAL_STATUSES = new Set([{terminal}]);",
         f"export const ACTIVE_STATUSES = new Set([{active}]);",
-        "/** True for statuses that will never change again. */\n"
-        "export function isTerminalStatus(status) {\n"
-        "  return TERMINAL_STATUSES.has(status);\n"
-        "}",
+        (
+            "/** True for statuses that will never change again. */\n"
+            "export function isTerminalStatus(status) {\n"
+            "  return TERMINAL_STATUSES.has(status);\n"
+            "}"
+        ),
     ]
     parts.extend(render_class_js(cls) for cls in ir.classes)
     parts.append(MODELS_TAIL_JS.format(parsers=parsers).strip())
@@ -1826,11 +1830,13 @@ def render_reference(ir: SpecIR) -> str:
     parts = [
         f"{heading}\n{'=' * len(heading)}",
         f".. {GENERATED_NOTE}",
-        "Generated from the OpenAPI specification"
-        f" (SHA-256 ``{ir.spec_sha256[:12]}…``). Methods are camelCase;"
-        " model fields and option keys keep their snake_case wire"
-        " spelling. Required arguments are positional, optional ones"
-        " ride in a trailing ``options`` object.",
+        (
+            "Generated from the OpenAPI specification"
+            f" (SHA-256 ``{ir.spec_sha256[:12]}...``). Methods are camelCase;"
+            " model fields and option keys keep their snake_case wire"
+            " spelling. Required arguments are positional, optional ones"
+            " ride in a trailing ``options`` object."
+        ),
         "Client methods\n--------------",
     ]
     parts.extend(render_op_reference(op) for op in ir.operations)

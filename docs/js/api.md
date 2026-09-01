@@ -111,21 +111,31 @@ The hierarchy is the Python one with camelCase fields:
 
 ```text
 ContreeError
-├── SSEStreamError          (lastEventId)
-└── ContreeAPIError         (status, error, traceback, retryAfter)
-    ├── BadRequestError     400
-    ├── UnauthorizedError   401
-    ├── ForbiddenError      403
-    ├── NotFoundError       404
-    ├── ConflictError       409
-    ├── GoneError           410
-    ├── UnprocessableEntityError 422
-    ├── TooEarlyError       425
-    └── ServerError         5xx
+└── ContreeTransportError
+    ├── ContreeProtocolError
+    │   └── ContreeStreamError        (compatibility base)
+    │       └── SSEStreamError        (lastEventId)
+    └── ContreeHTTPError
+        └── ContreeAPIError           (status, error, traceback, retryAfter)
+            ├── BadRequestError       400
+            ├── UnauthorizedError     401
+            ├── ForbiddenError        403
+            ├── NotFoundError         404
+            ├── ConflictError         409
+            ├── GoneError             410
+            ├── UnprocessableEntityError 422
+            ├── TooEarlyError         425
+            └── ServerError           5xx
 ```
 
-Timeouts (connect, download idle, SSE deadline) reject with a platform
-`DOMException` whose `name` is `"TimeoutError"`.
+Use `ContreeProtocolError` instead of `ContreeStreamError` in new code.
+
+The JavaScript classes use the same top-level transport, protocol, and
+HTTP grouping. Python provides additional backend-specific connection,
+timeout, TLS, closed-connection, and decompression categories. The Fetch
+API does not expose portable network subtypes, so connection failures
+reject with `TypeError`. Timeouts reject with a platform `DOMException`
+whose `name` is `"TimeoutError"`.
 
 ## Platform notes
 

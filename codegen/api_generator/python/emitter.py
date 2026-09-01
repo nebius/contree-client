@@ -1300,9 +1300,11 @@ def emit_sse_method(op: OpDef, async_mode: bool) -> list[str]:
     )
     loop = "async for" if async_mode else "for"
     lines = [
-        f"{prefix}def {op.name}("
-        f"{method_signature(op)}, deadline: float | None = None"
-        f") -> {iterator}:",
+        (
+            f"{prefix}def {op.name}("
+            f"{method_signature(op)}, deadline: float | None = None"
+            f") -> {iterator}:"
+        ),
     ]
     lines.extend(op_docstring(op))
     lines.append(f"{INDENT}spec = operations.build_{op.name}({op.passthrough})")
@@ -1416,8 +1418,10 @@ def emit_iter_method(op: OpDef, async_mode: bool) -> list[str]:
             f"{INDENT}offset = 0",
             f"{INDENT}while True:",
             f"{INDENT * 2}size = (",
-            f"{INDENT * 3}page_size"
-            f" if limit is None else min(page_size, limit - fetched)",
+            (
+                f"{INDENT * 3}page_size"
+                f" if limit is None else min(page_size, limit - fetched)"
+            ),
             f"{INDENT * 2})",
             f"{INDENT * 2}if size <= 0:",
             f"{INDENT * 3}return",
@@ -1508,12 +1512,16 @@ EXCEPTION_NAMES = [
     "BadRequestError",
     "ConflictError",
     "ContreeAPIError",
+    "ContreeConnectionClosedError",
     "ContreeConnectionError",
     "ContreeError",
     "ContreeHTTPError",
+    "ContreeProtocolError",
+    "ContreeSSLError",
     "ContreeStreamError",
     "ContreeTimeoutError",
     "ContreeTransportError",
+    "DecompressionError",
     "ForbiddenError",
     "GoneError",
     "NotFoundError",

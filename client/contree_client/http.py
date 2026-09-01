@@ -22,10 +22,19 @@ import socket
 import ssl
 import threading
 from collections.abc import Callable, Iterator
+from functools import lru_cache
 from urllib.parse import urlsplit
 
 from . import base
-from .exceptions import ContreeConnectionError, ContreeTimeoutError
+from .exceptions import (
+    ContreeConnectionClosedError,
+    ContreeConnectionError,
+    ContreeProtocolError,
+    ContreeSSLError,
+    ContreeTimeoutError,
+    ContreeTransportError,
+    DecompressionError,
+)
 from .runtime import (
     CHUNK_SIZE,
     RequestSpec,
@@ -46,6 +55,130 @@ class ContreeHttpConnectionError(ContreeConnectionError, OSError):
 
 class ContreeHttpTimeoutError(ContreeTimeoutError, TimeoutError):
     """A `ContreeTimeoutError` that is also a stdlib `TimeoutError`."""
+
+
+class ContreeHttpConnectionClosedError(
+    ContreeConnectionClosedError,
+    ContreeHttpConnectionError,
+    http.client.RemoteDisconnected,
+):
+    """A `ContreeConnectionClosedError` that is also a
+    `http.client.RemoteDisconnected`."""
+
+
+class ContreeHttpSSLError(ContreeSSLError, ContreeHttpConnectionError, ssl.SSLError):
+    """A `ContreeSSLError` that is also a stdlib `ssl.SSLError`."""
+
+
+class ContreeHttpProtocolError(
+    ContreeProtocolError, ContreeHttpConnectionError, http.client.HTTPException
+):
+    """A protocol error catchable through both existing hierarchies."""
+
+
+class ContreeHttpInvalidURLError(ContreeHttpProtocolError, http.client.InvalidURL):
+    """A translated `http.client.InvalidURL`."""
+
+
+class ContreeHttpBadStatusLineError(
+    ContreeHttpProtocolError, http.client.BadStatusLine
+):
+    """A translated `http.client.BadStatusLine`."""
+
+    line: str
+
+    @classmethod
+    def wrap(cls, original: BaseException) -> BaseException:
+        if not isinstance(original, http.client.BadStatusLine):
+            return original
+        try:
+            wrapped = cls(*original.args)
+        except Exception:
+            return original
+        wrapped.line = getattr(original, "line", original.args[0])
+        wrapped.__cause__ = original
+        return wrapped
+
+
+class ContreeHttpIncompleteReadError(
+    ContreeHttpProtocolError, http.client.IncompleteRead
+):
+    """A translated `http.client.IncompleteRead`."""
+
+    @classmethod
+    def wrap(cls, original: BaseException) -> BaseException:
+        if not isinstance(original, http.client.IncompleteRead):
+            return original
+        try:
+            wrapped = cls(*original.args)
+        except Exception:
+            return original
+        wrapped.partial = original.partial
+        wrapped.expected = original.expected
+        wrapped.__cause__ = original
+        return wrapped
+
+
+class ContreeHttpDecompressionError(
+    DecompressionError, ContreeHttpConnectionError, gzip.BadGzipFile
+):
+    """A translated malformed gzip response."""
+
+
+@lru_cache
+def translate_exc_class(
+    exc_type: type[BaseException],
+) -> type[ContreeTransportError] | None:
+    """Return the Contree hybrid class for a native exception type.
+
+    Return None when unrecognized. The cache resolves each distinct
+    type once, not on every call.
+
+    Order matters: some native types overlap. `RemoteDisconnected` is
+    also a `ConnectionResetError`, hence an `OSError`. `ssl.SSLError` is
+    also an `OSError`. Match both before the generic OSError bucket.
+    """
+    if issubclass(exc_type, http.client.RemoteDisconnected):
+        return ContreeHttpConnectionClosedError
+    if issubclass(exc_type, ssl.SSLError):
+        return ContreeHttpSSLError
+    if issubclass(exc_type, TimeoutError):
+        return ContreeHttpTimeoutError
+    if issubclass(exc_type, gzip.BadGzipFile):
+        return ContreeHttpDecompressionError
+    if issubclass(exc_type, http.client.IncompleteRead):
+        return ContreeHttpIncompleteReadError
+    if issubclass(exc_type, http.client.BadStatusLine):
+        return ContreeHttpBadStatusLineError
+    if issubclass(exc_type, http.client.InvalidURL):
+        return ContreeHttpInvalidURLError
+    if issubclass(
+        exc_type,
+        (
+            http.client.LineTooLong,
+            http.client.UnknownProtocol,
+            http.client.UnknownTransferEncoding,
+        ),
+    ):
+        return ContreeHttpProtocolError
+    if issubclass(
+        exc_type,
+        (socket.gaierror, ConnectionError, http.client.HTTPException, OSError),
+    ):
+        return ContreeHttpConnectionError
+    return None
+
+
+def translate_error(native: BaseException) -> BaseException:
+    """Map a native http.client/socket/ssl exception to its Contree
+    equivalent. Return native unchanged when unrecognized."""
+    cls = translate_exc_class(type(native))
+    if cls is None:
+        return native
+    wrapped = cls.wrap(native)
+    if wrapped is native:
+        return native
+    return wrapped
 
 
 # the reused keepalive connection may have been closed by the server
@@ -187,7 +320,11 @@ class ContreeClient(base.ContreeSyncClient):
     )
     # a timeout is user-configured and a malformed URL is permanent;
     # retrying either would just walk the backoff ladder for nothing
-    nonretryable_errors = (TimeoutError, http.client.InvalidURL)
+    nonretryable_errors = (
+        TimeoutError,
+        http.client.InvalidURL,
+        ContreeHttpSSLError,
+    )
 
     def __init__(
         self,
@@ -281,20 +418,18 @@ class ContreeClient(base.ContreeSyncClient):
                     self.log.debug("stale pooled connection, resending: %s", exc)
                     rewind_body(spec, start)
                     continue
-                if isinstance(exc, self.nonretryable_errors):
-                    raise ContreeHttpTimeoutError.wrap(exc) from exc
-                if isinstance(exc, self.retryable_errors):
-                    raise ContreeHttpConnectionError.wrap(exc) from exc
-                raise
+                translated = translate_error(exc)
+                if translated is exc:
+                    raise
+                raise translated from exc
         try:
             data = read_response(response)
         except BaseException as exc:
             self._pool.discard(connection)
-            if isinstance(exc, self.nonretryable_errors):
-                raise ContreeHttpTimeoutError.wrap(exc) from exc
-            if isinstance(exc, self.retryable_errors):
-                raise ContreeHttpConnectionError.wrap(exc) from exc
-            raise
+            translated = translate_error(exc)
+            if translated is exc:
+                raise
+            raise translated from exc
         # the body is fully drained: the connection is reusable unless
         # the server asked to close it (`Connection: close` sets
         # will_close) or the underlying socket is already gone
@@ -315,11 +450,10 @@ class ContreeClient(base.ContreeSyncClient):
             response = self._send_on(connection, spec)
         except BaseException as exc:
             connection.close()
-            if isinstance(exc, self.nonretryable_errors):
-                raise ContreeHttpTimeoutError.wrap(exc) from exc
-            if isinstance(exc, self.retryable_errors):
-                raise ContreeHttpConnectionError.wrap(exc) from exc
-            raise
+            translated = translate_error(exc)
+            if translated is exc:
+                raise
+            raise translated from exc
         try:
             self.log.debug(
                 "%s %s -> %d (stream)",
@@ -349,11 +483,10 @@ class ContreeClient(base.ContreeSyncClient):
                 if chunk:
                     yield chunk
         except BaseException as exc:
-            if isinstance(exc, self.nonretryable_errors):
-                raise ContreeHttpTimeoutError.wrap(exc) from exc
-            if isinstance(exc, self.retryable_errors):
-                raise ContreeHttpConnectionError.wrap(exc) from exc
-            raise
+            translated = translate_error(exc)
+            if translated is exc:
+                raise
+            raise translated from exc
         finally:
             connection.close()
 

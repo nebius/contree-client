@@ -8,7 +8,21 @@ import {
   RetryPolicy,
   SSEParser,
 } from "../lib/runtime.js";
-import { SSEStreamError } from "../lib/errors.js";
+import {
+  ContreeError,
+  ContreeProtocolError,
+  ContreeStreamError,
+  ContreeTransportError,
+  SSEStreamError,
+} from "../lib/errors.js";
+
+test("stream errors retain the compatibility hierarchy", () => {
+  const error = new SSEStreamError("stream failed");
+  assert.ok(error instanceof ContreeStreamError);
+  assert.ok(error instanceof ContreeProtocolError);
+  assert.ok(error instanceof ContreeTransportError);
+  assert.ok(error instanceof ContreeError);
+});
 
 test("encodeQuery preserves repeated values", () => {
   assert.equal(

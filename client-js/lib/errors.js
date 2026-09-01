@@ -7,14 +7,20 @@ export class ContreeError extends Error {
   }
 }
 
-export class SSEStreamError extends ContreeError {
+export class ContreeTransportError extends ContreeError {}
+export class ContreeProtocolError extends ContreeTransportError {}
+export class ContreeStreamError extends ContreeProtocolError {}
+
+export class SSEStreamError extends ContreeStreamError {
   constructor(message, { lastEventId = null } = {}) {
     super(message);
     this.lastEventId = lastEventId;
   }
 }
 
-export class ContreeAPIError extends ContreeError {
+export class ContreeHTTPError extends ContreeTransportError {}
+
+export class ContreeAPIError extends ContreeHTTPError {
   constructor(status, error, { traceback = null, retryAfter = null } = {}) {
     super(`HTTP ${status}: ${error}`);
     this.status = status;
