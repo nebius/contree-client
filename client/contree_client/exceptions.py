@@ -59,8 +59,12 @@ class ContreeConnectionClosedError(ContreeConnectionError):
         return ContreeTransportError.__str__(self) or "Peer closed the connection"
 
 
-class ContreeTimeoutError(ContreeTransportError):
-    """A connect, read or overall deadline elapsed."""
+class ContreeTimeoutError(ContreeTransportError, TimeoutError):
+    """Backend-neutral transport timeout.
+
+    Catch :class:`TimeoutError` to handle this error and client operation
+    deadlines with one handler.
+    """
 
     def __str__(self) -> str:
         """Supply a message when a backend raises a bare timeout."""

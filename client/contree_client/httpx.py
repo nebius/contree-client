@@ -51,6 +51,15 @@ class ContreeHttpxConnectionError(ContreeConnectionError, httpx.TransportError):
 class ContreeHttpxTimeoutError(ContreeTimeoutError, httpx.TimeoutException):
     """A `ContreeTimeoutError` that is also an `httpx.TimeoutException`."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        request: httpx.Request | None = None,
+    ) -> None:
+        super().__init__(message)
+        self._request = request
+
     @classmethod
     def wrap(cls, original: BaseException) -> BaseException:
         try:

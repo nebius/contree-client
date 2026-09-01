@@ -24,6 +24,7 @@ def test_tree_shape(exceptions: ModuleType) -> None:
         exceptions.ContreeConnectionClosedError, exceptions.ContreeConnectionError
     )
     assert issubclass(exceptions.ContreeTimeoutError, exceptions.ContreeTransportError)
+    assert issubclass(exceptions.ContreeTimeoutError, TimeoutError)
     assert issubclass(exceptions.ContreeProtocolError, exceptions.ContreeTransportError)
     assert issubclass(exceptions.ContreeStreamError, exceptions.ContreeProtocolError)
     assert issubclass(exceptions.ContreeHTTPError, exceptions.ContreeTransportError)
@@ -196,6 +197,10 @@ class TestHttpxBackend:
         assert not isinstance(
             result, self.module.ContreeAsyncClient.nonretryable_errors
         )
+
+        request = self.httpx.Request("GET", "https://example.com")
+        direct = self.module.ContreeHttpxTimeoutError("x", request=request)
+        assert direct.request is request
 
     def test_remote_protocol_error(self) -> None:
         native = self.httpx.RemoteProtocolError("peer sent malformed HTTP")

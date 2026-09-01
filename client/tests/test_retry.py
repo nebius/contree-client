@@ -199,6 +199,7 @@ def test_timeout_retry_obeys_replay_safety(
     expected_attempts: int,
     asynchronous: bool,
 ) -> None:
+    exceptions = importlib.import_module("contree_client.exceptions")
     runtime = importlib.import_module("contree_client.runtime")
     testing = importlib.import_module("contree_client.testing")
     client_class = testing.ContreeAsyncClient if asynchronous else testing.ContreeClient
@@ -208,14 +209,14 @@ def test_timeout_retry_obeys_replay_safety(
             retry_unsafe=retry_unsafe,
         )
     )
-    client.retryable_errors = (TimeoutError,)
+    client.retryable_errors = (exceptions.ContreeTimeoutError,)
     attempts = 0
 
     def request(_spec: runtime.RequestSpec) -> runtime.ResponseData:
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            raise TimeoutError("timed out")
+            raise exceptions.ContreeTimeoutError("timed out")
         return runtime.ResponseData(status=200, headers={}, body=b"{}")
 
     async def async_request(spec: runtime.RequestSpec) -> runtime.ResponseData:
@@ -234,7 +235,7 @@ def test_timeout_retry_obeys_replay_safety(
         return client.call(spec)
 
     if expected_attempts == 1:
-        with pytest.raises(TimeoutError):
+        with pytest.raises(exceptions.ContreeTimeoutError):
             call()
     else:
         assert call().status == 200
@@ -249,17 +250,21 @@ def test_async_call_normalizes_builtin_timeout_on_python_310(
     runtime = importlib.import_module("contree_client.runtime")
     testing = importlib.import_module("contree_client.testing")
     client = testing.ContreeAsyncClient()
-    native = TimeoutError("native timeout")
 
     class LegacyAsyncioTimeoutError(Exception):
         pass
 
-    # Python 3.10 exposes asyncio.TimeoutError as a distinct class.
+    native = LegacyAsyncioTimeoutError("timer fired")
     monkeypatch.setattr(base.asyncio, "TimeoutError", LegacyAsyncioTimeoutError)
 
-    async def request(spec: runtime.RequestSpec) -> runtime.ResponseData:
-        spec.deadline = base.time.monotonic() - 1.0
+    async def wait_for(awaitable: Any, *, timeout: float) -> Any:
+        awaitable.close()
         raise native
+
+    monkeypatch.setattr(base.asyncio, "wait_for", wait_for)
+
+    async def request(_spec: runtime.RequestSpec) -> runtime.ResponseData:
+        raise AssertionError("request coroutine must not run")
 
     client.request = request
     spec = runtime.RequestSpec(
@@ -274,6 +279,52 @@ def test_async_call_normalizes_builtin_timeout_on_python_310(
 
     assert str(caught.value) == runtime.REQUEST_DEADLINE_MESSAGE
     assert caught.value.__cause__ is native
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("deadline_limited", [False, True])
+def test_call_classifies_transport_timeout_by_limiting_budget(
+    generated_package: ModuleType,
+    asynchronous: bool,
+    deadline_limited: bool,
+) -> None:
+    base = importlib.import_module("contree_client.base")
+    exceptions = importlib.import_module("contree_client.exceptions")
+    runtime = importlib.import_module("contree_client.runtime")
+    testing = importlib.import_module("contree_client.testing")
+    client_class = testing.ContreeAsyncClient if asynchronous else testing.ContreeClient
+    client = client_class(timeout=1.0 if deadline_limited else 0.5)
+    native = exceptions.ContreeTimeoutError("transport timeout")
+
+    def request(_spec: runtime.RequestSpec) -> runtime.ResponseData:
+        raise native
+
+    async def async_request(spec: runtime.RequestSpec) -> runtime.ResponseData:
+        return request(spec)
+
+    client.request = async_request if asynchronous else request
+    spec = runtime.RequestSpec(
+        method="GET",
+        path="/x",
+        idempotent=True,
+        deadline=base.time.monotonic() + (0.5 if deadline_limited else 1.0),
+    )
+
+    def call() -> runtime.ResponseData:
+        if asynchronous:
+            return asyncio.run(client.call(spec))
+        return client.call(spec)
+
+    if deadline_limited:
+        with pytest.raises(TimeoutError) as caught:
+            call()
+        assert type(caught.value) is TimeoutError
+        assert str(caught.value) == runtime.REQUEST_DEADLINE_MESSAGE
+        assert caught.value.__cause__ is native
+    else:
+        with pytest.raises(exceptions.ContreeTimeoutError) as caught:
+            call()
+        assert caught.value is native
 
 
 def test_retry_policy_validation(generated_package: ModuleType) -> None:
