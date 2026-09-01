@@ -40,6 +40,18 @@ def test_encode_query_preserves_repeated_values(runtime: ModuleType) -> None:
     )
 
 
+def test_remaining_timeout_uses_shared_deadline_message(
+    runtime: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime, "monotonic", lambda: 10.0)
+
+    assert runtime.remaining_timeout(11.0, 2.0) == 1.0
+    with pytest.raises(TimeoutError) as caught:
+        runtime.remaining_timeout(10.0, None)
+    assert str(caught.value) == runtime.REQUEST_DEADLINE_MESSAGE
+
+
 def test_json_object_rejects_array(
     runtime: ModuleType,
     exceptions: ModuleType,

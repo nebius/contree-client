@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 
 import { ContreeClient } from "../lib/client.js";
-import { monotonic } from "../lib/runtime.js";
+import { ContreeAPIError } from "../lib/errors.js";
+import { monotonic, RetryPolicy } from "../lib/runtime.js";
 
 /** A body stream that stays silent forever but honours the abort
  * signal, exactly like a real fetch body does. */
@@ -20,6 +22,229 @@ function stalledBody(signal) {
     },
   });
 }
+
+function rejectWhenAborted(signal, watchdogMs = null) {
+  let watchdog = null;
+  const aborted = new Promise((_, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    signal.addEventListener("abort", () => reject(signal.reason), {
+      once: true,
+    });
+  });
+  if (watchdogMs === null) {
+    return aborted;
+  }
+  const watched = Promise.race([
+    aborted,
+    new Promise((_, reject) => {
+      watchdog = setTimeout(
+        () => reject(new Error("client did not abort the request")),
+        watchdogMs,
+      );
+    }),
+  ]);
+  return watched.finally(() => clearTimeout(watchdog));
+}
+
+test("retry policy retries an idempotent request timeout", async () => {
+  let fetchCalls = 0;
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    timeout: 0.02,
+    retry: new RetryPolicy({ delays: [0], maxAttempts: 2 }),
+    fetch: (url, options) => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) {
+        return rejectWhenAborted(options.signal);
+      }
+      return Promise.resolve(new Response("ok", { status: 200 }));
+    },
+  });
+
+  const response = await client.call({
+    method: "GET",
+    path: "/x",
+    idempotent: true,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(fetchCalls, 2);
+});
+
+test("a request timeout is not retried without a retry policy", async () => {
+  let fetchCalls = 0;
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    timeout: 0.02,
+    fetch: (url, options) => {
+      fetchCalls += 1;
+      return rejectWhenAborted(options.signal);
+    },
+  });
+
+  await assert.rejects(
+    client.call({ method: "GET", path: "/x", idempotent: true }),
+    (error) => error.name === "TimeoutError",
+  );
+  assert.equal(fetchCalls, 1);
+});
+
+test("an expired request deadline does not start fetch", async () => {
+  let fetchCalls = 0;
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    fetch: async () => {
+      fetchCalls += 1;
+      return new Response("ok", { status: 200 });
+    },
+  });
+
+  await assert.rejects(
+    client.request({
+      method: "GET",
+      path: "/x",
+      deadline: monotonic() - 1,
+    }),
+    (error) => error.name === "TimeoutError",
+  );
+  assert.equal(fetchCalls, 0);
+});
+
+test("an unsafe request timeout requires retryUnsafe", async () => {
+  let fetchCalls = 0;
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    timeout: 0.02,
+    retry: new RetryPolicy({ delays: [0], maxAttempts: 2 }),
+    fetch: (url, options) => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) {
+        return rejectWhenAborted(options.signal);
+      }
+      return Promise.resolve(new Response("ok", { status: 200 }));
+    },
+  });
+
+  await assert.rejects(
+    client.call({ method: "POST", path: "/x", idempotent: false }),
+    (error) => error.name === "TimeoutError",
+  );
+  assert.equal(fetchCalls, 1);
+
+  fetchCalls = 0;
+  client.retry = new RetryPolicy({
+    delays: [0],
+    maxAttempts: 2,
+    retryUnsafe: true,
+  });
+  const response = await client.call({
+    method: "POST",
+    path: "/x",
+    idempotent: false,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(fetchCalls, 2);
+});
+
+test("AbortError is not retried", async () => {
+  let fetchCalls = 0;
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    retry: new RetryPolicy({ delays: [0], maxAttempts: 2 }),
+    fetch: async () => {
+      fetchCalls += 1;
+      throw new DOMException("request cancelled", "AbortError");
+    },
+  });
+
+  await assert.rejects(
+    client.call({ method: "GET", path: "/x", idempotent: true }),
+    (error) => error.name === "AbortError",
+  );
+  assert.equal(fetchCalls, 1);
+});
+
+test("a cross-realm TypeError is retried", async () => {
+  let fetchCalls = 0;
+  const networkError = runInNewContext('new TypeError("network failure")');
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    fetch: async () => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) {
+        throw networkError;
+      }
+      return new Response("ok", { status: 200 });
+    },
+  });
+
+  const response = await client.call({
+    method: "GET",
+    path: "/x",
+    idempotent: true,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(fetchCalls, 2);
+});
+
+test("retry policy retries a stream connect timeout", async () => {
+  let fetchCalls = 0;
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    timeout: 0.02,
+    retry: new RetryPolicy({ delays: [0], maxAttempts: 2 }),
+    fetch: (url, options) => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) {
+        return rejectWhenAborted(options.signal);
+      }
+      return Promise.resolve(
+        new Response(new Uint8Array([1]), { status: 200 }),
+      );
+    },
+  });
+
+  const chunks = [];
+  for await (const chunk of client.stream({
+    method: "GET",
+    path: "/x",
+    idempotent: true,
+  })) {
+    chunks.push(chunk);
+  }
+  assert.deepEqual(chunks, [new Uint8Array([1])]);
+  assert.equal(fetchCalls, 2);
+});
+
+test("an SSE connect timeout is left to the event follower", async () => {
+  let fetchCalls = 0;
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    timeout: 0.02,
+    retry: new RetryPolicy({ delays: [0], maxAttempts: 2 }),
+    fetch: (url, options) => {
+      fetchCalls += 1;
+      return rejectWhenAborted(options.signal);
+    },
+  });
+
+  await assert.rejects(
+    async () => {
+      for await (const chunk of client.stream({
+        method: "GET",
+        path: "/x",
+        accept: "text/event-stream",
+        idempotent: true,
+      })) {
+        void chunk;
+      }
+    },
+    (error) => error.name === "TimeoutError",
+  );
+  assert.equal(fetchCalls, 1);
+});
 
 test("a non-2xx response with an endless body times out", async () => {
   const client = new ContreeClient("tok", {
@@ -71,6 +296,31 @@ test("the stream timer never covers consumer processing time", async () => {
   assert.equal(chunks.length, 2);
 });
 
+test("a stream deadline bounds a stalled non-SSE body", async () => {
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    timeout: 0.4,
+    fetch: (url, options) =>
+      Promise.resolve(
+        new Response(stalledBody(options.signal), { status: 200 }),
+      ),
+  });
+  const started = monotonic();
+  await assert.rejects(
+    async () => {
+      for await (const chunk of client.stream({
+        method: "GET",
+        path: "/x",
+        deadline: monotonic() + 0.05,
+      })) {
+        void chunk;
+      }
+    },
+    (error) => error.name === "TimeoutError",
+  );
+  assert.ok(monotonic() - started < 0.25);
+});
+
 test("waitOperation deadline bounds an idle SSE stream", async () => {
   const client = new ContreeClient("tok", {
     baseUrl: "http://localhost:1",
@@ -90,4 +340,137 @@ test("waitOperation deadline bounds an idle SSE stream", async () => {
     (error) => error.name === "TimeoutError",
   );
   assert.ok(monotonic() - started < 2);
+});
+
+test("waitOperation deadline bounds a stalled SSE connect", async () => {
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    timeout: 10,
+    fetch: (url, options) => rejectWhenAborted(options.signal, 1000),
+  });
+  const started = monotonic();
+  await assert.rejects(
+    client.waitOperation("00000000-0000-0000-0000-000000000000", {
+      timeout: 0.1,
+    }),
+    (error) => error.name === "TimeoutError",
+  );
+  assert.ok(monotonic() - started < 2);
+});
+
+test("a stream deadline bounds retry delays", async () => {
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    timeout: 0.02,
+    retry: new RetryPolicy({ delays: [1], maxAttempts: null }),
+    fetch: (url, options) => rejectWhenAborted(options.signal),
+  });
+  const started = monotonic();
+  await assert.rejects(
+    async () => {
+      for await (const chunk of client.stream({
+        method: "GET",
+        path: "/x",
+        idempotent: true,
+        deadline: monotonic() + 0.1,
+      })) {
+        void chunk;
+      }
+    },
+    (error) => error.name === "TimeoutError",
+  );
+  assert.ok(monotonic() - started < 0.5);
+});
+
+test("waitOperation deadline bounds the polling status request", async () => {
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    timeout: 10,
+    fetch: (url, options) => rejectWhenAborted(options.signal, 1000),
+  });
+  client.iterOperationEvents = async function* () {
+    throw new ContreeAPIError(404, "events unavailable");
+  };
+
+  const started = monotonic();
+  await assert.rejects(
+    client.waitOperation("00000000-0000-0000-0000-000000000000", {
+      timeout: 0.1,
+    }),
+    (error) => error.name === "TimeoutError",
+  );
+  assert.ok(monotonic() - started < 0.5);
+});
+
+test("waitOperation deadline bounds its terminal status probe", async () => {
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    timeout: 10,
+    fetch: (url, options) => rejectWhenAborted(options.signal, 1000),
+  });
+  client.iterOperationEvents = async function* () {
+    throw new DOMException("stream timed out", "TimeoutError");
+  };
+
+  const started = monotonic();
+  await assert.rejects(
+    client.waitOperation("00000000-0000-0000-0000-000000000000", {
+      timeout: 0.1,
+    }),
+    (error) => error.name === "TimeoutError",
+  );
+  assert.ok(monotonic() - started < 0.5);
+});
+
+test("waitOperation deadline bounds its final status fetch", async () => {
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    timeout: 10,
+    fetch: (url, options) => rejectWhenAborted(options.signal, 1000),
+  });
+  client.followOperationEvents = async function* () {};
+
+  const started = monotonic();
+  await assert.rejects(
+    client.waitOperation("00000000-0000-0000-0000-000000000000", {
+      timeout: 0.1,
+    }),
+    (error) => error.name === "TimeoutError",
+  );
+  assert.ok(monotonic() - started < 0.5);
+});
+
+test("the final status fetch retries within the wait deadline", async () => {
+  let fetchCalls = 0;
+  const client = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    timeout: 0.02,
+    retry: new RetryPolicy({ delays: [0], maxAttempts: 2 }),
+    fetch: (url, options) => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) {
+        return rejectWhenAborted(options.signal);
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            uuid: "00000000-0000-0000-0000-000000000000",
+            kind: "instance",
+            status: "CANCELLED",
+            metadata: null,
+            result: null,
+          }),
+          { status: 200 },
+        ),
+      );
+    },
+  });
+  client.followOperationEvents = async function* () {};
+
+  const operation = await client.waitOperation(
+    "00000000-0000-0000-0000-000000000000",
+    { timeout: 0.5 },
+  );
+  assert.equal(operation.status, "CANCELLED");
+  assert.equal(fetchCalls, 2);
 });

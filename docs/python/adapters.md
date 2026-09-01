@@ -390,10 +390,17 @@ retries are an explicit `max_attempts=None`. Non-idempotent requests
 into the double-execution risk with `retry_unsafe=True`: a lost
 response may mean the server already executed the call. File-like
 request bodies are rewound to their initial offset before each attempt
-(non-seekable bodies fail fast). Timeouts are never retried — the
-deadline is user-configured — and streaming requests are never retried
-here: SSE consumers reconnect with `Last-Event-Id` (see
-`follow_operation_events`).
+(non-seekable bodies fail fast). Buffered-request timeouts follow the
+same retry policy. The configured `timeout` applies to each attempt, so
+the complete call can take longer. An explicit `wait_operation` or
+`follow_operation_events` timeout is shared by event connections, status
+probes, polling, retry delays, and the final status fetch. Sync buffered reads
+can report expiry after the response completes. Status probes use one transport
+attempt because the event follower controls reconnection. `RetryPolicy` never
+retries streaming requests.
+`follow_operation_events` reconnects transient stream failures, including
+transport timeouts, with `Last-Event-Id`. A terminal or cancelled operation
+stops reconnection.
 
 ::::{tab-set}
 

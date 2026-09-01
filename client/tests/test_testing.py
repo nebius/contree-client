@@ -91,6 +91,31 @@ def test_sequential_results_last_sticky(
     assert len(client.calls_for("get_operation_status")) == 3
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_wait_operation_uses_mocked_final_status(
+    testing: ModuleType,
+    models: ModuleType,
+    asynchronous: bool,
+) -> None:
+    client_class = testing.ContreeAsyncClient if asynchronous else testing.ContreeClient
+    client = client_class()
+    completion = event(models, 1, "completion")
+    expected = models.OperationResponse(
+        uuid=UUID,
+        status=models.OperationStatus.SUCCESS,
+    )
+    client.mock("iter_operation_events", [completion])
+    client.mock("get_operation_status", expected)
+
+    if asynchronous:
+        result = asyncio.run(client.wait_operation(UUID))
+    else:
+        result = client.wait_operation(UUID)
+
+    assert result == expected
+    assert len(client.calls_for("get_operation_status")) == 1
+
+
 def test_error_outcome(testing: ModuleType, generated_package: ModuleType) -> None:
     exceptions = importlib.import_module("contree_client.exceptions")
     client = testing.ContreeClient()

@@ -439,9 +439,9 @@ def route(request: Captured, attempts: collections.Counter[str]) -> Reply:
         path == f"/v1/operations/{EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID}"
         and method == "GET"
     ):
-        # same missing-events situation, but the operation itself
-        # never finishes - the polling fallback must still honor the
-        # caller's deadline instead of looping forever
+        # The events route is missing and the status endpoint does not
+        # answer. The polling request itself must stay within deadline.
+        time.sleep(STATUS_HANG_SECONDS)
         return json_reply(
             200,
             {

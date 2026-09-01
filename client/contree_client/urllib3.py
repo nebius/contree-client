@@ -5,6 +5,7 @@ from __future__ import annotations
 import ssl
 from collections.abc import Iterator
 from functools import lru_cache
+from typing import Any
 
 import urllib3
 
@@ -25,6 +26,7 @@ from .runtime import (
     RetryPolicy,
     error_for_response,
     library_version,
+    remaining_timeout,
 )
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
@@ -179,10 +181,7 @@ class ContreeClient(base.ContreeSyncClient):
     log = logger.getChild("urllib3")
     UA_TRANSPORT_LIBRARY = library_version(urllib3)
     retryable_errors = (urllib3.exceptions.HTTPError,)
-    nonretryable_errors = (
-        urllib3.exceptions.TimeoutError,
-        ContreeUrllib3SSLError,
-    )
+    nonretryable_errors = (ContreeUrllib3SSLError,)
 
     def __init__(
         self,
@@ -225,28 +224,42 @@ class ContreeClient(base.ContreeSyncClient):
 
     def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
+        pool_options: dict[str, Any] = {}
+        if spec.deadline is None:
+            timeout: float | urllib3.Timeout | None = self.timeout
+        else:
+            total_timeout = remaining_timeout(spec.deadline, None)
+            timeout = urllib3.Timeout(
+                total=total_timeout,
+                connect=remaining_timeout(spec.deadline, self.timeout),
+                read=remaining_timeout(spec.deadline, self.timeout),
+            )
+            pool_options["pool_timeout"] = remaining_timeout(spec.deadline, None)
         try:
             response = self._http.request(
                 spec.method,
                 url,
                 body=spec.body,
                 headers=self._request_headers(spec),
-                timeout=self.timeout,
+                timeout=timeout,
                 redirect=False,
                 retries=False,
                 preload_content=True,
                 decode_content=True,
+                **pool_options,
             )
         except urllib3.exceptions.HTTPError as exc:
             translated = translate_error(exc)
             if translated is exc:
                 raise
             raise translated from exc
-        return ResponseData(
+        data = ResponseData(
             status=response.status,
             headers={k.lower(): v for k, v in response.headers.items()},
             body=response.data,
         )
+        remaining_timeout(spec.deadline, None)
+        return data
 
     def stream(
         self,
@@ -255,24 +268,36 @@ class ContreeClient(base.ContreeSyncClient):
     ) -> Iterator[bytes]:
         decode_content = auto_decompress
         url = self.build_url(spec)
+        connect_timeout = remaining_timeout(spec.deadline, self.timeout)
+        read_timeout = remaining_timeout(
+            spec.deadline,
+            spec.read_timeout if spec.accept == "text/event-stream" else self.timeout,
+        )
+        pool_options: dict[str, Any] = {}
+        if spec.deadline is None:
+            timeout = urllib3.Timeout(
+                connect=connect_timeout,
+                read=read_timeout,
+            )
+        else:
+            timeout = urllib3.Timeout(
+                total=remaining_timeout(spec.deadline, None),
+                connect=connect_timeout,
+                read=read_timeout,
+            )
+            pool_options["pool_timeout"] = remaining_timeout(spec.deadline, None)
         try:
             response = self._http.request(
                 spec.method,
                 url,
                 body=spec.body,
                 headers=self._request_headers(spec),
-                timeout=urllib3.Timeout(
-                    connect=self.timeout,
-                    # only SSE may idle (bounded by spec.read_timeout when
-                    # a deadline is set); downloads must time out
-                    read=spec.read_timeout
-                    if spec.accept == "text/event-stream"
-                    else self.timeout,
-                ),
+                timeout=timeout,
                 redirect=False,
                 retries=False,
                 preload_content=False,
                 decode_content=decode_content,
+                **pool_options,
             )
         except urllib3.exceptions.HTTPError as exc:
             translated = translate_error(exc)
@@ -289,7 +314,9 @@ class ContreeClient(base.ContreeSyncClient):
                         body=response.read(decode_content=True),
                     )
                 )
-            yield from response.stream(CHUNK_SIZE, decode_content=decode_content)
+            for chunk in response.stream(CHUNK_SIZE, decode_content=decode_content):
+                remaining_timeout(spec.deadline, None)
+                yield chunk
         except urllib3.exceptions.HTTPError as exc:
             translated = translate_error(exc)
             if translated is exc:

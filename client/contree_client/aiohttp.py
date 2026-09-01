@@ -28,6 +28,7 @@ from .runtime import (
     RetryPolicy,
     error_for_response,
     library_version,
+    remaining_timeout,
 )
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
@@ -174,10 +175,9 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         aiohttp.ClientConnectionError,
         aiohttp.ServerConnectionError,
         aiohttp.ClientPayloadError,
+        ContreeAiohttpTimeoutError,
     )
     nonretryable_errors = (
-        TimeoutError,
-        asyncio.TimeoutError,
         ContreeAiohttpSSLError,
         ContreeAiohttpFingerprintError,
     )
@@ -228,6 +228,12 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     async def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
+        timeout = remaining_timeout(spec.deadline, self.timeout)
+        client_timeout = (
+            aiohttp.ClientTimeout(total=timeout)
+            if spec.deadline is None
+            else aiohttp.ClientTimeout(total=timeout, ceil_threshold=float("inf"))
+        )
         try:
             async with self._get_session().request(
                 spec.method,
@@ -235,10 +241,10 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 data=spec.body,
                 headers=self.build_headers(spec),
                 allow_redirects=False,
-                timeout=aiohttp.ClientTimeout(total=self.timeout),
+                timeout=client_timeout,
             ) as response:
                 body = await response.read()
-                return ResponseData(
+                data = ResponseData(
                     status=response.status,
                     headers={k.lower(): v for k, v in response.headers.items()},
                     body=body,
@@ -248,6 +254,8 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
             if translated is exc:
                 raise
             raise translated from exc
+        remaining_timeout(spec.deadline, None)
+        return data
 
     async def stream(
         self,
@@ -255,6 +263,24 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         auto_decompress: bool = True,
     ) -> AsyncGenerator[bytes, None]:
         url = self.build_url(spec)
+        connect_timeout = remaining_timeout(spec.deadline, self.timeout)
+        read_timeout = remaining_timeout(
+            spec.deadline,
+            spec.read_timeout if spec.accept == "text/event-stream" else self.timeout,
+        )
+        if spec.deadline is None:
+            client_timeout = aiohttp.ClientTimeout(
+                total=None,
+                sock_connect=connect_timeout,
+                sock_read=read_timeout,
+            )
+        else:
+            client_timeout = aiohttp.ClientTimeout(
+                total=remaining_timeout(spec.deadline, None),
+                sock_connect=connect_timeout,
+                sock_read=read_timeout,
+                ceil_threshold=float("inf"),
+            )
         try:
             async with self._get_session().request(
                 spec.method,
@@ -263,17 +289,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 headers=self.build_headers(spec),
                 allow_redirects=False,
                 auto_decompress=auto_decompress,
-                timeout=aiohttp.ClientTimeout(
-                    total=None,
-                    sock_connect=self.timeout,
-                    # only SSE may idle (bounded by spec.read_timeout
-                    # when a deadline is set); downloads must time out
-                    sock_read=(
-                        spec.read_timeout
-                        if spec.accept == "text/event-stream"
-                        else self.timeout
-                    ),
-                ),
+                timeout=client_timeout,
             ) as response:
                 self.log.debug(
                     "%s %s -> %d (stream)", spec.method, url, response.status
@@ -300,6 +316,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                         )
                     )
                 async for chunk in response.content.iter_chunked(CHUNK_SIZE):
+                    remaining_timeout(spec.deadline, None)
                     yield chunk
         except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError) as exc:
             translated = translate_error(exc)

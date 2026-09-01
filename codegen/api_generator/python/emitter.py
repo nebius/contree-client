@@ -368,6 +368,7 @@ from .exceptions import (
 from .profiles import AUTH_TYPE_IAM, Profile, ProfileError, resolve_profile
 from .runtime import (
     EVENTS_UNAVAILABLE_STATUSES,
+    REQUEST_DEADLINE_MESSAGE,
     TIGHT_LOOP_FLOOR,
     BodyFormatter,
     HeaderFormatter,
@@ -402,9 +403,9 @@ class ContreeClientBase:
     """
 
     log: logging.Logger = logger
-    # transient transport errors an adapter considers safe to retry;
-    # nonretryable_errors carves exceptions (timeouts) back out of it
+    # transient transport errors eligible for buffered retry or SSE reconnect
     retryable_errors: tuple[type[BaseException], ...] = ()
+    # permanent adapter errors that neither path retries
     nonretryable_errors: tuple[type[BaseException], ...] = ()
     # User-Agent product tokens; adapters override UA_TRANSPORT_LIBRARY
     UA_PRODUCT = f"contree-client/{{package_version()}}"
@@ -608,7 +609,17 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         """
         policy = self.retry
         if policy is None:
-            return self.request(spec)
+            if spec.deadline is not None and time.monotonic() >= spec.deadline:
+                raise TimeoutError(REQUEST_DEADLINE_MESSAGE)
+            try:
+                response = self.request(spec)
+            except self.retryable_errors as exc:
+                if spec.deadline is not None and time.monotonic() >= spec.deadline:
+                    raise TimeoutError(REQUEST_DEADLINE_MESSAGE) from exc
+                raise
+            if spec.deadline is not None and time.monotonic() >= spec.deadline:
+                raise TimeoutError(REQUEST_DEADLINE_MESSAGE)
+            return response
         # a lost response after a non-idempotent request (POST) could
         # mean a second execution server-side: never blind-retry
         # unless the caller explicitly opted into that risk. 425 Too
@@ -621,6 +632,8 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         start = body_start(spec)
         attempts = 0
         while True:
+            if spec.deadline is not None and time.monotonic() >= spec.deadline:
+                raise TimeoutError(REQUEST_DEADLINE_MESSAGE)
             attempts += 1
             exhausted = (
                 policy.max_attempts is not None and attempts >= policy.max_attempts
@@ -628,6 +641,8 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
             try:
                 response = self.request(spec)
             except self.retryable_errors as exc:
+                if spec.deadline is not None and time.monotonic() >= spec.deadline:
+                    raise TimeoutError(REQUEST_DEADLINE_MESSAGE) from exc
                 unretryable = isinstance(exc, self.nonretryable_errors)
                 if not replay_safe or unretryable or exhausted:
                     raise
@@ -637,9 +652,16 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                     type(exc).__name__,
                     delay,
                 )
+                if spec.deadline is not None:
+                    delay = min(
+                        delay,
+                        max(0.0, spec.deadline - time.monotonic()),
+                    )
                 time.sleep(delay)
                 rewind_body(spec, start)
                 continue
+            if spec.deadline is not None and time.monotonic() >= spec.deadline:
+                raise TimeoutError(REQUEST_DEADLINE_MESSAGE)
             if not policy.retryable_status(response.status) or exhausted:
                 return response
             if not replay_safe and response.status not in (425, 429):
@@ -651,15 +673,43 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                 response.status,
                 delay,
             )
+            if spec.deadline is not None:
+                delay = min(
+                    delay,
+                    max(0.0, spec.deadline - time.monotonic()),
+                )
             time.sleep(delay)
             rewind_body(spec, start)
 
-    def operation_terminal(self, operation_id: str) -> bool:
+    def operation_terminal(
+        self,
+        operation_id: str,
+        deadline: float | None = None,
+    ) -> bool:
         """Best-effort check that the operation reached a terminal state."""
+        spec = operations.build_get_operation_status(operation_id=operation_id)
+        spec.deadline = deadline
         try:
-            status = self.get_operation_status(operation_id).status
-        except (ContreeError, *self.retryable_errors):
+            self.log_request(spec)
+            response = self.request(spec)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"operation {operation_id} status probe exceeded its deadline"
+                )
+            self.log_response(spec, response)
+            status = operations.parse_get_operation_status(response).status
+        except (ContreeError, *self.retryable_errors) as exc:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"operation {operation_id} status probe exceeded its deadline"
+                ) from exc
             return False
+        except TimeoutError as exc:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"operation {operation_id} status probe exceeded its deadline"
+                ) from exc
+            raise
         return not isinstance(status, EllipsisType) and status.is_terminal()
 
     def wait_operation(
@@ -672,12 +722,26 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
 
         Follows the SSE event log (push, no polling) until the
         ``completion`` event, then fetches and returns the terminal
-        ``OperationResponse``. Raises :class:`TimeoutError` when
-        *timeout* seconds elapse first.
+        ``OperationResponse``. Raises :class:`TimeoutError` after
+        *timeout* expires. A sync buffered response can delay the
+        exception until that response ends.
         """
+        deadline = None if timeout is None else time.monotonic() + timeout
         for event in self.follow_operation_events(operation_id, timeout=timeout):
             self.log.debug("wait_operation: event %s %s", event.id, event.type)
-        return self.get_operation_status(operation_id)
+        spec = operations.build_get_operation_status(operation_id=operation_id)
+        spec.deadline = deadline
+        self.log_request(spec)
+        try:
+            response = self.call(spec)
+        except TimeoutError as exc:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"operation {operation_id} did not complete within {timeout}s"
+                ) from exc
+            raise
+        self.log_response(spec, response)
+        return operations.parse_get_operation_status(response)
 
     def follow_operation_events(
         self,
@@ -750,10 +814,24 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                     )
                     while True:
                         check_deadline()
+                        spec = operations.build_get_operation_status(
+                            operation_id=operation_id
+                        )
+                        spec.deadline = deadline
                         try:
-                            response = self.get_operation_status(operation_id)
+                            self.log_request(spec)
+                            raw_response = self.request(spec)
+                            check_deadline()
+                            self.log_response(spec, raw_response)
+                            response = operations.parse_get_operation_status(
+                                raw_response
+                            )
                         except (ContreeError, *self.retryable_errors):
+                            check_deadline()
                             response = None
+                        except TimeoutError:
+                            check_deadline()
+                            raise
                         if (
                             response is not None
                             and not isinstance(response.status, EllipsisType)
@@ -791,7 +869,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                 retryable = exc.status in (410, 425) or 500 <= exc.status < 600
                 if not retryable:
                     raise
-                if self.operation_terminal(operation_id):
+                if self.operation_terminal(operation_id, deadline):
                     return
                 self.log.warning("stream connect failed (%d): %s", exc.status, exc)
                 retry_after = exc.retry_after
@@ -802,15 +880,19 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                 time.sleep(delay)
                 continue
             except self.retryable_errors as exc:
+                check_deadline()
                 if isinstance(exc, self.nonretryable_errors):
                     raise
                 self.log.warning("stream broken (last_id=%s): %s", last_id, exc)
             # the stream ended or broke without a completion frame:
             # the retry must not outlive the operation itself
-            if self.operation_terminal(operation_id):
+            if self.operation_terminal(operation_id, deadline):
                 return
             if last_id == events_before:
-                time.sleep(TIGHT_LOOP_FLOOR)
+                delay = TIGHT_LOOP_FLOOR
+                if deadline is not None:
+                    delay = min(delay, max(0.0, deadline - time.monotonic()))
+                time.sleep(delay)
 
     def resolve_image(self, ref: str) -> str:
         """Resolve an image reference to a UUID.
@@ -904,7 +986,28 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         """
         policy = self.retry
         if policy is None:
-            return await self.request(spec)
+            if spec.deadline is not None:
+                remaining = spec.deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(REQUEST_DEADLINE_MESSAGE)
+            try:
+                if spec.deadline is None:
+                    response = await self.request(spec)
+                else:
+                    response = await asyncio.wait_for(
+                        self.request(spec), timeout=remaining
+                    )
+            except self.retryable_errors as exc:
+                if spec.deadline is not None and time.monotonic() >= spec.deadline:
+                    raise TimeoutError(REQUEST_DEADLINE_MESSAGE) from exc
+                raise
+            except (asyncio.TimeoutError, TimeoutError) as exc:
+                if spec.deadline is not None and time.monotonic() >= spec.deadline:
+                    raise TimeoutError(REQUEST_DEADLINE_MESSAGE) from exc
+                raise
+            if spec.deadline is not None and time.monotonic() >= spec.deadline:
+                raise TimeoutError(REQUEST_DEADLINE_MESSAGE)
+            return response
         # a lost response after a non-idempotent request (POST) could
         # mean a second execution server-side: never blind-retry
         # unless the caller explicitly opted into that risk. 425 Too
@@ -917,13 +1020,24 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         start = body_start(spec)
         attempts = 0
         while True:
+            if spec.deadline is not None:
+                remaining = spec.deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(REQUEST_DEADLINE_MESSAGE)
             attempts += 1
             exhausted = (
                 policy.max_attempts is not None and attempts >= policy.max_attempts
             )
             try:
-                response = await self.request(spec)
+                if spec.deadline is None:
+                    response = await self.request(spec)
+                else:
+                    response = await asyncio.wait_for(
+                        self.request(spec), timeout=remaining
+                    )
             except self.retryable_errors as exc:
+                if spec.deadline is not None and time.monotonic() >= spec.deadline:
+                    raise TimeoutError(REQUEST_DEADLINE_MESSAGE) from exc
                 unretryable = isinstance(exc, self.nonretryable_errors)
                 if not replay_safe or unretryable or exhausted:
                     raise
@@ -933,9 +1047,20 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                     type(exc).__name__,
                     delay,
                 )
+                if spec.deadline is not None:
+                    delay = min(
+                        delay,
+                        max(0.0, spec.deadline - time.monotonic()),
+                    )
                 await asyncio.sleep(delay)
                 rewind_body(spec, start)
                 continue
+            except (asyncio.TimeoutError, TimeoutError) as exc:
+                if spec.deadline is not None and time.monotonic() >= spec.deadline:
+                    raise TimeoutError(REQUEST_DEADLINE_MESSAGE) from exc
+                raise
+            if spec.deadline is not None and time.monotonic() >= spec.deadline:
+                raise TimeoutError(REQUEST_DEADLINE_MESSAGE)
             if not policy.retryable_status(response.status) or exhausted:
                 return response
             if not replay_safe and response.status not in (425, 429):
@@ -947,15 +1072,53 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 response.status,
                 delay,
             )
+            if spec.deadline is not None:
+                delay = min(
+                    delay,
+                    max(0.0, spec.deadline - time.monotonic()),
+                )
             await asyncio.sleep(delay)
             rewind_body(spec, start)
 
-    async def operation_terminal(self, operation_id: str) -> bool:
+    async def operation_terminal(
+        self,
+        operation_id: str,
+        deadline: float | None = None,
+    ) -> bool:
         """Best-effort check that the operation reached a terminal state."""
+        spec = operations.build_get_operation_status(operation_id=operation_id)
+        spec.deadline = deadline
         try:
-            status = (await self.get_operation_status(operation_id)).status
-        except (ContreeError, *self.retryable_errors):
+            self.log_request(spec)
+            if deadline is None:
+                response = await self.request(spec)
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"operation {operation_id} status probe exceeded its deadline"
+                    )
+                response = await asyncio.wait_for(
+                    self.request(spec), timeout=remaining
+                )
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"operation {operation_id} status probe exceeded its deadline"
+                )
+            self.log_response(spec, response)
+            status = operations.parse_get_operation_status(response).status
+        except (ContreeError, *self.retryable_errors) as exc:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"operation {operation_id} status probe exceeded its deadline"
+                ) from exc
             return False
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"operation {operation_id} status probe exceeded its deadline"
+                ) from exc
+            raise
         return not isinstance(status, EllipsisType) and status.is_terminal()
 
     async def wait_operation(
@@ -971,25 +1134,24 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         ``OperationResponse``. Raises :class:`TimeoutError` when
         *timeout* seconds elapse first.
         """
-        async def wait_and_fetch() -> OperationResponse:
-            async for event in self.follow_operation_events(operation_id):
-                self.log.debug("wait_operation: event %s %s", event.id, event.type)
-            return await self.get_operation_status(operation_id)
-
-        if timeout is None:
-            return await wait_and_fetch()
-        task = asyncio.create_task(wait_and_fetch())
+        deadline = None if timeout is None else time.monotonic() + timeout
+        async for event in self.follow_operation_events(
+            operation_id, timeout=timeout
+        ):
+            self.log.debug("wait_operation: event %s %s", event.id, event.type)
+        spec = operations.build_get_operation_status(operation_id=operation_id)
+        spec.deadline = deadline
+        self.log_request(spec)
         try:
-            done, _pending = await asyncio.wait((task,), timeout=timeout)
-            if task in done:
-                return task.result()
-        finally:
-            if not task.done():
-                task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        raise TimeoutError(
-            f"operation {operation_id} did not complete within {timeout}s"
-        )
+            response = await self.call(spec)
+        except TimeoutError as exc:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"operation {operation_id} did not complete within {timeout}s"
+                ) from exc
+            raise
+        self.log_response(spec, response)
+        return operations.parse_get_operation_status(response)
 
     async def follow_operation_events(
         self,
@@ -1025,39 +1187,6 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                     f"operation {operation_id} events did not complete"
                     f" within {timeout}s"
                 )
-
-        async def operation_terminal_before_deadline() -> bool:
-            if deadline is None:
-                return await self.operation_terminal(operation_id)
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                check_deadline()
-            try:
-                return await asyncio.wait_for(
-                    self.operation_terminal(operation_id),
-                    timeout=remaining,
-                )
-            except asyncio.TimeoutError:
-                check_deadline()
-                raise
-
-        async def operation_status_before_deadline() -> OperationResponse | None:
-            try:
-                if deadline is None:
-                    return await self.get_operation_status(operation_id)
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    check_deadline()
-                try:
-                    return await asyncio.wait_for(
-                        self.get_operation_status(operation_id),
-                        timeout=remaining,
-                    )
-                except asyncio.TimeoutError:
-                    check_deadline()
-                    raise
-            except (ContreeError, *self.retryable_errors):
-                return None
 
         while True:
             check_deadline()
@@ -1099,7 +1228,33 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                         exc.status,
                     )
                     while True:
-                        response = await operation_status_before_deadline()
+                        check_deadline()
+                        spec = operations.build_get_operation_status(
+                            operation_id=operation_id
+                        )
+                        spec.deadline = deadline
+                        try:
+                            self.log_request(spec)
+                            if deadline is None:
+                                raw_response = await self.request(spec)
+                            else:
+                                remaining = deadline - time.monotonic()
+                                if remaining <= 0:
+                                    check_deadline()
+                                raw_response = await asyncio.wait_for(
+                                    self.request(spec), timeout=remaining
+                                )
+                            check_deadline()
+                            self.log_response(spec, raw_response)
+                            response = operations.parse_get_operation_status(
+                                raw_response
+                            )
+                        except (ContreeError, *self.retryable_errors):
+                            check_deadline()
+                            response = None
+                        except (asyncio.TimeoutError, TimeoutError):
+                            check_deadline()
+                            raise
                         if (
                             response is not None
                             and not isinstance(response.status, EllipsisType)
@@ -1137,7 +1292,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 retryable = exc.status in (410, 425) or 500 <= exc.status < 600
                 if not retryable:
                     raise
-                if await operation_terminal_before_deadline():
+                if await self.operation_terminal(operation_id, deadline):
                     return
                 self.log.warning("stream connect failed (%d): %s", exc.status, exc)
                 retry_after = exc.retry_after
@@ -1148,13 +1303,13 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 await asyncio.sleep(delay)
                 continue
             except self.retryable_errors as exc:
+                check_deadline()
                 if isinstance(exc, self.nonretryable_errors):
-                    check_deadline()
                     raise
                 self.log.warning("stream broken (last_id=%s): %s", last_id, exc)
             # the stream ended or broke without a completion frame:
             # the retry must not outlive the operation itself
-            if await operation_terminal_before_deadline():
+            if await self.operation_terminal(operation_id, deadline):
                 return
             if last_id == events_before:
                 delay = TIGHT_LOOP_FLOOR
@@ -1320,6 +1475,7 @@ def emit_sse_method(op: OpDef, async_mode: bool) -> list[str]:
     ]
     lines.extend(op_docstring(op))
     lines.append(f"{INDENT}spec = operations.build_{op.name}({op.passthrough})")
+    lines.append(f"{INDENT}spec.deadline = deadline")
     # a deadline (monotonic seconds) bounds the whole subscription:
     # the socket read timeout covers silent gaps, while the per-chunk
     # check below covers streams kept alive by keepalive comments

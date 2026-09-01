@@ -30,11 +30,13 @@ models a stream broken mid-flight.
 from __future__ import annotations
 
 import inspect
+import json
 import ssl
 from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import unquote
 
 from . import base
 from .runtime import RequestSpec, ResponseData, RetryPolicy, logger
@@ -170,6 +172,35 @@ class MockMixin:
 
         return wrapper
 
+    def mocked_response(self, spec: RequestSpec) -> ResponseData:
+        """Resolve internal helper requests through operation mocks."""
+        parts = spec.path.strip("/").split("/")
+        if (
+            spec.method == "GET"
+            and len(parts) == 2
+            and parts[0] == "operations"
+            and "get_operation_status" in self.mocks
+        ):
+            kwargs = {"inflight": True} if spec.query.get("inflight") == "1" else {}
+            outcome = self.record(
+                "get_operation_status",
+                (unquote(parts[1]),),
+                kwargs,
+            )
+            if outcome.error is not None:
+                raise outcome.error
+            to_dict = getattr(outcome.result, "to_dict", None)
+            if not callable(to_dict):
+                raise TypeError(
+                    "mocked get_operation_status result must be an OperationResponse"
+                )
+            return ResponseData(
+                status=200,
+                headers={"content-type": "application/json"},
+                body=json.dumps(to_dict()).encode(),
+            )
+        raise unmocked(spec)
+
 
 class ContreeClient(MockMixin, base.ContreeSyncClient):
     """Synchronous test double; see the module docstring."""
@@ -210,7 +241,7 @@ class ContreeClient(MockMixin, base.ContreeSyncClient):
         }
 
     def request(self, spec: RequestSpec) -> ResponseData:
-        raise unmocked(spec)
+        return self.mocked_response(spec)
 
     def stream(
         self,
@@ -262,7 +293,7 @@ class ContreeAsyncClient(MockMixin, base.ContreeAsyncClient):
         }
 
     async def request(self, spec: RequestSpec) -> ResponseData:
-        raise unmocked(spec)
+        return self.mocked_response(spec)
 
     def stream(
         self,

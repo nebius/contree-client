@@ -28,7 +28,7 @@ export interface RequestSpec {
   accept?: string | null;
   idempotent?: boolean;
   redirect?: "manual" | "follow";
-  /** absolute deadline in monotonic seconds; bounds SSE idle waits */
+  /** absolute deadline in monotonic seconds; bounds transport waits */
   deadline?: number | null;
 }
 

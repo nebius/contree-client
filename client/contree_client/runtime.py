@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, distribution
+from time import monotonic
 from typing import IO, Any, cast
 from urllib.parse import quote, urlencode
 
@@ -56,6 +57,27 @@ SENSITIVE_KEY_SUFFIXES = (
     "credentials",
     "authorization",
 )
+
+REQUEST_DEADLINE_MESSAGE = "request deadline exceeded"
+
+
+def remaining_timeout(
+    deadline: float | None,
+    maximum: float | None,
+) -> float | None:
+    """Return the smaller of the remaining deadline and *maximum*.
+
+    Raise ``TimeoutError`` before transport I/O when the absolute
+    monotonic deadline has elapsed.
+    """
+    if deadline is None:
+        return maximum
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise TimeoutError(REQUEST_DEADLINE_MESSAGE)
+    if maximum is None:
+        return remaining
+    return min(remaining, maximum)
 
 
 def redact_json(value: Any) -> Any:
@@ -154,6 +176,10 @@ class RequestSpec:
     # retry safety: only idempotent requests may be replayed after a
     # lost response (a re-sent POST could spawn a second sandbox)
     idempotent: bool = False
+    # Monotonic deadline passed to transport waits and retries. Sync buffered
+    # reads can report expiry after the response completes.
+    # None uses only the client's configured timeout.
+    deadline: float | None = None
     # SSE only: bound the idle gap between reads. None keeps the
     # stream open indefinitely (the server sends keepalives); a
     # deadline-driven follower sets its remaining budget here so a

@@ -114,6 +114,8 @@ class TestHttpBackend:
         result = self.module.translate_error(TimeoutError())
         assert isinstance(result, self.exceptions.ContreeTimeoutError)
         assert isinstance(result, TimeoutError)
+        assert isinstance(result, self.module.ContreeClient.retryable_errors)
+        assert not isinstance(result, self.module.ContreeClient.nonretryable_errors)
         assert str(result) == "Request timed out"
 
     def test_gaierror_becomes_connection_error_not_socket_gaierror(self) -> None:
@@ -188,6 +190,12 @@ class TestHttpxBackend:
         result = self.module.translate_error(self.httpx.ConnectTimeout("x"))
         assert isinstance(result, self.exceptions.ContreeTimeoutError)
         assert isinstance(result, self.httpx.TimeoutException)
+        assert isinstance(result, self.module.ContreeClient.retryable_errors)
+        assert isinstance(result, self.module.ContreeAsyncClient.retryable_errors)
+        assert not isinstance(result, self.module.ContreeClient.nonretryable_errors)
+        assert not isinstance(
+            result, self.module.ContreeAsyncClient.nonretryable_errors
+        )
 
     def test_remote_protocol_error(self) -> None:
         native = self.httpx.RemoteProtocolError("peer sent malformed HTTP")
@@ -274,6 +282,14 @@ class TestRequestsBackend:
         )
         assert isinstance(result, self.exceptions.ContreeTimeoutError)
         assert not isinstance(result, self.exceptions.ContreeConnectionError)
+        assert isinstance(result, self.module.ContreeClient.retryable_errors)
+        assert not isinstance(result, self.module.ContreeClient.nonretryable_errors)
+
+    def test_read_timeout_is_retryable(self) -> None:
+        result = self.module.translate_error(self.requests.exceptions.ReadTimeout("x"))
+        assert isinstance(result, self.exceptions.ContreeTimeoutError)
+        assert isinstance(result, self.module.ContreeClient.retryable_errors)
+        assert not isinstance(result, self.module.ContreeClient.nonretryable_errors)
 
     def test_ssl(self) -> None:
         request = self.requests.Request("GET", "https://example.com").prepare()
@@ -366,11 +382,19 @@ class TestAiohttpBackend:
         result = self.module.translate_error(self.aiohttp.ServerTimeoutError())
         assert isinstance(result, self.exceptions.ContreeTimeoutError)
         assert isinstance(result, self.aiohttp.ServerTimeoutError)
+        assert isinstance(result, self.module.ContreeAsyncClient.retryable_errors)
+        assert not isinstance(
+            result, self.module.ContreeAsyncClient.nonretryable_errors
+        )
         assert str(result) == "Request timed out"
 
     def test_bare_timeout_error(self) -> None:
         result = self.module.translate_error(TimeoutError("x"))
         assert isinstance(result, self.exceptions.ContreeTimeoutError)
+        assert isinstance(result, self.module.ContreeAsyncClient.retryable_errors)
+        assert not isinstance(
+            result, self.module.ContreeAsyncClient.nonretryable_errors
+        )
 
     def test_server_disconnected(self) -> None:
         native = self.aiohttp.ServerDisconnectedError("server disconnected")
@@ -470,6 +494,8 @@ class TestUrllib3Backend:
         result = self.module.translate_error(native)
         assert isinstance(result, self.exceptions.ContreeConnectionError)
         assert isinstance(result, self.urllib3.exceptions.NewConnectionError)
+        assert isinstance(result, self.module.ContreeClient.retryable_errors)
+        assert not isinstance(result, self.module.ContreeClient.nonretryable_errors)
         assert result.original is native
 
     def test_timeout(self) -> None:
@@ -477,6 +503,8 @@ class TestUrllib3Backend:
             self.urllib3.exceptions.ConnectTimeoutError("timed out")
         )
         assert isinstance(result, self.exceptions.ContreeTimeoutError)
+        assert isinstance(result, self.module.ContreeClient.retryable_errors)
+        assert not isinstance(result, self.module.ContreeClient.nonretryable_errors)
 
     def test_ssl(self) -> None:
         native = self.urllib3.exceptions.SSLError("bad cert")

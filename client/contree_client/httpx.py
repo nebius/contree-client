@@ -26,6 +26,7 @@ from .runtime import (
     async_request_content,
     error_for_response,
     library_version,
+    remaining_timeout,
     request_content,
 )
 from .spec_info import DEFAULT_BASE_URL
@@ -179,7 +180,6 @@ class ContreeClient(base.ContreeSyncClient):
     UA_TRANSPORT_LIBRARY = library_version(httpx)
     retryable_errors = (httpx.TransportError,)
     nonretryable_errors = (
-        httpx.TimeoutException,
         ContreeHttpxSSLError,
         ContreeHttpxLocalProtocolError,
     )
@@ -218,6 +218,11 @@ class ContreeClient(base.ContreeSyncClient):
 
     def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
+        timeout = (
+            httpx.USE_CLIENT_DEFAULT
+            if spec.deadline is None
+            else remaining_timeout(spec.deadline, self.timeout)
+        )
         try:
             response = self._client.request(
                 spec.method,
@@ -225,17 +230,20 @@ class ContreeClient(base.ContreeSyncClient):
                 content=request_content(spec.body),
                 # httpx wants a Sequence, materialize the iterable
                 headers=list(self.build_headers(spec)),
+                timeout=timeout,
             )
         except httpx.HTTPError as exc:
             translated = translate_error(exc)
             if translated is exc:
                 raise
             raise translated from exc
-        return ResponseData(
+        data = ResponseData(
             status=response.status_code,
             headers={k.lower(): v for k, v in response.headers.items()},
             body=response.content,
         )
+        remaining_timeout(spec.deadline, None)
+        return data
 
     def stream(
         self,
@@ -243,6 +251,11 @@ class ContreeClient(base.ContreeSyncClient):
         auto_decompress: bool = True,
     ) -> Iterator[bytes]:
         url = self.build_url(spec)
+        timeout = remaining_timeout(spec.deadline, self.timeout)
+        read_timeout = remaining_timeout(
+            spec.deadline,
+            spec.read_timeout if spec.accept == "text/event-stream" else self.timeout,
+        )
         try:
             with self._client.stream(
                 spec.method,
@@ -251,12 +264,8 @@ class ContreeClient(base.ContreeSyncClient):
                 # httpx wants a Sequence, materialize the iterable
                 headers=list(self.build_headers(spec)),
                 timeout=httpx.Timeout(
-                    self.timeout,
-                    # only SSE may idle (bounded by spec.read_timeout when
-                    # a deadline is set); downloads must time out
-                    read=spec.read_timeout
-                    if spec.accept == "text/event-stream"
-                    else self.timeout,
+                    timeout,
+                    read=read_timeout,
                 ),
             ) as response:
                 self.log.debug(
@@ -276,10 +285,12 @@ class ContreeClient(base.ContreeSyncClient):
                     )
                 # no chunk_size: httpx's chunker would buffer small
                 # SSE frames until it collects chunk_size bytes
-                if auto_decompress:
-                    yield from response.iter_bytes()
-                else:
-                    yield from response.iter_raw()
+                chunks = (
+                    response.iter_bytes() if auto_decompress else response.iter_raw()
+                )
+                for chunk in chunks:
+                    remaining_timeout(spec.deadline, None)
+                    yield chunk
         except httpx.HTTPError as exc:
             translated = translate_error(exc)
             if translated is exc:
@@ -298,7 +309,6 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
     UA_TRANSPORT_LIBRARY = library_version(httpx)
     retryable_errors = (httpx.TransportError,)
     nonretryable_errors = (
-        httpx.TimeoutException,
         ContreeHttpxSSLError,
         ContreeHttpxLocalProtocolError,
     )
@@ -337,6 +347,11 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     async def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
+        timeout = (
+            httpx.USE_CLIENT_DEFAULT
+            if spec.deadline is None
+            else remaining_timeout(spec.deadline, self.timeout)
+        )
         try:
             response = await self._client.request(
                 spec.method,
@@ -346,17 +361,20 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 content=async_request_content(spec.body),
                 # httpx wants a Sequence, materialize the iterable
                 headers=list(self.build_headers(spec)),
+                timeout=timeout,
             )
         except httpx.HTTPError as exc:
             translated = translate_error(exc)
             if translated is exc:
                 raise
             raise translated from exc
-        return ResponseData(
+        data = ResponseData(
             status=response.status_code,
             headers={k.lower(): v for k, v in response.headers.items()},
             body=response.content,
         )
+        remaining_timeout(spec.deadline, None)
+        return data
 
     async def stream(
         self,
@@ -364,6 +382,11 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         auto_decompress: bool = True,
     ) -> AsyncGenerator[bytes, None]:
         url = self.build_url(spec)
+        timeout = remaining_timeout(spec.deadline, self.timeout)
+        read_timeout = remaining_timeout(
+            spec.deadline,
+            spec.read_timeout if spec.accept == "text/event-stream" else self.timeout,
+        )
         try:
             async with self._client.stream(
                 spec.method,
@@ -374,12 +397,8 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 # httpx wants a Sequence, materialize the iterable
                 headers=list(self.build_headers(spec)),
                 timeout=httpx.Timeout(
-                    self.timeout,
-                    # only SSE may idle (bounded by spec.read_timeout when
-                    # a deadline is set); downloads must time out
-                    read=spec.read_timeout
-                    if spec.accept == "text/event-stream"
-                    else self.timeout,
+                    timeout,
+                    read=read_timeout,
                 ),
             ) as response:
                 self.log.debug(
@@ -403,6 +422,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                     response.aiter_bytes() if auto_decompress else response.aiter_raw()
                 )
                 async for chunk in source:
+                    remaining_timeout(spec.deadline, None)
                     yield chunk
         except httpx.HTTPError as exc:
             translated = translate_error(exc)

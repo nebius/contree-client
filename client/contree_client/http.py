@@ -42,6 +42,7 @@ from .runtime import (
     RetryPolicy,
     body_start,
     error_for_response,
+    remaining_timeout,
     rewind_body,
     stream_decoder,
 )
@@ -251,10 +252,17 @@ class ConnectionPool:
         self.condition = threading.Condition()
         self.created = 0
 
-    def acquire(self) -> tuple[http.client.HTTPConnection, bool]:
-        """Borrow a connection; True means it was reused (maybe stale)."""
+    def acquire(
+        self,
+        deadline: float | None = None,
+    ) -> tuple[http.client.HTTPConnection, bool]:
+        """Borrow a connection before *deadline*.
+
+        True means the returned connection was reused and can be stale.
+        """
         with self.condition:
             while True:
+                wait_timeout = remaining_timeout(deadline, None)
                 while self.idle:
                     connection = self.idle.pop()  # LIFO: warmest first
                     if connection_alive(connection):
@@ -269,7 +277,7 @@ class ConnectionPool:
                     break
                 # at capacity: wait until a concurrent caller returns a
                 # connection or frees a slot by discarding a broken one
-                self.condition.wait()
+                self.condition.wait(timeout=wait_timeout)
         try:
             return self.factory(), False
         except BaseException:
@@ -312,16 +320,8 @@ class ContreeClient(base.ContreeSyncClient):
 
     log = logger.getChild("http")
     UA_TRANSPORT_LIBRARY = "http.client"
-    retryable_errors = (
-        socket.gaierror,
-        ConnectionError,
-        http.client.HTTPException,
-        OSError,
-    )
-    # a timeout is user-configured and a malformed URL is permanent;
-    # retrying either would just walk the backoff ladder for nothing
+    retryable_errors = (ContreeHttpConnectionError, ContreeHttpTimeoutError)
     nonretryable_errors = (
-        TimeoutError,
         http.client.InvalidURL,
         ContreeHttpSSLError,
     )
@@ -386,6 +386,10 @@ class ContreeClient(base.ContreeSyncClient):
         connection: http.client.HTTPConnection,
         spec: RequestSpec,
     ) -> http.client.HTTPResponse:
+        timeout = remaining_timeout(spec.deadline, self.timeout)
+        connection.timeout = timeout
+        if connection.sock is not None:
+            connection.sock.settimeout(timeout)
         connection.request(
             spec.method,
             self._request_target(spec),
@@ -397,7 +401,7 @@ class ContreeClient(base.ContreeSyncClient):
     def request(self, spec: RequestSpec) -> ResponseData:
         start = body_start(spec)
         while True:
-            connection, reused = self._pool.acquire()
+            connection, reused = self._pool.acquire(spec.deadline)
             try:
                 response = self._send_on(connection, spec)
                 break
@@ -423,7 +427,12 @@ class ContreeClient(base.ContreeSyncClient):
                     raise
                 raise translated from exc
         try:
+            timeout = remaining_timeout(spec.deadline, self.timeout)
+            connection.timeout = timeout
+            if connection.sock is not None:
+                connection.sock.settimeout(timeout)
             data = read_response(response)
+            remaining_timeout(spec.deadline, None)
         except BaseException as exc:
             self._pool.discard(connection)
             translated = translate_error(exc)
@@ -461,19 +470,30 @@ class ContreeClient(base.ContreeSyncClient):
                 self.build_url(spec),
                 response.status,
             )
+            # The connect timeout has done its job. SSE can otherwise
+            # stay idle indefinitely, while downloads use the client
+            # timeout. An absolute deadline bounds both cases.
+            read_maximum = (
+                spec.read_timeout
+                if spec.accept == "text/event-stream"
+                else self.timeout
+            )
+            timeout = remaining_timeout(spec.deadline, read_maximum)
+            connection.timeout = timeout
+            if connection.sock is not None:
+                connection.sock.settimeout(timeout)
             if not 200 <= response.status < 300:
                 raise error_for_response(read_response(response))
-            # the connect timeout has done its job; only an SSE stream
-            # (follow=1) may legitimately stay idle longer than it -
-            # a download that stops sending bytes must time out, and a
-            # deadline-driven follower bounds SSE via spec.read_timeout
-            if spec.accept == "text/event-stream" and connection.sock is not None:
-                connection.sock.settimeout(spec.read_timeout)
             decoder = stream_decoder(
                 response.getheader("Content-Encoding") if auto_decompress else None
             )
             while True:
+                timeout = remaining_timeout(spec.deadline, read_maximum)
+                connection.timeout = timeout
+                if connection.sock is not None:
+                    connection.sock.settimeout(timeout)
                 raw = response.read1(CHUNK_SIZE)
+                remaining_timeout(spec.deadline, None)
                 if not raw:
                     tail = decoder.flush()
                     if tail:

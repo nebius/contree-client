@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import { ContreeClient } from "../lib/client.js";
-import { ContreeAPIError } from "../lib/errors.js";
 import {
   EventDataCompletion,
   EventDataExit,
@@ -151,6 +150,72 @@ test("followOperationEvents resumes after an in-band stream error", async () => 
   assert.ok(events[3].data instanceof EventDataCompletion);
 });
 
+test("followOperationEvents retries timeouts until cancellation", async () => {
+  let statusChecks = 0;
+  const retrying = new ContreeClient("test-token", {
+    baseUrl: "http://localhost:1",
+    fetch: async () => {
+      statusChecks += 1;
+      return new Response(
+        JSON.stringify({
+          uuid: OPERATION_UUID,
+          kind: "instance",
+          status:
+            statusChecks === 1
+              ? OperationStatus.EXECUTING
+              : OperationStatus.CANCELLED,
+          metadata: null,
+          result: null,
+        }),
+        { status: 200 },
+      );
+    },
+  });
+  let streamAttempts = 0;
+  retrying.iterOperationEvents = async function* () {
+    streamAttempts += 1;
+    throw new DOMException("stream timed out", "TimeoutError");
+  };
+
+  const events = [];
+  for await (const event of retrying.followOperationEvents(OPERATION_UUID)) {
+    events.push(event);
+  }
+
+  assert.deepEqual(events, []);
+  assert.equal(streamAttempts, 2);
+  assert.equal(statusChecks, 2);
+});
+
+test("followOperationEvents does not retry AbortError", async () => {
+  const retrying = new ContreeClient("test-token", {
+    baseUrl: "http://localhost:1",
+  });
+  let streamAttempts = 0;
+  let statusChecks = 0;
+  retrying.iterOperationEvents = async function* () {
+    streamAttempts += 1;
+    throw new DOMException("request cancelled", "AbortError");
+  };
+  retrying.getOperationStatus = async () => {
+    statusChecks += 1;
+    return { status: OperationStatus.EXECUTING };
+  };
+
+  await assert.rejects(
+    async () => {
+      for await (const event of retrying.followOperationEvents(
+        OPERATION_UUID,
+      )) {
+        void event;
+      }
+    },
+    (error) => error.name === "AbortError",
+  );
+  assert.equal(streamAttempts, 1);
+  assert.equal(statusChecks, 0);
+});
+
 test("waitOperation drains the stream and fetches the terminal status", async () => {
   const operation = await client.waitOperation(OPERATION_UUID);
   assert.equal(operation.status, OperationStatus.SUCCESS);
@@ -188,7 +253,8 @@ test("the polling fallback still honors the deadline when the operation never fi
       timeout: 0.3,
     }),
     (error) =>
-      error instanceof ContreeAPIError &&
+      error instanceof DOMException &&
+      error.name === "TimeoutError" &&
       error.message.includes(EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID),
   );
 });

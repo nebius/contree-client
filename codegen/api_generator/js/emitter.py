@@ -956,17 +956,28 @@ export class ContreeClient {{
   /** Execute the request and return the buffered response. */
   async request(spec) {{
     const controller = new AbortController();
+    const deadline = spec.deadline ?? null;
+    const remaining = deadline === null ? null : deadline - monotonic();
+    if (remaining !== null && remaining <= 0) {{
+      throw new DOMException("request timed out", "TimeoutError");
+    }}
+    const timeout =
+      this.timeout === null
+        ? remaining
+        : remaining === null
+          ? this.timeout
+          : Math.min(this.timeout, remaining);
     // an explicit timer, not AbortSignal.timeout(): Node unrefs that
     // timer, so it can never fire when nothing else keeps the event
     // loop alive (custom fetch transports, for one)
     const timer =
-      this.timeout !== null
+      timeout !== null
         ? setTimeout(
             () =>
               controller.abort(
                 new DOMException("request timed out", "TimeoutError"),
               ),
-            this.timeout * 1000,
+            Math.max(0, timeout) * 1000,
           )
         : null;
     try {{
@@ -975,6 +986,9 @@ export class ContreeClient {{
         this._fetchOptions(spec, controller.signal),
       );
       const body = new Uint8Array(await response.arrayBuffer());
+      if (deadline !== null && monotonic() >= deadline) {{
+        throw new DOMException("request timed out", "TimeoutError");
+      }}
       const headers = {{}};
       response.headers.forEach((value, key) => {{
         headers[key.toLowerCase()] = value;
@@ -987,19 +1001,12 @@ export class ContreeClient {{
     }}
   }}
 
-  /** fetch reports network failures as TypeError; timeouts abort. */
+  /** fetch reports network failures as TypeError; client timers use TimeoutError. */
   _transportRetryable(error) {{
-    return error instanceof TypeError;
+    return error?.name === "TypeError" || error?.name === "TimeoutError";
   }}
 
-  _transportNonretryable(error) {{
-    return (
-      error instanceof DOMException &&
-      (error.name === "AbortError" || error.name === "TimeoutError")
-    );
-  }}
-
-  /** One transparent reconnect for a replayable idempotent request:
+  /** One transparent reconnect for a replayable idempotent TypeError:
    * fetch pools keep-alive sockets and cannot pre-check them the way
    * the Python adapters do, so the first request on a socket the
    * server already closed fails without ever reaching the server. */
@@ -1011,8 +1018,7 @@ export class ContreeClient {{
         !spec.idempotent ||
         (typeof ReadableStream !== "undefined" &&
           spec.body instanceof ReadableStream) ||
-        !this._transportRetryable(error) ||
-        this._transportNonretryable(error)
+        error?.name !== "TypeError"
       ) {{
         throw error;
       }}
@@ -1040,6 +1046,7 @@ export class ContreeClient {{
     // contract guarantees both mean the request was rejected before
     // any processing, so replaying is always safe.
     const replaySafe = spec.idempotent || policy.retryUnsafe;
+    const deadline = spec.deadline ?? null;
     const delays = retryDelays(policy.delays);
     let attempts = 0;
     for (;;) {{
@@ -1053,12 +1060,16 @@ export class ContreeClient {{
         if (
           !replaySafe ||
           !this._transportRetryable(error) ||
-          this._transportNonretryable(error) ||
-          exhausted
+          exhausted ||
+          (deadline !== null && monotonic() >= deadline)
         ) {{
           throw error;
         }}
-        await sleep(delays.next().value);
+        let delay = delays.next().value;
+        if (deadline !== null) {{
+          delay = Math.min(delay, Math.max(0, deadline - monotonic()));
+        }}
+        await sleep(delay);
         continue;
       }}
       if (!policy.retryableStatus(response.status) || exhausted) {{
@@ -1068,13 +1079,17 @@ export class ContreeClient {{
         return response;
       }}
       const retryAfter = retryAfterDelay(response);
-      await sleep(retryAfter !== null ? retryAfter : delays.next().value);
+      let delay = retryAfter !== null ? retryAfter : delays.next().value;
+      if (deadline !== null) {{
+        delay = Math.min(delay, Math.max(0, deadline - monotonic()));
+      }}
+      await sleep(delay);
     }}
   }}
 
   /** Execute the request and yield response body chunks. */
   async *stream(spec) {{
-    const controller = new AbortController();
+    let controller;
     let timer = null;
     const disarm = () => {{
       if (timer !== null) {{
@@ -1098,15 +1113,27 @@ export class ContreeClient {{
     const sse = spec.accept === "text/event-stream";
     const deadline = spec.deadline ?? null; // monotonic seconds
     // the budget for the next transport wait: downloads use the
-    // client timeout (idle cap, re-armed per chunk); SSE is unbounded
-    // unless the caller set an absolute deadline - keepalive frames
-    // re-enter abortIn with a shrinking remainder, so the bound stays
-    // absolute no matter how often the server keeps the stream warm
+    // client timeout as an idle cap, bounded by the caller's absolute
+    // deadline; SSE is unbounded unless the caller set a deadline.
+    // Keepalive frames re-enter abortIn with a shrinking remainder, so
+    // the bound stays absolute while the server keeps the stream warm.
     const nextBudget = () => {{
-      if (!sse) {{
-        return this.timeout;
+      const remaining = deadline === null ? null : deadline - monotonic();
+      if (sse || this.timeout === null) {{
+        return remaining;
       }}
-      return deadline === null ? null : deadline - monotonic();
+      return remaining === null
+        ? this.timeout
+        : Math.min(this.timeout, remaining);
+    }};
+    const connectBudget = () => {{
+      const remaining = deadline === null ? null : deadline - monotonic();
+      if (this.timeout === null) {{
+        return remaining;
+      }}
+      return remaining === null
+        ? this.timeout
+        : Math.min(this.timeout, remaining);
     }};
     // the server may close a pooled keep-alive socket between
     // requests and fetch exposes no pool to pre-check (the Python
@@ -1120,31 +1147,47 @@ export class ContreeClient {{
         typeof ReadableStream !== "undefined" &&
         spec.body instanceof ReadableStream
       );
-    const policy = replayable ? this.retry : null;
+    // SSE reconnection belongs to followOperationEvents(), which
+    // checks terminal status after each failed stream.
+    const policy = replayable && !sse ? this.retry : null;
     const maxAttempts =
       policy !== null ? policy.maxAttempts : replayable ? 2 : 1;
     const delays = policy === null ? null : retryDelays(policy.delays);
     let attempts = 0;
     let response;
     for (;;) {{
+      if (deadline !== null && monotonic() >= deadline) {{
+        throw new DOMException("stream read timed out", "TimeoutError");
+      }}
       attempts += 1;
-      abortIn(this.timeout); // the connect phase always has a bound
+      controller = new AbortController();
+      abortIn(connectBudget());
       try {{
         response = await this._fetch(
           this.buildUrl(spec),
           this._fetchOptions(spec, controller.signal),
         );
+        if (deadline !== null && monotonic() >= deadline) {{
+          throw new DOMException("stream read timed out", "TimeoutError");
+        }}
         break;
       }} catch (error) {{
         disarm();
+        const reconnectable =
+          error?.name === "TypeError" ||
+          (policy !== null && this._transportRetryable(error));
         if (
-          !this._transportRetryable(error) ||
-          this._transportNonretryable(error) ||
-          (maxAttempts !== null && attempts >= maxAttempts)
+          !reconnectable ||
+          (maxAttempts !== null && attempts >= maxAttempts) ||
+          (deadline !== null && monotonic() >= deadline)
         ) {{
           throw error;
         }}
-        await sleep(delays === null ? 0 : delays.next().value);
+        let delay = delays === null ? 0 : delays.next().value;
+        if (deadline !== null) {{
+          delay = Math.min(delay, Math.max(0, deadline - monotonic()));
+        }}
+        await sleep(delay);
       }}
     }}
     if (!(response.status >= 200 && response.status < 300)) {{
@@ -1153,6 +1196,9 @@ export class ContreeClient {{
       let body;
       try {{
         body = new Uint8Array(await response.arrayBuffer());
+        if (deadline !== null && monotonic() >= deadline) {{
+          throw new DOMException("stream read timed out", "TimeoutError");
+        }}
       }} finally {{
         disarm();
       }}
@@ -1166,11 +1212,18 @@ export class ContreeClient {{
     const reader = response.body.getReader();
     try {{
       for (;;) {{
-        abortIn(nextBudget());
+        const budget = nextBudget();
+        if (budget !== null && budget <= 0) {{
+          throw new DOMException("stream read timed out", "TimeoutError");
+        }}
+        abortIn(budget);
         const {{ done, value }} = await reader.read();
         // the timer covers only the transport wait, never the
         // consumer's processing of the yielded chunk
         disarm();
+        if (deadline !== null && monotonic() >= deadline) {{
+          throw new DOMException("stream read timed out", "TimeoutError");
+        }}
         if (done) {{
           return;
         }}
@@ -1191,11 +1244,25 @@ export class ContreeClient {{
   async close() {{}}
 
   /** Best-effort check that the operation reached a terminal state. */
-  async operationTerminal(operationId) {{
+  async operationTerminal(operationId, deadline = null) {{
     let status;
     try {{
-      status = (await this.getOperationStatus(operationId)).status;
+      // The outer event loop owns retries. Each status probe uses one
+      // transport attempt and stays inside the caller's deadline.
+      const spec = operations.buildGetOperationStatus(operationId);
+      spec.deadline = deadline;
+      status = operations.parseGetOperationStatus(await this.request(spec)).status;
     }} catch (error) {{
+      if (
+        deadline !== null &&
+        monotonic() >= deadline &&
+        error?.name === "TimeoutError"
+      ) {{
+        throw new DOMException(
+          `operation ${{operationId}} status probe exceeded its deadline`,
+          "TimeoutError",
+        );
+      }}
       if (error instanceof ContreeError || this._transportRetryable(error)) {{
         return false;
       }}
@@ -1208,15 +1275,32 @@ export class ContreeClient {{
    * follows the SSE log until `completion`, then fetches and returns
    * the terminal OperationResponse. */
   async waitOperation(operationId, {{ timeout = null }} = {{}}) {{
+    const deadline = timeout === null ? null : monotonic() + timeout;
     // eslint-disable-next-line no-unused-vars
     for await (const event of this.followOperationEvents(operationId, {{ timeout }})) {{
       // draining the stream is the wait
     }}
-    return await this.getOperationStatus(operationId);
+    const spec = operations.buildGetOperationStatus(operationId);
+    spec.deadline = deadline;
+    try {{
+      return operations.parseGetOperationStatus(await this.call(spec));
+    }} catch (error) {{
+      if (
+        deadline !== null &&
+        monotonic() >= deadline &&
+        this._transportRetryable(error)
+      ) {{
+        throw new DOMException(
+          `operation ${{operationId}} did not complete within ${{timeout}}s`,
+          "TimeoutError",
+        );
+      }}
+      throw error;
+    }}
   }}
 
   /** Stream operation events with transparent reconnection: network
-   * drops, in-band SSE error frames and retryable API statuses
+   * drops, transport timeouts, in-band SSE error frames, and retryable API statuses
    * (410/425/5xx) reconnect from the last received event id. A status
    * meaning the events endpoint itself doesn't exist for this
    * operation/server (400/404/405/406) stops reconnecting and instead
@@ -1233,9 +1317,9 @@ export class ContreeClient {{
     const deadline = timeout === null ? null : monotonic() + timeout;
     const checkDeadline = () => {{
       if (deadline !== null && monotonic() >= deadline) {{
-        throw new ContreeAPIError(
-          0,
+        throw new DOMException(
           `operation ${{operationId}} events did not complete within ${{timeout}}s`,
+          "TimeoutError",
         );
       }}
     }};
@@ -1272,8 +1356,19 @@ export class ContreeClient {{
               checkDeadline();
               let response;
               try {{
-                response = await this.getOperationStatus(operationId);
+                const spec = operations.buildGetOperationStatus(operationId);
+                spec.deadline = deadline;
+                response = operations.parseGetOperationStatus(
+                  await this.request(spec),
+                );
               }} catch (pollError) {{
+                if (
+                  deadline !== null &&
+                  monotonic() >= deadline &&
+                  pollError?.name === "TimeoutError"
+                ) {{
+                  checkDeadline();
+                }}
                 if (
                   !(pollError instanceof ContreeError) &&
                   !this._transportRetryable(pollError)
@@ -1328,7 +1423,7 @@ export class ContreeClient {{
           if (!retryable) {{
             throw error;
           }}
-          if (await this.operationTerminal(operationId)) {{
+          if (await this.operationTerminal(operationId, deadline)) {{
             return;
           }}
           let delay =
@@ -1339,20 +1434,23 @@ export class ContreeClient {{
           }}
           await sleep(delay);
           continue;
-        }} else if (
-          !this._transportRetryable(error) ||
-          this._transportNonretryable(error)
-        ) {{
+        }} else if (!this._transportRetryable(error)) {{
           throw error;
+        }} else if (deadline !== null && monotonic() >= deadline) {{
+          checkDeadline();
         }}
       }}
       // the stream ended or broke without a completion frame: the
       // retry must not outlive the operation itself
-      if (await this.operationTerminal(operationId)) {{
+      if (await this.operationTerminal(operationId, deadline)) {{
         return;
       }}
       if (lastId === eventsBefore) {{
-        await sleep(TIGHT_LOOP_FLOOR);
+        let delay = TIGHT_LOOP_FLOOR;
+        if (deadline !== null) {{
+          delay = Math.min(delay, Math.max(0, deadline - monotonic()));
+        }}
+        await sleep(delay);
       }}
     }}
   }}
@@ -1788,17 +1886,17 @@ REFERENCE_HELPERS_RST = """\
 .. js:method:: ContreeClient.followOperationEvents(operationId, options?)
 
    :js:meth:`ContreeClient.iterOperationEvents` with ``follow: true``
-   and transparent reconnection: network drops, in-band ``sse_error``
-   frames and retryable statuses (410/425/5xx) resume from the last
-   received event id; other API errors propagate. Ends after the
-   ``completion`` frame.
+   and transparent reconnection: network drops, transport timeouts,
+   in-band ``sse_error`` frames and retryable statuses (410/425/5xx)
+   resume from the last received event id; other API errors propagate.
+   Ends after the ``completion`` frame.
 
    :param operationId: ``string``
    :param options.last_event_id: ``number | null``
    :param options.spid: ``number | null``
    :param options.since: ``number | null``
    :param options.timeout: ``number | null`` — overall deadline in
-      seconds.
+      seconds; expiry throws a ``TimeoutError`` ``DOMException``.
    :returns: ``AsyncGenerator<OperationEvent>``
 
 .. js:method:: ContreeClient.resolveImage(ref)

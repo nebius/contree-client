@@ -5,10 +5,11 @@ from __future__ import annotations
 import ssl
 from collections.abc import Iterator
 from functools import lru_cache
-from typing import Any
+from typing import Any, cast
 
 import requests
 import requests.adapters
+from urllib3.util import Timeout as Urllib3Timeout
 
 from . import base
 from .exceptions import (
@@ -27,6 +28,7 @@ from .runtime import (
     RetryPolicy,
     error_for_response,
     library_version,
+    remaining_timeout,
 )
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
@@ -216,8 +218,12 @@ class ContreeClient(base.ContreeSyncClient):
 
     log = logger.getChild("requests")
     UA_TRANSPORT_LIBRARY = library_version(requests)
-    retryable_errors = (requests.ConnectionError,)
-    nonretryable_errors = (requests.Timeout, ContreeRequestsSSLError)
+    retryable_errors = (
+        requests.ConnectionError,
+        requests.Timeout,
+        ContreeRequestsProtocolError,
+    )
+    nonretryable_errors = (ContreeRequestsSSLError,)
 
     def __init__(
         self,
@@ -252,6 +258,18 @@ class ContreeClient(base.ContreeSyncClient):
 
     def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
+        if spec.deadline is None:
+            timeout: float | Urllib3Timeout | None = self.timeout
+        else:
+            # requests forwards this object to urllib3, which does not
+            # enforce `total` across the full response body. Explicit
+            # phase limits bound stalls; the post-read check below
+            # rejects a response that completes after the deadline.
+            timeout = Urllib3Timeout(
+                total=remaining_timeout(spec.deadline, None),
+                connect=remaining_timeout(spec.deadline, self.timeout),
+                read=remaining_timeout(spec.deadline, self.timeout),
+            )
         try:
             response = self._session.request(
                 spec.method,
@@ -259,7 +277,9 @@ class ContreeClient(base.ContreeSyncClient):
                 data=spec.body,
                 # requests only accepts a mapping: duplicates collapse
                 headers=dict(self.build_headers(spec)),
-                timeout=self.timeout,
+                # requests accepts urllib3 Timeout as TimeoutSauce;
+                # requests-stubs only declares floats and tuples
+                timeout=cast(Any, timeout),
                 allow_redirects=False,
             )
         except requests.exceptions.RequestException as exc:
@@ -267,20 +287,37 @@ class ContreeClient(base.ContreeSyncClient):
             if translated is exc:
                 raise
             raise translated from exc
-        return ResponseData(
+        data = ResponseData(
             status=response.status_code,
             headers={k.lower(): v for k, v in response.headers.items()},
             body=response.content,
         )
+        remaining_timeout(spec.deadline, None)
+        return data
 
     def _open_stream(self, spec: RequestSpec) -> requests.Response:
         url = self.build_url(spec)
+        connect_timeout = remaining_timeout(spec.deadline, self.timeout)
         # only SSE may idle (bounded by spec.read_timeout when a
         # deadline is set); downloads must time out
-        read_timeout = (
-            spec.read_timeout if spec.accept == "text/event-stream" else self.timeout
+        read_timeout = remaining_timeout(
+            spec.deadline,
+            spec.read_timeout if spec.accept == "text/event-stream" else self.timeout,
         )
-        timeout = None if self.timeout is None else (self.timeout, read_timeout)
+        timeout: tuple[float | None, float | None] | Urllib3Timeout | None
+        if spec.deadline is not None:
+            # urllib3 does not enforce `total` across the full response
+            # body. Connect/read limits bound stalls; stream() rejects
+            # chunks read after the deadline.
+            timeout = Urllib3Timeout(
+                total=remaining_timeout(spec.deadline, None),
+                connect=connect_timeout,
+                read=read_timeout,
+            )
+        elif connect_timeout is None and read_timeout is None:
+            timeout = None
+        else:
+            timeout = (connect_timeout, read_timeout)
         try:
             response = self._session.request(
                 spec.method,
@@ -288,7 +325,7 @@ class ContreeClient(base.ContreeSyncClient):
                 data=spec.body,
                 # requests only accepts a mapping: duplicates collapse
                 headers=dict(self.build_headers(spec)),
-                timeout=timeout,
+                timeout=cast(Any, timeout),
                 allow_redirects=False,
                 stream=True,
             )
@@ -318,11 +355,14 @@ class ContreeClient(base.ContreeSyncClient):
         with response:
             try:
                 if auto_decompress:
-                    yield from response.iter_content(CHUNK_SIZE)
+                    chunks = response.iter_content(CHUNK_SIZE)
                 else:
                     # iter_content always decodes; go one level down to
                     # the underlying urllib3 response for the wire bytes
-                    yield from response.raw.stream(CHUNK_SIZE, decode_content=False)
+                    chunks = response.raw.stream(CHUNK_SIZE, decode_content=False)
+                for chunk in chunks:
+                    remaining_timeout(spec.deadline, None)
+                    yield chunk
             except requests.exceptions.RequestException as exc:
                 translated = translate_error(exc)
                 if translated is exc:

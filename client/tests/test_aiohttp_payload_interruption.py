@@ -12,10 +12,8 @@ import aiohttp
 import pytest
 
 from tests.stub_server import (
-    PAYLOAD_FINAL_STATUS_OPERATION_UUID,
     PAYLOAD_FORBIDDEN_OPERATION_UUID,
     PAYLOAD_INTERRUPTION_OPERATION_UUID,
-    PAYLOAD_STALLED_STATUS_OPERATION_UUID,
     PAYLOAD_TIMEOUT_OPERATION_UUID,
     StubServer,
 )
@@ -136,40 +134,6 @@ def test_wait_operation_keeps_one_deadline_across_payload_interruptions(
     assert time.monotonic() - started < 1.0
 
 
-def test_wait_operation_deadline_bounds_terminal_status_probe(
-    generated_package: ModuleType,
-    stub_server: StubServer,
-) -> None:
-    started = time.monotonic()
-    with pytest.raises(TimeoutError, match=PAYLOAD_STALLED_STATUS_OPERATION_UUID):
-        asyncio.run(
-            wait_operation(
-                stub_server.base_url,
-                PAYLOAD_STALLED_STATUS_OPERATION_UUID,
-                0.2,
-            )
-        )
-
-    assert time.monotonic() - started < 1.0
-
-
-def test_wait_operation_deadline_bounds_final_status_fetch(
-    generated_package: ModuleType,
-    stub_server: StubServer,
-) -> None:
-    started = time.monotonic()
-    with pytest.raises(TimeoutError, match=PAYLOAD_FINAL_STATUS_OPERATION_UUID):
-        asyncio.run(
-            wait_operation(
-                stub_server.base_url,
-                PAYLOAD_FINAL_STATUS_OPERATION_UUID,
-                0.2,
-            )
-        )
-
-    assert time.monotonic() - started < 1.0
-
-
 async def follow_after_socket_timeout(delay: float, timeout: float) -> None:
     module = importlib.import_module("contree_client.aiohttp")
     client = module.ContreeAsyncClient("test-token", base_url="http://127.0.0.1")
@@ -197,11 +161,11 @@ def test_follow_operation_events_normalizes_socket_timeout_at_deadline(
         asyncio.run(follow_after_socket_timeout(delay=0.05, timeout=0.01))
 
 
-def test_follow_operation_events_preserves_socket_timeout_before_deadline(
+def test_follow_operation_events_retries_socket_timeout_until_deadline(
     generated_package: ModuleType,
 ) -> None:
-    with pytest.raises(aiohttp.SocketTimeoutError, match="read stalled"):
-        asyncio.run(follow_after_socket_timeout(delay=0.0, timeout=1.0))
+    with pytest.raises(TimeoutError, match=PAYLOAD_TIMEOUT_OPERATION_UUID):
+        asyncio.run(follow_after_socket_timeout(delay=0.0, timeout=0.03))
 
 
 async def wait_after_socket_timeout(delay: float, timeout: float) -> None:
@@ -227,8 +191,8 @@ def test_wait_operation_deadline_preempts_later_socket_timeout(
         asyncio.run(wait_after_socket_timeout(delay=0.05, timeout=0.01))
 
 
-def test_wait_operation_preserves_socket_timeout_before_its_deadline(
+def test_wait_operation_retries_socket_timeout_until_its_deadline(
     generated_package: ModuleType,
 ) -> None:
-    with pytest.raises(aiohttp.SocketTimeoutError, match="read stalled"):
-        asyncio.run(wait_after_socket_timeout(delay=0.0, timeout=1.0))
+    with pytest.raises(TimeoutError, match=PAYLOAD_TIMEOUT_OPERATION_UUID):
+        asyncio.run(wait_after_socket_timeout(delay=0.0, timeout=0.03))

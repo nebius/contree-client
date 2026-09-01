@@ -181,6 +181,23 @@ def test_connection_pool_caps_idle_connections(
     assert fresh.closed
 
 
+def test_connection_pool_acquire_respects_deadline(
+    generated_package: ModuleType,
+) -> None:
+    http_module = importlib.import_module("contree_client.http")
+    pool = http_module.ConnectionPool(
+        lambda: http.client.HTTPConnection("localhost"), maxsize=1
+    )
+    held, _ = pool.acquire()
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="deadline"):
+        pool.acquire(time.monotonic() + 0.03)
+    assert time.monotonic() - started < 0.3
+
+    pool.discard(held)
+
+
 def test_connection_pool_discard_wakes_blocked_borrower(
     generated_package: ModuleType,
 ) -> None:

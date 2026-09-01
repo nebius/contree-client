@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import io
 from collections.abc import Callable
@@ -180,6 +181,99 @@ def test_retry_replays_body_from_initial_offset(
 
     # both attempts transmitted the same bytes, from the initial offset
     assert client.attempts == [b"cdef", b"cdef"]
+
+
+@pytest.mark.parametrize(
+    ("idempotent", "retry_unsafe", "expected_attempts"),
+    [
+        (True, False, 2),
+        (False, False, 1),
+        (False, True, 2),
+    ],
+)
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_timeout_retry_obeys_replay_safety(
+    generated_package: ModuleType,
+    idempotent: bool,
+    retry_unsafe: bool,
+    expected_attempts: int,
+    asynchronous: bool,
+) -> None:
+    runtime = importlib.import_module("contree_client.runtime")
+    testing = importlib.import_module("contree_client.testing")
+    client_class = testing.ContreeAsyncClient if asynchronous else testing.ContreeClient
+    client = client_class(
+        retry=runtime.RetryPolicy(
+            delays=(0.0,),
+            retry_unsafe=retry_unsafe,
+        )
+    )
+    client.retryable_errors = (TimeoutError,)
+    attempts = 0
+
+    def request(_spec: runtime.RequestSpec) -> runtime.ResponseData:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError("timed out")
+        return runtime.ResponseData(status=200, headers={}, body=b"{}")
+
+    async def async_request(spec: runtime.RequestSpec) -> runtime.ResponseData:
+        return request(spec)
+
+    client.request = async_request if asynchronous else request
+    spec = runtime.RequestSpec(
+        method="PUT" if idempotent else "POST",
+        path="/x",
+        idempotent=idempotent,
+    )
+
+    def call() -> runtime.ResponseData:
+        if asynchronous:
+            return asyncio.run(client.call(spec))
+        return client.call(spec)
+
+    if expected_attempts == 1:
+        with pytest.raises(TimeoutError):
+            call()
+    else:
+        assert call().status == 200
+    assert attempts == expected_attempts
+
+
+def test_async_call_normalizes_builtin_timeout_on_python_310(
+    generated_package: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = importlib.import_module("contree_client.base")
+    runtime = importlib.import_module("contree_client.runtime")
+    testing = importlib.import_module("contree_client.testing")
+    client = testing.ContreeAsyncClient()
+    native = TimeoutError("native timeout")
+
+    class LegacyAsyncioTimeoutError(Exception):
+        pass
+
+    # Python 3.10 exposes asyncio.TimeoutError as a distinct class.
+    monkeypatch.setattr(base.asyncio, "TimeoutError", LegacyAsyncioTimeoutError)
+
+    async def request(spec: runtime.RequestSpec) -> runtime.ResponseData:
+        spec.deadline = base.time.monotonic() - 1.0
+        raise native
+
+    client.request = request
+    spec = runtime.RequestSpec(
+        method="GET",
+        path="/x",
+        idempotent=True,
+        deadline=base.time.monotonic() + 1.0,
+    )
+
+    with pytest.raises(TimeoutError) as caught:
+        asyncio.run(client.call(spec))
+
+    assert str(caught.value) == runtime.REQUEST_DEADLINE_MESSAGE
+    assert caught.value.__cause__ is native
 
 
 def test_retry_policy_validation(generated_package: ModuleType) -> None:
