@@ -859,6 +859,9 @@ export class ContreeClient {{
         `unsupported baseUrl scheme ${{parsed.protocol}} in ${{baseUrl}}: use http:// or https://`,
       );
     }}
+    if (parsed.username || parsed.password) {{
+      throw new RangeError("baseUrl must not include credentials");
+    }}
     this.token = token ?? null;
     this.baseUrl = baseUrl.replace(/\\/+$/, "");
     this.project = project;
@@ -925,6 +928,11 @@ export class ContreeClient {{
     Object.assign(headers, spec.headers ?? {{}});
     if (IS_NODE && !("User-Agent" in headers)) {{
       headers["User-Agent"] = this.userAgent();
+    }}
+    try {{
+      new Headers(headers);
+    }} catch {{
+      throw new RangeError("invalid HTTP header name or value");
     }}
     return headers;
   }}

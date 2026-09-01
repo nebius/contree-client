@@ -430,8 +430,20 @@ class ContreeClientBase:
                 f"unsupported base_url scheme {{parts.scheme!r}}"
                 f" in {{base_url!r}}: use http:// or https://"
             )
-        if not parts.hostname:
+        # Reject permanent URL syntax errors before a backend can
+        # misclassify them as transient transport failures.
+        hostname = parts.hostname
+        if not hostname:
             raise ValueError(f"base_url has no hostname: {{base_url!r}}")
+        if any(
+            character.isspace() or ord(character) < 32 or ord(character) == 127
+            for character in hostname
+        ):
+            raise ValueError(f"base_url has invalid hostname: {{base_url!r}}")
+        try:
+            _ = parts.port
+        except ValueError as exc:
+            raise ValueError(f"base_url has invalid port: {{base_url!r}}") from exc
         self.token = token
         self.base_url = base_url.rstrip("/")
         self.project = project

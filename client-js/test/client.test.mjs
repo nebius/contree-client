@@ -50,6 +50,34 @@ test("rejects an invalid baseUrl scheme", () => {
   );
 });
 
+test("rejects credentials in baseUrl", () => {
+  assert.throws(
+    () =>
+      new ContreeClient("tok", {
+        baseUrl: "http://user:password@example.com",
+      }),
+    /baseUrl must not include credentials/,
+  );
+});
+
+test("rejects invalid headers before fetch", async () => {
+  let fetchCalls = 0;
+  const invalid = new ContreeClient("bad\ntoken", {
+    baseUrl: "http://127.0.0.1:1",
+    retry: new RetryPolicy({ delays: [0], maxAttempts: 3 }),
+    fetch: async () => {
+      fetchCalls += 1;
+      throw new TypeError("network failure");
+    },
+  });
+
+  await assert.rejects(
+    invalid.call({ method: "GET", path: "/x", idempotent: true }),
+    /invalid HTTP header name or value/,
+  );
+  assert.equal(fetchCalls, 0);
+});
+
 test("operation status is a typed model", async () => {
   const operation = await client.getOperationStatus(OPERATION_UUID);
   assert.ok(operation instanceof OperationResponse);

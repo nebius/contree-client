@@ -570,12 +570,15 @@ BAD_BASE_URLS = [
     "ftp://api.example.test",
     "https://",  # no hostname
     "api.example.test",  # no scheme at all
+    "http://bad host",
+    "http://localhost:bad",
+    "http://localhost:65536",
 ]
 
 
 @pytest.mark.parametrize("bad_url", BAD_BASE_URLS)
 def test_base_url_is_validated(generated_package: ModuleType, bad_url: str) -> None:
-    """P1-04: only http(s) with a hostname may build a client."""
+    """P1-04: only valid HTTP(S) URLs may build a client."""
     for module_name, class_name in (
         ("http", "ContreeClient"),
         ("httpx", "ContreeAsyncClient"),
