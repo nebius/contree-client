@@ -172,6 +172,38 @@ def wait_terminal(
         time.sleep(2)
 
 
+def wait_cancelled(
+    client: Any,
+    models: ModuleType,
+    operation_id: str,
+    deadline_seconds: float = 180.0,
+) -> Any:
+    """Wait for operation_id to reach CANCELLED, re-issuing
+    cancel_operation on every poll.
+
+    The first cancel request occasionally does not land - re-sending
+    it here retries that, where wait_terminal alone would just run out
+    the clock with nothing left to retry it.
+    """
+    deadline = time.monotonic() + deadline_seconds
+    while True:
+        operation = client.get_operation_status(operation_id, inflight=True)
+        if operation.status is models.OperationStatus.CANCELLED:
+            return operation
+        if (
+            isinstance(operation.status, models.OperationStatus)
+            and operation.status.is_terminal()
+        ):
+            pytest.fail(
+                f"operation {operation_id} finished as {operation.status},"
+                " not CANCELLED"
+            )
+        if time.monotonic() > deadline:
+            pytest.fail(f"operation {operation_id} was not cancelled in time")
+        client.cancel_operation(operation_id)
+        time.sleep(2)
+
+
 def wait_running(
     client: Any,
     models: ModuleType,
@@ -376,28 +408,60 @@ def test_events_of_finished_operation(
     live: Invoke,
     generated_package: ModuleType,
 ) -> None:
-    exceptions = importlib.import_module("contree_client.exceptions")
+    models = importlib.import_module("contree_client.models")
     candidates = [
         operation
         for operation in live("list_operations", limit=20, kind="instance")
-        if operation.status is not ... and operation.status.is_terminal()
+        if operation.status is not ...
+        and operation.status.is_terminal()
+        # CANCELLED is covered by test_events_of_cancelled_operation_are_dropped
+        and operation.status is not models.OperationStatus.CANCELLED
     ]
     if not candidates:
-        pytest.skip("no finished instance operations in this namespace")
+        pytest.skip("no finished (non-cancelled) instance operations in this namespace")
     operation = candidates[0]
-    try:
-        events = live("iter_operation_events", operation.uuid, collect=True)
-    except (
-        exceptions.GoneError,
-        exceptions.TooEarlyError,
-        exceptions.SSEStreamError,
-    ) as error:
-        # a cancelled operation's log can be dropped server-side (an
-        # in-band sse_error frame, not a clean 410) - either way there
-        # is nothing left to assert against
-        pytest.skip(f"event log not available: {error}")
+    events = live("iter_operation_events", operation.uuid, collect=True)
     assert events
     assert all(event.type for event in events)
+
+
+def test_events_of_cancelled_operation_are_dropped(
+    sync_client: Any,
+    permissions: dict[str, bool],
+    sample_image: Any,
+    generated_package: ModuleType,
+    track_operation: Callable[[str], None],
+) -> None:
+    """Cancel while EXECUTING drops the event log server-side.
+    `sleep 600` keeps the operation running long enough to rule out a
+    SUCCESS race. Cancel rejects an already-finished operation, so no
+    ambiguous state exists."""
+    if not permissions.get("cancel"):
+        pytest.skip("token lacks cancel permission")
+    if not (permissions.get("spawn_disposable") or permissions.get("spawn")):
+        pytest.skip("token lacks spawn permissions")
+    exceptions = importlib.import_module("contree_client.exceptions")
+    models = importlib.import_module("contree_client.models")
+    response = sync_client.spawn_instance(
+        "sleep 600",
+        str(sample_image.uuid),
+        shell=True,
+        disposable=True,
+        timeout=630,
+    )
+    track_operation(str(response.uuid))
+    sync_client.cancel_operation(str(response.uuid))
+    operation = wait_cancelled(sync_client, models, str(response.uuid))
+    assert operation.status is models.OperationStatus.CANCELLED
+
+    with pytest.raises(
+        (exceptions.GoneError, exceptions.TooEarlyError, exceptions.SSEStreamError)
+    ):
+        list(sync_client.iter_operation_events(str(response.uuid)))
+
+    assert (
+        list(sync_client.follow_operation_events(str(response.uuid), timeout=5.0)) == []
+    )
 
 
 # -- autodetected clients -----------------------------------------------------
@@ -479,8 +543,7 @@ def test_cancel_running_operation(
         pytest.skip("token lacks spawn permissions")
     models = importlib.import_module("contree_client.models")
     # long enough that the command cannot finish before the cancel
-    # lands (a `sleep 60` once raced the cancel and won: SUCCESS);
-    # wait_terminal still gives up after 180s if the cancel is lost
+    # lands (a `sleep 60` once raced the cancel and won: SUCCESS)
     response = sync_client.spawn_instance(
         "sleep 600",
         str(sample_image.uuid),
@@ -490,12 +553,7 @@ def test_cancel_running_operation(
     )
     track_operation(str(response.uuid))
     sync_client.cancel_operation(str(response.uuid))
-    operation = wait_terminal(
-        sync_client,
-        models,
-        str(response.uuid),
-        inflight=True,
-    )
+    operation = wait_cancelled(sync_client, models, str(response.uuid))
     assert operation.status is models.OperationStatus.CANCELLED
 
 
