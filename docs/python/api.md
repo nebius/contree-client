@@ -656,7 +656,10 @@ also available as the Python exception cause.
 
 Adapter wrappers also inherit the corresponding broad native backend
 base. Existing broad transport-library handlers therefore continue to
-work, but translated errors do not preserve every native subtype:
+work. The aiohttp adapter additionally preserves its
+`ServerTimeoutError`, `ClientSSLError`, `ServerFingerprintMismatch`, and
+`ClientResponseError` catch contracts. Other translated errors do not
+preserve every native subtype:
 
 <!--
 name: test_transport_error_handling;
@@ -681,9 +684,11 @@ except ContreeConnectionError as error:
     print(error.original)  # original requests exception
 ```
 
-TLS, certificate, and fingerprint failures surface as broad connection
-errors and are not retried. They normally require a configuration or
-trust-store change rather than another identical request.
+TLS, certificate, and fingerprint failures surface as connection errors
+and are not retried. The aiohttp wrappers also remain catchable through
+its native SSL and fingerprint types. These failures normally require a
+configuration or trust-store change rather than another identical
+request.
 
 Invalid URLs, unsupported schemes, and invalid headers remain native
 request errors. The client does not translate or retry them.

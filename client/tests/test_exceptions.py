@@ -382,8 +382,10 @@ def test_httpx_request_boundary(
     [
         ("connection", 2),
         ("timeout", 2),
+        ("server_timeout", 2),
         ("tls", 1),
         ("fingerprint", 1),
+        ("status", 1),
         ("invalid", 1),
         ("invalid_header", 1),
         ("payload", 2),
@@ -401,6 +403,8 @@ def test_aiohttp_request_boundary(
         native = aiohttp.ClientConnectionError("refused")
     elif kind == "timeout":
         native = TimeoutError("timed out")
+    elif kind == "server_timeout":
+        native = aiohttp.ServerTimeoutError("timed out")
     elif kind == "tls":
         connection_key = Mock(ssl=True, host="example.test", port=443, is_ssl=True)
         native = aiohttp.ClientConnectorSSLError(
@@ -409,6 +413,13 @@ def test_aiohttp_request_boundary(
     elif kind == "fingerprint":
         native = aiohttp.ServerFingerprintMismatch(
             b"expected", b"actual", "example.test", 443
+        )
+    elif kind == "status":
+        native = aiohttp.ClientResponseError(
+            Mock(real_url="http://example.test"),
+            (),
+            status=503,
+            message="service unavailable",
         )
     elif kind == "invalid":
         native = aiohttp.InvalidURL("bad URL")
@@ -451,12 +462,41 @@ def test_aiohttp_request_boundary(
         assert error is native
     elif kind == "timeout":
         _assert_translation(error, native, exceptions.ContreeTimeoutError, TimeoutError)
+    elif kind == "server_timeout":
+        _assert_translation(
+            error,
+            native,
+            exceptions.ContreeTimeoutError,
+            aiohttp.ServerTimeoutError,
+        )
+    elif kind == "status":
+        _assert_translation(
+            error,
+            native,
+            exceptions.ContreeHTTPError,
+            aiohttp.ClientResponseError,
+        )
+        assert error.status == 503
     elif kind == "payload":
         _assert_translation(
             error,
             native,
             exceptions.ContreeStreamError,
             aiohttp.ClientPayloadError,
+        )
+    elif kind == "tls":
+        _assert_translation(
+            error,
+            native,
+            exceptions.ContreeConnectionError,
+            aiohttp.ClientSSLError,
+        )
+    elif kind == "fingerprint":
+        _assert_translation(
+            error,
+            native,
+            exceptions.ContreeConnectionError,
+            aiohttp.ServerFingerprintMismatch,
         )
     else:
         _assert_translation(

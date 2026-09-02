@@ -462,9 +462,15 @@ The translated wrapper does not preserve every native subtype. It
 replaces tuple-only diagnostics with descriptive text. Empty backend
 timeout messages become `Request timed out`.
 
-TLS, certificate, and fingerprint failures use the broad connection
-wrapper but are not retried. Invalid URLs, unsupported schemes, and
-invalid headers remain native request errors and are not retried.
+The aiohttp adapter preserves native `ServerTimeoutError`,
+`ClientSSLError`, `ServerFingerprintMismatch`, and `ClientResponseError`
+catch contracts. This also covers final status errors raised by an
+injected session or retry middleware. It does not preserve every exact
+proxy or disconnect subtype.
+
+TLS, certificate, and fingerprint failures use connection wrappers but
+are not retried. Invalid URLs, unsupported schemes, and invalid headers
+remain native request errors and are not retried.
 
 One gotcha: requests classifies a stalled *read* on an already-open
 stream as its own `ConnectionError`, not `Timeout` - that is requests'

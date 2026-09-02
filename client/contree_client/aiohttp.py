@@ -13,6 +13,7 @@ import aiohttp
 from . import base
 from .exceptions import (
     ContreeConnectionError,
+    ContreeHTTPError,
     ContreeStreamError,
     ContreeTimeoutError,
 )
@@ -39,8 +40,45 @@ class ContreeAiohttpTimeoutError(ContreeTimeoutError, TimeoutError):
     """A `ContreeTimeoutError` that is also a stdlib `TimeoutError`."""
 
 
+class ContreeAiohttpServerTimeoutError(
+    ContreeAiohttpTimeoutError, aiohttp.ServerTimeoutError
+):
+    """An aiohttp server timeout catchable through both hierarchies."""
+
+
 class ContreeAiohttpStreamError(ContreeStreamError, aiohttp.ClientPayloadError):
     """A `ContreeStreamError` that is also an `aiohttp.ClientPayloadError`."""
+
+
+class ContreeAiohttpSSLError(ContreeAiohttpConnectionError, aiohttp.ClientSSLError):
+    """An aiohttp TLS error catchable through both hierarchies."""
+
+
+class ContreeAiohttpFingerprintError(
+    ContreeAiohttpConnectionError, aiohttp.ServerFingerprintMismatch
+):
+    """An aiohttp fingerprint mismatch catchable through both hierarchies."""
+
+
+class ContreeAiohttpAPIError(ContreeHTTPError, aiohttp.ClientResponseError):
+    """An HTTP status error raised by an injected aiohttp session."""
+
+    @classmethod
+    def wrap(cls, original: BaseException) -> BaseException:
+        if not isinstance(original, aiohttp.ClientResponseError):
+            return original
+        try:
+            wrapped = cls(
+                original.request_info,
+                original.history,
+                status=original.status,
+                message=original.message,
+                headers=original.headers,
+            )
+        except Exception:
+            return original
+        wrapped.__cause__ = original
+        return wrapped
 
 
 class ContreeAsyncClient(base.ContreeAsyncClient):
@@ -130,10 +168,18 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                     headers={k.lower(): v for k, v in response.headers.items()},
                     body=body,
                 )
-        except (aiohttp.ServerTimeoutError, TimeoutError, asyncio.TimeoutError) as exc:
+        except aiohttp.ServerTimeoutError as exc:
+            raise ContreeAiohttpServerTimeoutError.wrap(exc) from exc
+        except (TimeoutError, asyncio.TimeoutError) as exc:
             raise ContreeAiohttpTimeoutError.wrap(exc) from exc
+        except aiohttp.ServerFingerprintMismatch as exc:
+            raise ContreeAiohttpFingerprintError.wrap(exc) from exc
+        except aiohttp.ClientSSLError as exc:
+            raise ContreeAiohttpSSLError.wrap(exc) from exc
         except aiohttp.ClientPayloadError as exc:
             raise ContreeAiohttpStreamError.wrap(exc) from exc
+        except aiohttp.ClientResponseError as exc:
+            raise ContreeAiohttpAPIError.wrap(exc) from exc
         except aiohttp.ClientConnectionError as exc:
             raise ContreeAiohttpConnectionError.wrap(exc) from exc
         remaining_timeout(spec.deadline, None)
@@ -205,10 +251,18 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 async for chunk in response.content.iter_chunked(CHUNK_SIZE):
                     remaining_timeout(spec.deadline, None)
                     yield chunk
-        except (aiohttp.ServerTimeoutError, TimeoutError, asyncio.TimeoutError) as exc:
+        except aiohttp.ServerTimeoutError as exc:
+            raise ContreeAiohttpServerTimeoutError.wrap(exc) from exc
+        except (TimeoutError, asyncio.TimeoutError) as exc:
             raise ContreeAiohttpTimeoutError.wrap(exc) from exc
+        except aiohttp.ServerFingerprintMismatch as exc:
+            raise ContreeAiohttpFingerprintError.wrap(exc) from exc
+        except aiohttp.ClientSSLError as exc:
+            raise ContreeAiohttpSSLError.wrap(exc) from exc
         except aiohttp.ClientPayloadError as exc:
             raise ContreeAiohttpStreamError.wrap(exc) from exc
+        except aiohttp.ClientResponseError as exc:
+            raise ContreeAiohttpAPIError.wrap(exc) from exc
         except aiohttp.ClientConnectionError as exc:
             raise ContreeAiohttpConnectionError.wrap(exc) from exc
 

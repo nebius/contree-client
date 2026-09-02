@@ -23,6 +23,7 @@ TIMEOUT = "timeout"
 STREAM = "stream"
 DECOMPRESSION = "decompression"
 DECOMPRESSION_NONRETRYABLE = "decompression-nonretryable"
+HTTP_STATUS = "http-status"
 
 
 # Each public exception name exported by the installed backend belongs to one
@@ -145,18 +146,13 @@ BACKEND_POLICIES = {
     "aiohttp": {
         NATIVE: {
             "ClientError",
-            "ClientHttpProxyError",
-            "ClientResponseError",
-            "ContentTypeError",
             "InvalidURL",
             "InvalidUrlClientError",
             "InvalidUrlRedirectClientError",
             "NonHttpUrlClientError",
             "NonHttpUrlRedirectClientError",
             "RedirectClientError",
-            "TooManyRedirects",
             "WSMessageTypeError",
-            "WSServerHandshakeError",
         },
         CONNECTION: {
             "ClientConnectionError",
@@ -181,6 +177,13 @@ BACKEND_POLICIES = {
             "SocketTimeoutError",
         },
         STREAM: {"ClientPayloadError"},
+        HTTP_STATUS: {
+            "ClientHttpProxyError",
+            "ClientResponseError",
+            "ContentTypeError",
+            "TooManyRedirects",
+            "WSServerHandshakeError",
+        },
     },
 }
 
@@ -310,7 +313,10 @@ def _native_error(
     name: str,
     native_type: type[BaseException],
 ) -> BaseException:
-    backend = "httpx" if backend == "httpx_async" else backend
+    backend = {
+        "httpx_async": "httpx",
+        "aiohttp_stream": "aiohttp",
+    }.get(backend, backend)
     if backend == "urllib3":
         return _urllib3_error(name, native_type)
     if backend == "requests" and name == "JSONDecodeError":
@@ -436,6 +442,42 @@ def _run_aiohttp_boundary(
     return asyncio.run(scenario()), session.calls
 
 
+def _run_aiohttp_stream_boundary(
+    native: BaseException,
+    runtime: ModuleType,
+) -> tuple[BaseException, int]:
+    module = __import__("contree_client.aiohttp", fromlist=["ContreeAsyncClient"])
+
+    class RequestContext:
+        async def __aenter__(self) -> None:
+            raise native
+
+        async def __aexit__(self, *args: object) -> None:
+            pass
+
+    class Session:
+        calls = 0
+        closed = False
+
+        def request(self, *args: object, **kwargs: object) -> RequestContext:
+            self.calls += 1
+            return RequestContext()
+
+    session = Session()
+
+    async def scenario() -> BaseException:
+        client = module.ContreeAsyncClient(
+            "token",
+            base_url="http://example.test",
+            aiohttp_session=session,
+        )
+        with pytest.raises(BaseException) as caught:
+            await anext(client.stream(runtime.RequestSpec(method="GET", path="/x")))
+        return caught.value
+
+    return asyncio.run(scenario()), session.calls
+
+
 def _run_httpx_async_boundary(
     native: BaseException,
     runtime: ModuleType,
@@ -471,7 +513,13 @@ def _matrix_cases() -> list[tuple[str, str, str]]:
     return [
         (adapter, name, policy)
         for backend, policies in BACKEND_POLICIES.items()
-        for adapter in ((backend, "httpx_async") if backend == "httpx" else (backend,))
+        for adapter in (
+            (backend, "httpx_async")
+            if backend == "httpx"
+            else (backend, "aiohttp_stream")
+            if backend == "aiohttp"
+            else (backend,)
+        )
         for policy, names in policies.items()
         for name in sorted(names)
     ]
@@ -489,27 +537,29 @@ def test_backend_exception_policy(
     runtime: ModuleType,
     exceptions: ModuleType,
 ) -> None:
-    catalog_backend = "httpx" if backend == "httpx_async" else backend
+    catalog_backend = {
+        "httpx_async": "httpx",
+        "aiohttp_stream": "aiohttp",
+    }.get(backend, backend)
     native_type = _backend_classes(catalog_backend)[name]
     native = _native_error(backend, name, native_type)
     if backend == "aiohttp":
         error, attempts = _run_aiohttp_boundary(native, runtime)
+    elif backend == "aiohttp_stream":
+        error, attempts = _run_aiohttp_stream_boundary(native, runtime)
     elif backend == "httpx_async":
         error, attempts = _run_httpx_async_boundary(native, runtime)
     else:
         error, attempts = _run_sync_boundary(backend, native, runtime)
 
-    expected_attempts = (
-        2
-        if policy
-        in {
-            CONNECTION,
-            TIMEOUT,
-            STREAM,
-            DECOMPRESSION,
-        }
-        else 1
-    )
+    expected_attempts = 1
+    if backend != "aiohttp_stream" and policy in {
+        CONNECTION,
+        TIMEOUT,
+        STREAM,
+        DECOMPRESSION,
+    }:
+        expected_attempts = 2
     assert attempts == expected_attempts
     if policy == NATIVE:
         assert error is native
@@ -522,6 +572,7 @@ def test_backend_exception_policy(
         STREAM: exceptions.ContreeStreamError,
         DECOMPRESSION: exceptions.DecompressionError,
         DECOMPRESSION_NONRETRYABLE: exceptions.DecompressionError,
+        HTTP_STATUS: exceptions.ContreeHTTPError,
     }[policy]
     assert isinstance(error, expected_type)
     assert error.original is native
@@ -536,12 +587,21 @@ def test_backend_exception_policy(
     }
     if policy in {CONNECTION, CONNECTION_NONRETRYABLE}:
         assert isinstance(error, native_base[catalog_backend])
+        if catalog_backend == "aiohttp" and policy == CONNECTION_NONRETRYABLE:
+            tls_type = (
+                aiohttp.ServerFingerprintMismatch
+                if name == "ServerFingerprintMismatch"
+                else aiohttp.ClientSSLError
+            )
+            assert isinstance(error, tls_type)
     elif policy == TIMEOUT:
         timeout_base = {
             "http": TimeoutError,
             "urllib3": urllib3.exceptions.TimeoutError,
             "requests": requests.Timeout,
             "httpx": httpx.TimeoutException,
-            "aiohttp": TimeoutError,
+            "aiohttp": aiohttp.ServerTimeoutError,
         }
         assert isinstance(error, timeout_base[catalog_backend])
+    elif policy == HTTP_STATUS:
+        assert isinstance(error, aiohttp.ClientResponseError)
