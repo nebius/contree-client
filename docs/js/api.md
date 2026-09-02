@@ -108,14 +108,13 @@ wire, an explicit `null` is sent as JSON null. Timestamps become
 
 ## Errors
 
-The hierarchy is the Python one with camelCase fields:
+The public client-created hierarchy uses camelCase fields:
 
 ```text
 ContreeError
 └── ContreeTransportError
-    ├── ContreeProtocolError
-    │   └── ContreeStreamError        (compatibility base)
-    │       └── SSEStreamError        (lastEventId)
+    ├── ContreeStreamError
+    │   └── SSEStreamError        (lastEventId)
     └── ContreeHTTPError
         └── ContreeAPIError           (status, error, traceback, retryAfter)
             ├── BadRequestError       400
@@ -129,14 +128,13 @@ ContreeError
             └── ServerError           5xx
 ```
 
-Use `ContreeProtocolError` instead of `ContreeStreamError` in new code.
+`ContreeStreamError` is the broad client-created stream category.
+`SSEStreamError` adds the last usable event id for resumption.
 
-The JavaScript classes use the same top-level transport, protocol, and
-HTTP grouping. Python provides additional backend-specific connection,
-timeout, TLS, closed-connection, and decompression categories. The Fetch
-API does not expose portable network subtypes, so connection failures
-reject with `TypeError`. Timeouts reject with a platform `DOMException`
-whose `name` is `"TimeoutError"`.
+The Fetch API does not expose portable network subtypes. Connection
+failures reject with a native `TypeError`. Timeouts reject with a
+platform `DOMException` whose `name` is `"TimeoutError"`. Client-side
+URL, scheme, and header errors also remain native platform errors.
 
 ## Platform notes
 

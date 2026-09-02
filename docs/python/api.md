@@ -635,34 +635,28 @@ except ContreeAPIError as error:
 
 ### Transport errors
 
-Every contree-client exception is a {class}`~contree_client.ContreeError`:
+The public client exception hierarchy is:
 
 ```
 ContreeError
 └── ContreeTransportError
     ├── ContreeConnectionError   # refused, unreachable, DNS failure
-    │   ├── ContreeSSLError      # TLS or certificate failure
-    │   └── ContreeConnectionClosedError
     ├── ContreeTimeoutError      # connect/read/overall deadline elapsed
-    ├── ContreeProtocolError     # invalid wire framing or response payload
-    │   └── ContreeStreamError   # compatibility base; deprecated
-    │       ├── DecompressionError
-    │       └── SSEStreamError   # in-band SSE error frame
+    ├── ContreeStreamError       # response body could not be consumed
+    │   ├── DecompressionError
+    │   └── SSEStreamError       # in-band SSE error frame
     └── ContreeHTTPError         # a response with a status line arrived
         └── ContreeAPIError      # the status/subclasses documented above
 ```
 
-Use `ContreeProtocolError` instead of `ContreeStreamError` in new code.
-The compatibility base keeps existing stream-error handlers working.
-
 Translated errors retain the backend diagnostic text. A bare backend
 timeout uses `Request timed out` instead of an empty message. The
-`original` property exposes the native exception, which is also the
-Python exception cause.
+`original` property exposes the exact native exception object, which is
+also available as the Python exception cause.
 
-Adapter wrappers also inherit the corresponding native backend base.
-Catching the transport library's exception therefore continues to
-work:
+Adapter wrappers also inherit the corresponding broad native backend
+base. Existing broad transport-library handlers therefore continue to
+work, but translated errors do not preserve every native subtype:
 
 <!--
 name: test_transport_error_handling;
@@ -687,9 +681,12 @@ except ContreeConnectionError as error:
     print(error.original)  # original requests exception
 ```
 
-TLS and certificate failures are not retried. They normally require a
-configuration or trust-store change rather than another identical
-request.
+TLS, certificate, and fingerprint failures surface as broad connection
+errors and are not retried. They normally require a configuration or
+trust-store change rather than another identical request.
+
+Invalid URLs, unsupported schemes, and invalid headers remain native
+request errors. The client does not translate or retry them.
 
 See [Transport adapters](adapters.md#transport-errors) for a caveat on
 one backend.
