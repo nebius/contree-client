@@ -426,13 +426,11 @@ def test_stdlib_pool_never_resends_non_idempotent_requests(
                 raise BrokenPipeError("stale keepalive")
             return original(connection, spec, target, headers, timeout)
 
-        http = importlib.import_module("contree_client.http")
+        exceptions = importlib.import_module("contree_client.exceptions")
         client._send_on = flaky_send
-        with pytest.raises(http.ContreeHttpConnectionError) as excinfo:
+        with pytest.raises(exceptions.ContreeConnectionError) as excinfo:
             client.upload_file(io.BytesIO(payload))
-        # still catchable as the original stdlib error a caller may
-        # already handle: only the type is retagged, the ancestry isn't
-        assert isinstance(excinfo.value, OSError)
+        assert isinstance(excinfo.value.original, BrokenPipeError)
         assert len(failed) == 1  # exactly one attempt, no replay
         assert client._pool.created == 0  # the broken slot was freed
 

@@ -359,7 +359,7 @@ from urllib.parse import urlsplit
 from . import operations
 from .exceptions import (
     ContreeAPIError,
-    ContreeError,
+    ContreeTransportError,
     ContreeTimeoutError,
     DecompressionError,
     NotFoundError,
@@ -422,26 +422,11 @@ class ContreeClientBase:
     """
 
     log: logging.Logger = logger
-    # transient transport errors eligible for buffered retry or SSE reconnect
-    retryable_errors: tuple[type[BaseException], ...] = ()
-    # permanent adapter errors that neither path retries
-    nonretryable_errors: tuple[type[BaseException], ...] = ()
     # User-Agent product tokens; adapters override UA_TRANSPORT_LIBRARY
     UA_PRODUCT = f"contree-client/{{package_version()}}"
     UA_TRANSPORT_LIBRARY = ""
     UA_PYTHON_VERSION = f"Python/{{'.'.join(map(str, sys.version_info[:3]))}}"
     UA_PLATFORM = platform.platform()
-
-    def _is_nonretryable(self, error: BaseException) -> bool:
-        """Check the translated error and its native cause chain."""
-        current: BaseException | None = error
-        seen: set[int] = set()
-        while current is not None and id(current) not in seen:
-            if isinstance(current, self.nonretryable_errors):
-                return True
-            seen.add(id(current))
-            current = current.__cause__ or current.__context__
-        return False
 
     def __init__(
         self,
@@ -644,7 +629,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
             deadline_limited = deadline_limits_timeout(spec.deadline, self.timeout)
             try:
                 response = self.request(spec)
-            except (ContreeTimeoutError, *self.retryable_errors) as exc:
+            except ContreeTransportError as exc:
                 if deadline_due(
                     spec.deadline,
                     deadline_limited and isinstance(exc, ContreeTimeoutError),
@@ -675,13 +660,34 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
             )
             try:
                 response = self.request(spec)
-            except (ContreeTimeoutError, *self.retryable_errors) as exc:
+            except ContreeAPIError as exc:
+                if not policy.retryable_status(exc.status) or exhausted:
+                    raise
+                if not replay_safe and exc.status not in (425, 429):
+                    raise
+                delay = exc.retry_after
+                if delay is None:
+                    delay = next(delays)
+                self.log.warning(
+                    "server answered %d, retrying in %.1fs...",
+                    exc.status,
+                    delay,
+                )
+                if spec.deadline is not None:
+                    delay = min(
+                        delay,
+                        max(0.0, spec.deadline - time.monotonic()),
+                    )
+                time.sleep(delay)
+                rewind_body(spec, start)
+                continue
+            except ContreeTransportError as exc:
                 if deadline_due(
                     spec.deadline,
                     deadline_limited and isinstance(exc, ContreeTimeoutError),
                 ):
                     raise TimeoutError(REQUEST_DEADLINE_MESSAGE) from exc
-                if not replay_safe or self._is_nonretryable(exc) or exhausted:
+                if not replay_safe or not exc.retryable or exhausted:
                     raise
                 delay = next(delays)
                 self.log.warning(
@@ -736,7 +742,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                 )
             self.log_response(spec, response)
             status = operations.parse_get_operation_status(response).status
-        except (ContreeError, *self.retryable_errors) as exc:
+        except ContreeTransportError as exc:
             if deadline_due(
                 deadline,
                 deadline_limited and isinstance(exc, ContreeTimeoutError),
@@ -744,8 +750,10 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                 raise TimeoutError(
                     f"operation {operation_id} status probe exceeded its deadline"
                 ) from exc
-            if self._is_nonretryable(exc):
+            if not exc.retryable:
                 raise
+            return False
+        except ContreeAPIError:
             return False
         except TimeoutError as exc:
             if deadline is not None:
@@ -876,13 +884,15 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                             response = operations.parse_get_operation_status(
                                 raw_response
                             )
-                        except (ContreeError, *self.retryable_errors) as exc:
+                        except ContreeTransportError as exc:
                             check_deadline(
                                 timeout_limited=request_deadline_limited
                                 and isinstance(exc, ContreeTimeoutError)
                             )
-                            if self._is_nonretryable(exc):
+                            if not exc.retryable:
                                 raise
+                            response = None
+                        except ContreeAPIError:
                             response = None
                         except TimeoutError:
                             check_deadline(timeout_limited=True)
@@ -934,9 +944,9 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                     delay = min(delay, max(0.0, deadline - time.monotonic()))
                 time.sleep(delay)
                 continue
-            except (ContreeTimeoutError, *self.retryable_errors) as exc:
+            except ContreeTransportError as exc:
                 check_deadline()
-                if self._is_nonretryable(exc):
+                if not exc.retryable:
                     raise
                 self.log.warning("stream broken (last_id=%s): %s", last_id, exc)
             # the stream ended or broke without a completion frame:
@@ -1053,7 +1063,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                     response = await asyncio.wait_for(
                         self.request(spec), timeout=remaining
                     )
-            except (ContreeTimeoutError, *self.retryable_errors) as exc:
+            except ContreeTransportError as exc:
                 if deadline_due(
                     spec.deadline,
                     deadline_limited and isinstance(exc, ContreeTimeoutError),
@@ -1095,13 +1105,34 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                     response = await asyncio.wait_for(
                         self.request(spec), timeout=remaining
                     )
-            except (ContreeTimeoutError, *self.retryable_errors) as exc:
+            except ContreeAPIError as exc:
+                if not policy.retryable_status(exc.status) or exhausted:
+                    raise
+                if not replay_safe and exc.status not in (425, 429):
+                    raise
+                delay = exc.retry_after
+                if delay is None:
+                    delay = next(delays)
+                self.log.warning(
+                    "server answered %d, retrying in %.1fs...",
+                    exc.status,
+                    delay,
+                )
+                if spec.deadline is not None:
+                    delay = min(
+                        delay,
+                        max(0.0, spec.deadline - time.monotonic()),
+                    )
+                await asyncio.sleep(delay)
+                rewind_body(spec, start)
+                continue
+            except ContreeTransportError as exc:
                 if deadline_due(
                     spec.deadline,
                     deadline_limited and isinstance(exc, ContreeTimeoutError),
                 ):
                     raise TimeoutError(REQUEST_DEADLINE_MESSAGE) from exc
-                if not replay_safe or self._is_nonretryable(exc) or exhausted:
+                if not replay_safe or not exc.retryable or exhausted:
                     raise
                 delay = next(delays)
                 self.log.warning(
@@ -1170,7 +1201,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 )
             self.log_response(spec, response)
             status = operations.parse_get_operation_status(response).status
-        except (ContreeError, *self.retryable_errors) as exc:
+        except ContreeTransportError as exc:
             if deadline_due(
                 deadline,
                 deadline_limited and isinstance(exc, ContreeTimeoutError),
@@ -1178,8 +1209,10 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 raise TimeoutError(
                     f"operation {operation_id} status probe exceeded its deadline"
                 ) from exc
-            if self._is_nonretryable(exc):
+            if not exc.retryable:
                 raise
+            return False
+        except ContreeAPIError:
             return False
         except (asyncio.TimeoutError, TimeoutError) as exc:
             if deadline is not None:
@@ -1324,13 +1357,15 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                             response = operations.parse_get_operation_status(
                                 raw_response
                             )
-                        except (ContreeError, *self.retryable_errors) as exc:
+                        except ContreeTransportError as exc:
                             check_deadline(
                                 timeout_limited=request_deadline_limited
                                 and isinstance(exc, ContreeTimeoutError)
                             )
-                            if self._is_nonretryable(exc):
+                            if not exc.retryable:
                                 raise
+                            response = None
+                        except ContreeAPIError:
                             response = None
                         except (asyncio.TimeoutError, TimeoutError):
                             check_deadline(timeout_limited=True)
@@ -1382,9 +1417,9 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                     delay = min(delay, max(0.0, deadline - time.monotonic()))
                 await asyncio.sleep(delay)
                 continue
-            except (ContreeTimeoutError, *self.retryable_errors) as exc:
+            except ContreeTransportError as exc:
                 check_deadline()
-                if self._is_nonretryable(exc):
+                if not exc.retryable:
                     raise
                 self.log.warning("stream broken (last_id=%s): %s", last_id, exc)
             # the stream ended or broke without a completion frame:
@@ -1762,10 +1797,8 @@ EXCEPTION_NAMES = [
     "ContreeAPIError",
     "ContreeConnectionError",
     "ContreeError",
-    "ContreeHTTPError",
-    "ContreeStreamError",
-    "ContreeTimeoutError",
     "ContreeTransportError",
+    "ContreeTimeoutError",
     "DecompressionError",
     "ForbiddenError",
     "GoneError",

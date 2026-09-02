@@ -639,59 +639,61 @@ The public client exception hierarchy is:
 
 ```
 ContreeError
-└── ContreeTransportError
-    ├── ContreeConnectionError   # refused, unreachable, DNS failure
-    ├── ContreeTimeoutError      # connect/read/overall deadline elapsed
-    ├── ContreeStreamError       # response body could not be consumed
-    │   ├── DecompressionError
-    │   └── SSEStreamError       # in-band SSE error frame
-    └── ContreeHTTPError         # a response with a status line arrived
-        └── ContreeAPIError      # the status/subclasses documented above
+├── ContreeAPIError              # the API returned a non-success HTTP status
+└── ContreeTransportError        # the transport did not complete the exchange
+    ├── ContreeConnectionError   # DNS, TCP, TLS, proxy, OS or WinSock failure
+    ├── ContreeTimeoutError      # backend connect/read timeout
+    ├── DecompressionError       # response decompression failed
+    └── SSEStreamError           # in-band SSE error frame
 ```
 
-Translated errors retain the backend diagnostic text. A bare backend
-timeout uses `Request timed out` instead of an empty message. The
-`original` property exposes the exact native exception object, which is
-also available as the Python exception cause.
-
-Adapter wrappers also inherit the corresponding broad native backend
-base. Existing broad transport-library handlers therefore continue to
-work. The aiohttp adapter additionally preserves its
-`ServerTimeoutError`, `ClientSSLError`, `ServerFingerprintMismatch`, and
-`ClientResponseError` catch contracts. Other translated errors do not
-preserve every native subtype:
+These classes do not inherit exception types from `requests`, `urllib3`,
+`httpx`, `aiohttp`, or `http.client`. Catch Contree errors around a
+Contree call. The `original` property and `__cause__` expose the exact
+native exception, including `errno`, `winerror`, and backend metadata.
 
 <!--
 name: test_transport_error_handling;
 fixtures: client
 ```python
-from contree_client.requests import ContreeRequestsConnectionError
+import requests
 
-client.mock("whoami", error=ContreeRequestsConnectionError("connection refused"))
+from contree_client import ContreeConnectionError
+
+native = requests.ConnectionError("connection refused")
+client.mock(
+    "whoami",
+    error=ContreeConnectionError(original=native),
+)
 ```
 -->
 ```python
 import requests
 
-from contree_client import ContreeConnectionError
+from contree_client import ContreeTransportError
 
 try:
     client.whoami()
-except ContreeConnectionError as error:
-    # this backend's own requests.ConnectionError still matches too
-    assert isinstance(error, requests.ConnectionError)
+except ContreeTransportError as error:
+    assert isinstance(error.original, requests.RequestException)
     print(error)           # readable native diagnostic
     print(error.original)  # original requests exception
 ```
 
-TLS, certificate, and fingerprint failures surface as connection errors
-and are not retried. The aiohttp wrappers also remain catchable through
-its native SSL and fingerprint types. These failures normally require a
-configuration or trust-store change rather than another identical
-request.
+All transport errors default to `retryable=False`. An adapter sets it to
+`True` only for a specific transient failure. The retry policy then also
+checks request replay safety, its attempt budget, and the overall deadline.
+The exception class alone does not enable retry.
 
-Invalid URLs, unsupported schemes, and invalid headers remain native
-request errors. The client does not translate or retry them.
+Invalid URLs and headers become non-retryable `ContreeTransportError` when
+the backend raises them inside its request I/O boundary.
+TLS verification, fingerprint mismatch, proxy authentication, resource
+exhaustion, permission failures, and unknown `OSError` values are also
+non-retryable. API errors are created only from non-success HTTP status;
+a malformed successful response is a non-retryable transport error.
+
+Operation deadlines still raise the built-in `TimeoutError`.
+`ContreeTimeoutError` represents only a timeout reported by a backend.
 
 See [Transport adapters](adapters.md#transport-errors) for a caveat on
 one backend.

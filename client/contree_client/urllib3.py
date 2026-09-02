@@ -9,7 +9,14 @@ from typing import Any
 import urllib3
 
 from . import base
-from .exceptions import ContreeConnectionError, ContreeTimeoutError, DecompressionError
+from .exceptions import (
+    ContreeConnectionError,
+    ContreeTimeoutError,
+    ContreeTransportError,
+    DecompressionError,
+    _has_retryable_os_error,
+    _is_retryable_os_error,
+)
 from .runtime import (
     CHUNK_SIZE,
     RequestSpec,
@@ -22,15 +29,25 @@ from .runtime import (
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
 
+RETRYABLE_REQUEST_ERRORS = (
+    urllib3.exceptions.IncompleteRead,
+    urllib3.exceptions.InvalidChunkLength,
+)
 
-class ContreeUrllib3ConnectionError(
-    ContreeConnectionError, urllib3.exceptions.HTTPError
-):
-    """A `ContreeConnectionError` that is also a `urllib3.exceptions.HTTPError`."""
+
+def _connection_error(exc: BaseException) -> ContreeConnectionError:
+    return ContreeConnectionError(
+        original=exc,
+        retryable=_has_retryable_os_error(exc),
+    )
 
 
-class ContreeUrllib3TimeoutError(ContreeTimeoutError, urllib3.exceptions.TimeoutError):
-    """A `ContreeTimeoutError` that is also a `urllib3.exceptions.TimeoutError`."""
+def _transport_error(exc: urllib3.exceptions.HTTPError) -> ContreeTransportError:
+    return ContreeTransportError(
+        original=exc,
+        retryable=isinstance(exc, RETRYABLE_REQUEST_ERRORS)
+        or _has_retryable_os_error(exc),
+    )
 
 
 class ContreeClient(base.ContreeSyncClient):
@@ -44,12 +61,6 @@ class ContreeClient(base.ContreeSyncClient):
 
     log = logger.getChild("urllib3")
     UA_TRANSPORT_LIBRARY = library_version(urllib3)
-    retryable_errors = (
-        ContreeUrllib3ConnectionError,
-        ContreeUrllib3TimeoutError,
-        DecompressionError,
-    )
-    nonretryable_errors = (urllib3.exceptions.SSLError,)
 
     def __init__(
         self,
@@ -117,21 +128,25 @@ class ContreeClient(base.ContreeSyncClient):
                 decode_content=True,
                 **pool_options,
             )
-        except (
-            urllib3.exceptions.LocationValueError,
-            urllib3.exceptions.InvalidHeader,
-        ):
-            raise
+        except urllib3.exceptions.SSLError as exc:
+            raise ContreeConnectionError(original=exc) from exc
         except urllib3.exceptions.NewConnectionError as exc:
             # NewConnectionError subclasses ConnectTimeoutError, but a
             # refused connection is not a timeout.
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+            raise _connection_error(exc) from exc
         except urllib3.exceptions.TimeoutError as exc:
-            raise ContreeUrllib3TimeoutError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
         except urllib3.exceptions.DecodeError as exc:
-            raise DecompressionError.wrap(exc) from exc
+            raise DecompressionError(original=exc, retryable=True) from exc
+        except RETRYABLE_REQUEST_ERRORS as exc:
+            raise _transport_error(exc) from exc
         except urllib3.exceptions.HTTPError as exc:
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+            raise _transport_error(exc) from exc
+        except OSError as exc:
+            raise ContreeConnectionError(
+                original=exc,
+                retryable=_is_retryable_os_error(exc),
+            ) from exc
         data = ResponseData(
             status=response.status,
             headers={k.lower(): v for k, v in response.headers.items()},
@@ -179,19 +194,23 @@ class ContreeClient(base.ContreeSyncClient):
                 decode_content=decode_content,
                 **pool_options,
             )
-        except (
-            urllib3.exceptions.LocationValueError,
-            urllib3.exceptions.InvalidHeader,
-        ):
-            raise
+        except urllib3.exceptions.SSLError as exc:
+            raise ContreeConnectionError(original=exc) from exc
         except urllib3.exceptions.NewConnectionError as exc:
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+            raise _connection_error(exc) from exc
         except urllib3.exceptions.TimeoutError as exc:
-            raise ContreeUrllib3TimeoutError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
         except urllib3.exceptions.DecodeError as exc:
-            raise DecompressionError.wrap(exc) from exc
+            raise DecompressionError(original=exc, retryable=True) from exc
+        except RETRYABLE_REQUEST_ERRORS as exc:
+            raise _transport_error(exc) from exc
         except urllib3.exceptions.HTTPError as exc:
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+            raise _transport_error(exc) from exc
+        except OSError as exc:
+            raise ContreeConnectionError(
+                original=exc,
+                retryable=_is_retryable_os_error(exc),
+            ) from exc
         try:
             self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status)
             if not 200 <= response.status < 300:
@@ -206,13 +225,24 @@ class ContreeClient(base.ContreeSyncClient):
                 remaining_timeout(spec.deadline, None)
                 yield chunk
         except urllib3.exceptions.NewConnectionError as exc:
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+            raise _connection_error(exc) from exc
         except urllib3.exceptions.TimeoutError as exc:
-            raise ContreeUrllib3TimeoutError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
         except urllib3.exceptions.DecodeError as exc:
-            raise DecompressionError.wrap(exc) from exc
+            raise DecompressionError(original=exc, retryable=True) from exc
+        except RETRYABLE_REQUEST_ERRORS as exc:
+            raise _transport_error(exc) from exc
+        except urllib3.exceptions.ProtocolError as exc:
+            # The response was already open. A protocol failure here is a
+            # stream interruption, so SSE recovery may reconnect.
+            raise ContreeTransportError(original=exc, retryable=True) from exc
         except urllib3.exceptions.HTTPError as exc:
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+            raise _transport_error(exc) from exc
+        except OSError as exc:
+            raise ContreeConnectionError(
+                original=exc,
+                retryable=_is_retryable_os_error(exc),
+            ) from exc
         finally:
             # close before releasing: an aborted stream must not put a
             # half-read connection back into the pool

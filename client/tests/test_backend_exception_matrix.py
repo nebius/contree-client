@@ -1,10 +1,12 @@
-"""Exhaustive policy matrix for exceptions exported by HTTP backends."""
+"""Policy matrix for every exception exported by the HTTP backends."""
 
 from __future__ import annotations
 
 import asyncio
+import errno
 import http.client
 import inspect
+import socket
 import ssl
 from types import ModuleType
 from typing import Any
@@ -17,47 +19,40 @@ import requests
 import urllib3
 
 NATIVE = "native"
+TRANSPORT = "transport"
+TRANSPORT_RETRYABLE = "transport-retryable"
 CONNECTION = "connection"
-CONNECTION_NONRETRYABLE = "connection-nonretryable"
-TIMEOUT = "timeout"
-STREAM = "stream"
+CONNECTION_RETRYABLE = "connection-retryable"
+TIMEOUT_RETRYABLE = "timeout-retryable"
 DECOMPRESSION = "decompression"
-DECOMPRESSION_NONRETRYABLE = "decompression-nonretryable"
-HTTP_STATUS = "http-status"
+DECOMPRESSION_RETRYABLE = "decompression-retryable"
+API_RETRYABLE = "api-retryable"
 
 
-# Each public exception name exported by the installed backend belongs to one
-# policy. The catalog test below fails when a backend changes its exception
-# surface, so a dependency update requires an explicit policy decision.
+# Every public exception exported by the installed backend has one policy.
+# A dependency update therefore requires an explicit decision for new classes.
 BACKEND_POLICIES = {
     "http": {
-        NATIVE: {"InvalidURL"},
-        CONNECTION: {
+        TRANSPORT: {
             "BadStatusLine",
             "CannotSendHeader",
             "CannotSendRequest",
             "HTTPException",
             "ImproperConnectionState",
-            "IncompleteRead",
+            "InvalidURL",
             "LineTooLong",
             "NotConnected",
-            "RemoteDisconnected",
             "ResponseNotReady",
             "UnimplementedFileMode",
             "UnknownProtocol",
             "UnknownTransferEncoding",
             "error",
         },
+        TRANSPORT_RETRYABLE: {"IncompleteRead"},
+        CONNECTION_RETRYABLE: {"RemoteDisconnected"},
     },
     "urllib3": {
-        NATIVE: {
-            "InvalidHeader",
-            "LocationParseError",
-            "LocationValueError",
-            "ProxySchemeUnknown",
-            "URLSchemeUnknown",
-        },
-        CONNECTION: {
+        TRANSPORT: {
             "BodyNotHttplibCompatible",
             "ClosedPoolError",
             "ConnectionError",
@@ -66,26 +61,39 @@ BACKEND_POLICIES = {
             "HTTPError",
             "HeaderParsingError",
             "HostChangedError",
-            "IncompleteRead",
-            "InvalidChunkLength",
+            "InvalidHeader",
+            "LocationParseError",
+            "LocationValueError",
             "MaxRetryError",
-            "NameResolutionError",
-            "NewConnectionError",
             "PoolError",
             "ProtocolError",
             "ProxyError",
+            "ProxySchemeUnknown",
             "RequestError",
             "ResponseError",
             "ResponseNotChunked",
             "TimeoutStateError",
+            "URLSchemeUnknown",
             "UnrewindableBodyError",
         },
-        CONNECTION_NONRETRYABLE: {"SSLError"},
-        TIMEOUT: {"ConnectTimeoutError", "ReadTimeoutError", "TimeoutError"},
-        DECOMPRESSION: {"DecodeError"},
+        TRANSPORT_RETRYABLE: {
+            "IncompleteRead",
+            "InvalidChunkLength",
+        },
+        CONNECTION: {
+            "NameResolutionError",
+            "NewConnectionError",
+            "SSLError",
+        },
+        TIMEOUT_RETRYABLE: {
+            "ConnectTimeoutError",
+            "ReadTimeoutError",
+            "TimeoutError",
+        },
+        DECOMPRESSION_RETRYABLE: {"DecodeError"},
     },
     "requests": {
-        NATIVE: {
+        TRANSPORT: {
             "HTTPError",
             "InvalidHeader",
             "InvalidJSONError",
@@ -94,6 +102,7 @@ BACKEND_POLICIES = {
             "InvalidURL",
             "JSONDecodeError",
             "MissingSchema",
+            "ProxyError",
             "RequestException",
             "RetryError",
             "StreamConsumedError",
@@ -101,19 +110,23 @@ BACKEND_POLICIES = {
             "URLRequired",
             "UnrewindableBodyError",
         },
-        CONNECTION: {"ConnectionError", "ProxyError"},
-        CONNECTION_NONRETRYABLE: {"SSLError"},
-        TIMEOUT: {"ConnectTimeout", "ReadTimeout", "Timeout"},
-        STREAM: {"ChunkedEncodingError"},
-        DECOMPRESSION_NONRETRYABLE: {"ContentDecodingError"},
+        TRANSPORT_RETRYABLE: {"ChunkedEncodingError"},
+        CONNECTION: {"ConnectionError", "SSLError"},
+        TIMEOUT_RETRYABLE: {"ConnectTimeout", "ReadTimeout", "Timeout"},
+        DECOMPRESSION: {"ContentDecodingError"},
     },
     "httpx": {
-        NATIVE: {
-            "CookieConflict",
+        NATIVE: {"CookieConflict"},
+        TRANSPORT: {
+            "CloseError",
             "HTTPError",
-            "HTTPStatusError",
             "InvalidURL",
             "LocalProtocolError",
+            "NetworkError",
+            "ProtocolError",
+            "ProxyError",
+            "ReadError",
+            "RemoteProtocolError",
             "RequestError",
             "RequestNotRead",
             "ResponseNotRead",
@@ -121,68 +134,59 @@ BACKEND_POLICIES = {
             "StreamConsumed",
             "StreamError",
             "TooManyRedirects",
-            "UnsupportedProtocol",
-        },
-        CONNECTION: {
-            "CloseError",
-            "ConnectError",
-            "NetworkError",
-            "ProtocolError",
-            "ProxyError",
-            "ReadError",
-            "RemoteProtocolError",
             "TransportError",
+            "UnsupportedProtocol",
             "WriteError",
         },
-        TIMEOUT: {
+        CONNECTION: {"ConnectError"},
+        TIMEOUT_RETRYABLE: {
             "ConnectTimeout",
             "PoolTimeout",
             "ReadTimeout",
             "TimeoutException",
             "WriteTimeout",
         },
-        DECOMPRESSION_NONRETRYABLE: {"DecodingError"},
+        DECOMPRESSION: {"DecodingError"},
+        API_RETRYABLE: {"HTTPStatusError"},
     },
     "aiohttp": {
-        NATIVE: {
+        NATIVE: {"WSMessageTypeError"},
+        TRANSPORT: {
             "ClientError",
+            "ClientHttpProxyError",
+            "ClientProxyConnectionError",
+            "ClientResponseError",
+            "ContentTypeError",
             "InvalidURL",
             "InvalidUrlClientError",
             "InvalidUrlRedirectClientError",
             "NonHttpUrlClientError",
             "NonHttpUrlRedirectClientError",
             "RedirectClientError",
-            "WSMessageTypeError",
+            "TooManyRedirects",
+            "WSServerHandshakeError",
         },
+        TRANSPORT_RETRYABLE: {"ClientPayloadError"},
         CONNECTION: {
             "ClientConnectionError",
-            "ClientConnectionResetError",
+            "ClientConnectorCertificateError",
             "ClientConnectorDNSError",
             "ClientConnectorError",
+            "ClientConnectorSSLError",
             "ClientOSError",
-            "ClientProxyConnectionError",
+            "ClientSSLError",
             "ServerConnectionError",
-            "ServerDisconnectedError",
+            "ServerFingerprintMismatch",
             "UnixClientConnectorError",
         },
-        CONNECTION_NONRETRYABLE: {
-            "ClientConnectorCertificateError",
-            "ClientConnectorSSLError",
-            "ClientSSLError",
-            "ServerFingerprintMismatch",
+        CONNECTION_RETRYABLE: {
+            "ClientConnectionResetError",
+            "ServerDisconnectedError",
         },
-        TIMEOUT: {
+        TIMEOUT_RETRYABLE: {
             "ConnectionTimeoutError",
             "ServerTimeoutError",
             "SocketTimeoutError",
-        },
-        STREAM: {"ClientPayloadError"},
-        HTTP_STATUS: {
-            "ClientHttpProxyError",
-            "ClientResponseError",
-            "ContentTypeError",
-            "TooManyRedirects",
-            "WSServerHandshakeError",
         },
     },
 }
@@ -275,12 +279,7 @@ def _urllib3_error(name: str, native_type: type[BaseException]) -> BaseException
 
 
 def _aiohttp_error(name: str, native_type: type[BaseException]) -> BaseException:
-    connection_key = Mock(
-        host="example.test",
-        port=443,
-        ssl=True,
-        is_ssl=True,
-    )
+    connection_key = Mock(host="example.test", port=443, ssl=True, is_ssl=True)
     connector_errors = {
         "ClientConnectorDNSError",
         "ClientConnectorError",
@@ -313,22 +312,22 @@ def _native_error(
     name: str,
     native_type: type[BaseException],
 ) -> BaseException:
-    backend = {
+    catalog_backend = {
         "httpx_async": "httpx",
         "aiohttp_stream": "aiohttp",
     }.get(backend, backend)
-    if backend == "urllib3":
+    if catalog_backend == "urllib3":
         return _urllib3_error(name, native_type)
-    if backend == "requests" and name == "JSONDecodeError":
+    if catalog_backend == "requests" and name == "JSONDecodeError":
         return native_type("test", "{}", 0)
-    if backend == "httpx":
+    if catalog_backend == "httpx":
         if name == "HTTPStatusError":
             request = httpx.Request("GET", "http://example.test")
-            response = httpx.Response(500, request=request)
+            response = httpx.Response(500, request=request, content=b"failed")
             return native_type("test", request=request, response=response)
         if issubclass(native_type, httpx.StreamError):
             return native_type("test") if name == "StreamError" else native_type()
-    if backend == "aiohttp":
+    if catalog_backend == "aiohttp":
         return _aiohttp_error(name, native_type)
     return native_type("test")
 
@@ -509,6 +508,20 @@ def _run_httpx_async_boundary(
     return asyncio.run(scenario()), backend.calls
 
 
+def _run_boundary(
+    backend: str,
+    native: BaseException,
+    runtime: ModuleType,
+) -> tuple[BaseException, int]:
+    if backend == "aiohttp":
+        return _run_aiohttp_boundary(native, runtime)
+    if backend == "aiohttp_stream":
+        return _run_aiohttp_stream_boundary(native, runtime)
+    if backend == "httpx_async":
+        return _run_httpx_async_boundary(native, runtime)
+    return _run_sync_boundary(backend, native, runtime)
+
+
 def _matrix_cases() -> list[tuple[str, str, str]]:
     return [
         (adapter, name, policy)
@@ -543,22 +556,17 @@ def test_backend_exception_policy(
     }.get(backend, backend)
     native_type = _backend_classes(catalog_backend)[name]
     native = _native_error(backend, name, native_type)
-    if backend == "aiohttp":
-        error, attempts = _run_aiohttp_boundary(native, runtime)
-    elif backend == "aiohttp_stream":
-        error, attempts = _run_aiohttp_stream_boundary(native, runtime)
-    elif backend == "httpx_async":
-        error, attempts = _run_httpx_async_boundary(native, runtime)
-    else:
-        error, attempts = _run_sync_boundary(backend, native, runtime)
+    error, attempts = _run_boundary(backend, native, runtime)
 
+    retryable_policies = {
+        TRANSPORT_RETRYABLE,
+        CONNECTION_RETRYABLE,
+        TIMEOUT_RETRYABLE,
+        DECOMPRESSION_RETRYABLE,
+        API_RETRYABLE,
+    }
     expected_attempts = 1
-    if backend != "aiohttp_stream" and policy in {
-        CONNECTION,
-        TIMEOUT,
-        STREAM,
-        DECOMPRESSION,
-    }:
+    if backend != "aiohttp_stream" and policy in retryable_policies:
         expected_attempts = 2
     assert attempts == expected_attempts
     if policy == NATIVE:
@@ -566,42 +574,139 @@ def test_backend_exception_policy(
         return
 
     expected_type = {
+        TRANSPORT: exceptions.ContreeTransportError,
+        TRANSPORT_RETRYABLE: exceptions.ContreeTransportError,
         CONNECTION: exceptions.ContreeConnectionError,
-        CONNECTION_NONRETRYABLE: exceptions.ContreeConnectionError,
-        TIMEOUT: exceptions.ContreeTimeoutError,
-        STREAM: exceptions.ContreeStreamError,
+        CONNECTION_RETRYABLE: exceptions.ContreeConnectionError,
+        TIMEOUT_RETRYABLE: exceptions.ContreeTimeoutError,
         DECOMPRESSION: exceptions.DecompressionError,
-        DECOMPRESSION_NONRETRYABLE: exceptions.DecompressionError,
-        HTTP_STATUS: exceptions.ContreeHTTPError,
+        DECOMPRESSION_RETRYABLE: exceptions.DecompressionError,
+        API_RETRYABLE: exceptions.ContreeAPIError,
     }[policy]
-    assert isinstance(error, expected_type)
+    if policy == API_RETRYABLE:
+        assert isinstance(error, expected_type)
+    else:
+        assert type(error) is expected_type
+    assert error.original is native
+    assert error.__cause__ is native
+    assert not isinstance(error, native_type)
+    if isinstance(error, exceptions.ContreeTransportError):
+        assert error.retryable is (policy in retryable_policies)
+
+
+@pytest.mark.parametrize(
+    "backend",
+    ["http", "urllib3", "requests", "httpx", "httpx_async", "aiohttp"],
+)
+@pytest.mark.parametrize(
+    ("native", "expected_attempts"),
+    [
+        (OSError(errno.ECONNREFUSED, "refused"), 2),
+        (OSError(errno.EACCES, "denied"), 1),
+        (OSError(errno.EMFILE, "too many files"), 1),
+        (OSError(errno.ENFILE, "system file table full"), 1),
+        (OSError(errno.ENOMEM, "out of memory"), 1),
+        (OSError(9999, "unknown"), 1),
+        (socket.gaierror(socket.EAI_AGAIN, "temporary DNS failure"), 2),
+        (socket.gaierror(socket.EAI_NONAME, "unknown host"), 1),
+    ],
+)
+def test_direct_os_error_policy(
+    backend: str,
+    native: OSError,
+    expected_attempts: int,
+    runtime: ModuleType,
+    exceptions: ModuleType,
+) -> None:
+    error, attempts = _run_boundary(backend, native, runtime)
+    assert attempts == expected_attempts
+    assert isinstance(error, exceptions.ContreeConnectionError)
+    assert error.retryable is (expected_attempts == 2)
     assert error.original is native
     assert error.__cause__ is native
 
-    native_base = {
-        "http": OSError,
-        "urllib3": urllib3.exceptions.HTTPError,
-        "requests": requests.ConnectionError,
-        "httpx": httpx.TransportError,
-        "aiohttp": aiohttp.ClientConnectionError,
-    }
-    if policy in {CONNECTION, CONNECTION_NONRETRYABLE}:
-        assert isinstance(error, native_base[catalog_backend])
-        if catalog_backend == "aiohttp" and policy == CONNECTION_NONRETRYABLE:
-            tls_type = (
-                aiohttp.ServerFingerprintMismatch
-                if name == "ServerFingerprintMismatch"
-                else aiohttp.ClientSSLError
-            )
-            assert isinstance(error, tls_type)
-    elif policy == TIMEOUT:
-        timeout_base = {
-            "http": TimeoutError,
-            "urllib3": urllib3.exceptions.TimeoutError,
-            "requests": requests.Timeout,
-            "httpx": httpx.TimeoutException,
-            "aiohttp": aiohttp.ServerTimeoutError,
-        }
-        assert isinstance(error, timeout_base[catalog_backend])
-    elif policy == HTTP_STATUS:
-        assert isinstance(error, aiohttp.ClientResponseError)
+
+def test_winsock_code_is_classified_and_preserved(
+    runtime: ModuleType,
+    exceptions: ModuleType,
+) -> None:
+    native = OSError("winsock refused")
+    native.winerror = 10061
+
+    error, attempts = _run_sync_boundary("http", native, runtime)
+
+    assert attempts == 2
+    assert isinstance(error, exceptions.ContreeConnectionError)
+    assert error.retryable is True
+    assert error.original is native
+    assert error.original.winerror == 10061
+
+
+@pytest.mark.parametrize(
+    "backend",
+    ["http", "urllib3", "requests", "httpx", "httpx_async", "aiohttp"],
+)
+def test_adapter_bugs_are_not_wrapped(
+    backend: str,
+    runtime: ModuleType,
+) -> None:
+    native = AssertionError("adapter bug")
+    error, attempts = _run_boundary(backend, native, runtime)
+    assert attempts == 1
+    assert error is native
+
+
+@pytest.mark.parametrize("backend", ["http", "aiohttp"])
+def test_untyped_header_validation_is_wrapped(
+    backend: str,
+    runtime: ModuleType,
+    exceptions: ModuleType,
+) -> None:
+    native = ValueError("invalid header")
+    error, attempts = _run_boundary(backend, native, runtime)
+    assert attempts == 1
+    assert isinstance(error, exceptions.ContreeTransportError)
+    assert error.retryable is False
+    assert error.original is native
+
+
+@pytest.mark.parametrize("status", [200, 500])
+def test_aiohttp_response_error_requires_error_status(
+    status: int,
+    runtime: ModuleType,
+    exceptions: ModuleType,
+) -> None:
+    native = aiohttp.ClientResponseError(
+        Mock(real_url="http://example.test"),
+        (),
+        status=status,
+        message="test",
+    )
+    error, attempts = _run_aiohttp_boundary(native, runtime)
+    expected_type = (
+        exceptions.ContreeTransportError
+        if status == 200
+        else exceptions.ContreeAPIError
+    )
+    assert isinstance(error, expected_type)
+    assert attempts == (1 if status == 200 else 2)
+
+
+@pytest.mark.parametrize("status", [200, 500])
+def test_requests_response_error_requires_error_status(
+    status: int,
+    runtime: ModuleType,
+    exceptions: ModuleType,
+) -> None:
+    response = requests.Response()
+    response.status_code = status
+    response._content = b"test"
+    native = requests.HTTPError("test", response=response)
+    error, attempts = _run_sync_boundary("requests", native, runtime)
+    expected_type = (
+        exceptions.ContreeTransportError
+        if status == 200
+        else exceptions.ContreeAPIError
+    )
+    assert isinstance(error, expected_type)
+    assert attempts == (1 if status == 200 else 2)

@@ -56,7 +56,9 @@ def test_json_object_rejects_array(
     runtime: ModuleType,
     exceptions: ModuleType,
 ) -> None:
-    with pytest.raises(exceptions.ContreeAPIError, match="expected a JSON object"):
+    with pytest.raises(
+        exceptions.ContreeTransportError, match="expected a JSON object"
+    ):
         runtime.json_object(response(runtime, 200, b"[1, 2]"))
 
 
@@ -64,7 +66,7 @@ def test_json_array_rejects_object(
     runtime: ModuleType,
     exceptions: ModuleType,
 ) -> None:
-    with pytest.raises(exceptions.ContreeAPIError, match="expected a JSON array"):
+    with pytest.raises(exceptions.ContreeTransportError, match="expected a JSON array"):
         runtime.json_array(response(runtime, 200, b"{}"))
 
 

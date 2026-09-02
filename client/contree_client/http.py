@@ -18,14 +18,19 @@ import collections
 import gzip
 import http.client
 import select
-import socket
 import ssl
 import threading
 from collections.abc import Callable, Iterator
 from urllib.parse import urlsplit
 
 from . import base
-from .exceptions import ContreeConnectionError, ContreeTimeoutError, DecompressionError
+from .exceptions import (
+    ContreeConnectionError,
+    ContreeTimeoutError,
+    ContreeTransportError,
+    DecompressionError,
+    _is_retryable_os_error,
+)
 from .runtime import (
     CHUNK_SIZE,
     RequestSpec,
@@ -40,15 +45,6 @@ from .runtime import (
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
 
-
-class ContreeHttpConnectionError(ContreeConnectionError, OSError):
-    """A `ContreeConnectionError` that is also an `OSError`."""
-
-
-class ContreeHttpTimeoutError(ContreeTimeoutError, TimeoutError):
-    """A `ContreeTimeoutError` that is also a stdlib `TimeoutError`."""
-
-
 # the reused keepalive connection may have been closed by the server
 # while it sat in the pool; these surface exactly that and warrant one
 # resend on a fresh connection (RemoteDisconnected is a BadStatusLine)
@@ -57,6 +53,25 @@ STALE_KEEPALIVE_ERRORS = (
     ConnectionResetError,
     BrokenPipeError,
 )
+
+RETRYABLE_HTTP_ERRORS = (
+    http.client.IncompleteRead,
+    http.client.RemoteDisconnected,
+)
+
+
+def _connection_error(exc: OSError) -> ContreeConnectionError:
+    return ContreeConnectionError(
+        original=exc,
+        retryable=_is_retryable_os_error(exc) or isinstance(exc, RETRYABLE_HTTP_ERRORS),
+    )
+
+
+def _transport_error(exc: http.client.HTTPException) -> ContreeTransportError:
+    return ContreeTransportError(
+        original=exc,
+        retryable=isinstance(exc, RETRYABLE_HTTP_ERRORS),
+    )
 
 
 def read_response(response: http.client.HTTPResponse) -> ResponseData:
@@ -187,12 +202,6 @@ class ContreeClient(base.ContreeSyncClient):
 
     log = logger.getChild("http")
     UA_TRANSPORT_LIBRARY = "http.client"
-    retryable_errors = (
-        ContreeHttpConnectionError,
-        ContreeHttpTimeoutError,
-        DecompressionError,
-    )
-    nonretryable_errors = (ssl.SSLError,)
 
     def __init__(
         self,
@@ -278,18 +287,10 @@ class ContreeClient(base.ContreeSyncClient):
             try:
                 response = self._send_on(connection, spec, target, headers, timeout)
                 break
-            except http.client.InvalidURL:
-                self._pool.discard(connection)
-                raise
             except TimeoutError as exc:
                 self._pool.discard(connection)
-                raise ContreeHttpTimeoutError.wrap(exc) from exc
-            except (
-                socket.gaierror,
-                ConnectionError,
-                http.client.HTTPException,
-                OSError,
-            ) as exc:
+                raise ContreeTimeoutError(original=exc, retryable=True) from exc
+            except OSError as exc:
                 self._pool.discard(connection)
                 if (
                     reused
@@ -306,7 +307,21 @@ class ContreeClient(base.ContreeSyncClient):
                     self.log.debug("stale pooled connection, resending: %s", exc)
                     rewind_body(spec, start)
                     continue
-                raise ContreeHttpConnectionError.wrap(exc) from exc
+                raise _connection_error(exc) from exc
+            except http.client.HTTPException as exc:
+                self._pool.discard(connection)
+                if (
+                    reused
+                    and spec.idempotent
+                    and isinstance(exc, STALE_KEEPALIVE_ERRORS)
+                ):
+                    self.log.debug("stale pooled connection, resending: %s", exc)
+                    rewind_body(spec, start)
+                    continue
+                raise _transport_error(exc) from exc
+            except ValueError as exc:
+                self._pool.discard(connection)
+                raise ContreeTransportError(original=exc) from exc
         try:
             timeout = remaining_timeout(spec.deadline, self.timeout)
             connection.timeout = timeout
@@ -316,18 +331,19 @@ class ContreeClient(base.ContreeSyncClient):
             remaining_timeout(spec.deadline, None)
         except gzip.BadGzipFile as exc:
             self._pool.discard(connection)
-            raise DecompressionError.wrap(exc) from exc
+            raise DecompressionError(original=exc, retryable=True) from exc
         except TimeoutError as exc:
             self._pool.discard(connection)
-            raise ContreeHttpTimeoutError.wrap(exc) from exc
-        except (
-            socket.gaierror,
-            ConnectionError,
-            http.client.HTTPException,
-            OSError,
-        ) as exc:
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
+        except OSError as exc:
             self._pool.discard(connection)
-            raise ContreeHttpConnectionError.wrap(exc) from exc
+            raise _connection_error(exc) from exc
+        except http.client.HTTPException as exc:
+            self._pool.discard(connection)
+            raise _transport_error(exc) from exc
+        except ValueError as exc:
+            self._pool.discard(connection)
+            raise ContreeTransportError(original=exc) from exc
         # the body is fully drained: the connection is reusable unless
         # the server asked to close it (`Connection: close` sets
         # will_close) or the underlying socket is already gone
@@ -349,20 +365,18 @@ class ContreeClient(base.ContreeSyncClient):
         timeout = remaining_timeout(spec.deadline, self.timeout)
         try:
             response = self._send_on(connection, spec, target, headers, timeout)
-        except http.client.InvalidURL:
-            connection.close()
-            raise
         except TimeoutError as exc:
             connection.close()
-            raise ContreeHttpTimeoutError.wrap(exc) from exc
-        except (
-            socket.gaierror,
-            ConnectionError,
-            http.client.HTTPException,
-            OSError,
-        ) as exc:
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
+        except OSError as exc:
             connection.close()
-            raise ContreeHttpConnectionError.wrap(exc) from exc
+            raise _connection_error(exc) from exc
+        except http.client.HTTPException as exc:
+            connection.close()
+            raise _transport_error(exc) from exc
+        except ValueError as exc:
+            connection.close()
+            raise ContreeTransportError(original=exc) from exc
         try:
             self.log.debug(
                 "%s %s -> %d (stream)",
@@ -403,16 +417,15 @@ class ContreeClient(base.ContreeSyncClient):
                 if chunk:
                     yield chunk
         except gzip.BadGzipFile as exc:
-            raise DecompressionError.wrap(exc) from exc
+            raise DecompressionError(original=exc, retryable=True) from exc
         except TimeoutError as exc:
-            raise ContreeHttpTimeoutError.wrap(exc) from exc
-        except (
-            socket.gaierror,
-            ConnectionError,
-            http.client.HTTPException,
-            OSError,
-        ) as exc:
-            raise ContreeHttpConnectionError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
+        except OSError as exc:
+            raise _connection_error(exc) from exc
+        except http.client.HTTPException as exc:
+            raise _transport_error(exc) from exc
+        except ValueError as exc:
+            raise ContreeTransportError(original=exc) from exc
         finally:
             connection.close()
 

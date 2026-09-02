@@ -22,6 +22,7 @@ from urllib.parse import quote, urlencode
 from .exceptions import (
     ERROR_CLASSES,
     ContreeAPIError,
+    ContreeTransportError,
     DecompressionError,
     ServerError,
     SSEStreamError,
@@ -368,7 +369,7 @@ def rewind_body(spec: RequestSpec, start: int | None) -> None:
         return
     stream = cast("IO[bytes]", body)
     if start is None or not stream.seekable():
-        raise ContreeAPIError(0, "cannot retry: streaming body is not seekable")
+        raise ContreeTransportError("cannot retry: streaming body is not seekable")
     stream.seek(start)
 
 
@@ -422,9 +423,8 @@ def json_body(response: ResponseData) -> Any:
 def json_object(response: ResponseData) -> dict[str, Any]:
     data = json_body(response)
     if not isinstance(data, dict):
-        raise ContreeAPIError(
-            response.status,
-            f"expected a JSON object, got {type(data).__name__}",
+        raise ContreeTransportError(
+            f"invalid API response: expected a JSON object, got {type(data).__name__}",
         )
     return data
 
@@ -432,15 +432,20 @@ def json_object(response: ResponseData) -> dict[str, Any]:
 def json_array(response: ResponseData) -> list[Any]:
     data = json_body(response)
     if not isinstance(data, list):
-        raise ContreeAPIError(
-            response.status,
-            f"expected a JSON array, got {type(data).__name__}",
+        raise ContreeTransportError(
+            f"invalid API response: expected a JSON array, got {type(data).__name__}",
         )
     return data
 
 
-def error_for_response(response: ResponseData) -> ContreeAPIError:
+def error_for_response(
+    response: ResponseData,
+    *,
+    original: BaseException | None = None,
+) -> ContreeAPIError:
     """Build the exception matching an error response."""
+    if 200 <= response.status < 300:
+        raise ValueError("cannot create ContreeAPIError from a successful response")
     error: Any = response.body.decode("utf-8", "replace")
     traceback: list[str] | None = None
     try:
@@ -462,6 +467,7 @@ def error_for_response(response: ResponseData) -> ContreeAPIError:
         error,
         traceback=traceback,
         retry_after=retry_after,
+        original=original,
     )
 
 

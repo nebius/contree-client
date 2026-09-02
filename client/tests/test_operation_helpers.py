@@ -112,10 +112,9 @@ def test_follow_timeout_stops_when_cancelled(
     testing = importlib.import_module("contree_client.testing")
     client_class = testing.ContreeAsyncClient if asynchronous else testing.ContreeClient
     client = client_class()
-    client.retryable_errors = (exceptions.ContreeTimeoutError,)
     client.mock(
         "iter_operation_events",
-        error=exceptions.ContreeTimeoutError("read stalled"),
+        error=exceptions.ContreeTimeoutError("read stalled", retryable=True),
     )
     statuses = ["CANCELLED"]
     if cancel_signal:
@@ -177,17 +176,20 @@ def test_terminal_probe_bypasses_retry_policy(
     generated_package: ModuleType,
     asynchronous: bool,
 ) -> None:
+    exceptions = importlib.import_module("contree_client.exceptions")
     runtime = importlib.import_module("contree_client.runtime")
     testing = importlib.import_module("contree_client.testing")
     client_class = testing.ContreeAsyncClient if asynchronous else testing.ContreeClient
     client = client_class(retry=runtime.RetryPolicy(delays=(0.0,)))
-    client.retryable_errors = (ConnectionError,)
     attempts = 0
 
     def fail(_spec: Any) -> Any:
         nonlocal attempts
         attempts += 1
-        raise ConnectionError("status unavailable")
+        raise exceptions.ContreeTransportError(
+            original=ConnectionError("status unavailable"),
+            retryable=True,
+        )
 
     if asynchronous:
 
@@ -213,9 +215,8 @@ def test_terminal_probe_reraises_nonretryable_transport_error(
     testing = importlib.import_module("contree_client.testing")
     client_class = testing.ContreeAsyncClient if asynchronous else testing.ContreeClient
     client = client_class()
-    client.nonretryable_errors = (ssl.SSLError,)
     original = ssl.SSLError("certificate verify failed")
-    translated = exceptions.ContreeConnectionError.wrap(original)
+    translated = exceptions.ContreeConnectionError(original=original)
     attempts = 0
 
     def fail(_spec: Any) -> Any:
@@ -308,13 +309,12 @@ def test_polling_probe_reraises_nonretryable_transport_error(
     testing = importlib.import_module("contree_client.testing")
     client_class = testing.ContreeAsyncClient if asynchronous else testing.ContreeClient
     client = client_class()
-    client.nonretryable_errors = (ssl.SSLError,)
     client.mock(
         "iter_operation_events",
         error=exceptions.ContreeAPIError(404, "events unavailable"),
     )
     original = ssl.SSLError("certificate verify failed")
-    translated = exceptions.ContreeConnectionError.wrap(original)
+    translated = exceptions.ContreeConnectionError(original=original)
     status_requests = 0
 
     def fail_status(_spec: Any) -> Any:

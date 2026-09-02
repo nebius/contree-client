@@ -13,9 +13,10 @@ import aiohttp
 from . import base
 from .exceptions import (
     ContreeConnectionError,
-    ContreeHTTPError,
-    ContreeStreamError,
+    ContreeError,
     ContreeTimeoutError,
+    ContreeTransportError,
+    _is_retryable_os_error,
 )
 from .runtime import (
     CHUNK_SIZE,
@@ -30,55 +31,27 @@ from .spec_info import DEFAULT_BASE_URL
 from .types import logger
 
 
-class ContreeAiohttpConnectionError(
-    ContreeConnectionError, aiohttp.ClientConnectionError
-):
-    """A `ContreeConnectionError` that is also an `aiohttp.ClientConnectionError`."""
+def _api_error(exc: aiohttp.ClientResponseError) -> ContreeError:
+    if exc.status <= 0 or 200 <= exc.status < 300:
+        return ContreeTransportError(original=exc)
+    headers = (
+        {} if exc.headers is None else {k.lower(): v for k, v in exc.headers.items()}
+    )
+    return error_for_response(
+        ResponseData(
+            status=exc.status,
+            headers=headers,
+            body=exc.message.encode(),
+        ),
+        original=exc,
+    )
 
 
-class ContreeAiohttpTimeoutError(ContreeTimeoutError, TimeoutError):
-    """A `ContreeTimeoutError` that is also a stdlib `TimeoutError`."""
-
-
-class ContreeAiohttpServerTimeoutError(
-    ContreeAiohttpTimeoutError, aiohttp.ServerTimeoutError
-):
-    """An aiohttp server timeout catchable through both hierarchies."""
-
-
-class ContreeAiohttpStreamError(ContreeStreamError, aiohttp.ClientPayloadError):
-    """A `ContreeStreamError` that is also an `aiohttp.ClientPayloadError`."""
-
-
-class ContreeAiohttpSSLError(ContreeAiohttpConnectionError, aiohttp.ClientSSLError):
-    """An aiohttp TLS error catchable through both hierarchies."""
-
-
-class ContreeAiohttpFingerprintError(
-    ContreeAiohttpConnectionError, aiohttp.ServerFingerprintMismatch
-):
-    """An aiohttp fingerprint mismatch catchable through both hierarchies."""
-
-
-class ContreeAiohttpAPIError(ContreeHTTPError, aiohttp.ClientResponseError):
-    """An HTTP status error raised by an injected aiohttp session."""
-
-    @classmethod
-    def wrap(cls, original: BaseException) -> BaseException:
-        if not isinstance(original, aiohttp.ClientResponseError):
-            return original
-        try:
-            wrapped = cls(
-                original.request_info,
-                original.history,
-                status=original.status,
-                message=original.message,
-                headers=original.headers,
-            )
-        except Exception:
-            return original
-        wrapped.__cause__ = original
-        return wrapped
+def _connector_error(exc: aiohttp.ClientConnectorError) -> ContreeConnectionError:
+    return ContreeConnectionError(
+        original=exc,
+        retryable=_is_retryable_os_error(exc.os_error),
+    )
 
 
 class ContreeAsyncClient(base.ContreeAsyncClient):
@@ -90,15 +63,6 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     log = logger.getChild("aiohttp")
     UA_TRANSPORT_LIBRARY = library_version(aiohttp)
-    retryable_errors = (
-        aiohttp.ClientConnectionError,
-        aiohttp.ClientPayloadError,
-        ContreeAiohttpTimeoutError,
-    )
-    nonretryable_errors = (
-        aiohttp.ClientSSLError,
-        aiohttp.ServerFingerprintMismatch,
-    )
 
     def __init__(
         self,
@@ -169,19 +133,37 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                     body=body,
                 )
         except aiohttp.ServerTimeoutError as exc:
-            raise ContreeAiohttpServerTimeoutError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
         except (TimeoutError, asyncio.TimeoutError) as exc:
-            raise ContreeAiohttpTimeoutError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
         except aiohttp.ServerFingerprintMismatch as exc:
-            raise ContreeAiohttpFingerprintError.wrap(exc) from exc
+            raise ContreeConnectionError(original=exc) from exc
         except aiohttp.ClientSSLError as exc:
-            raise ContreeAiohttpSSLError.wrap(exc) from exc
+            raise ContreeConnectionError(original=exc) from exc
         except aiohttp.ClientPayloadError as exc:
-            raise ContreeAiohttpStreamError.wrap(exc) from exc
+            raise ContreeTransportError(original=exc, retryable=True) from exc
+        except aiohttp.ClientHttpProxyError as exc:
+            raise ContreeTransportError(original=exc) from exc
         except aiohttp.ClientResponseError as exc:
-            raise ContreeAiohttpAPIError.wrap(exc) from exc
+            raise _api_error(exc) from exc
+        except aiohttp.ClientProxyConnectionError as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except aiohttp.ClientConnectorError as exc:
+            raise _connector_error(exc) from exc
+        except aiohttp.ServerDisconnectedError as exc:
+            raise ContreeConnectionError(original=exc, retryable=True) from exc
         except aiohttp.ClientConnectionError as exc:
-            raise ContreeAiohttpConnectionError.wrap(exc) from exc
+            retryable = isinstance(exc, OSError) and _is_retryable_os_error(exc)
+            raise ContreeConnectionError(original=exc, retryable=retryable) from exc
+        except aiohttp.ClientError as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except ValueError as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except OSError as exc:
+            raise ContreeConnectionError(
+                original=exc,
+                retryable=_is_retryable_os_error(exc),
+            ) from exc
         remaining_timeout(spec.deadline, None)
         return data
 
@@ -252,19 +234,37 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                     remaining_timeout(spec.deadline, None)
                     yield chunk
         except aiohttp.ServerTimeoutError as exc:
-            raise ContreeAiohttpServerTimeoutError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
         except (TimeoutError, asyncio.TimeoutError) as exc:
-            raise ContreeAiohttpTimeoutError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
         except aiohttp.ServerFingerprintMismatch as exc:
-            raise ContreeAiohttpFingerprintError.wrap(exc) from exc
+            raise ContreeConnectionError(original=exc) from exc
         except aiohttp.ClientSSLError as exc:
-            raise ContreeAiohttpSSLError.wrap(exc) from exc
+            raise ContreeConnectionError(original=exc) from exc
         except aiohttp.ClientPayloadError as exc:
-            raise ContreeAiohttpStreamError.wrap(exc) from exc
+            raise ContreeTransportError(original=exc, retryable=True) from exc
+        except aiohttp.ClientHttpProxyError as exc:
+            raise ContreeTransportError(original=exc) from exc
         except aiohttp.ClientResponseError as exc:
-            raise ContreeAiohttpAPIError.wrap(exc) from exc
+            raise _api_error(exc) from exc
+        except aiohttp.ClientProxyConnectionError as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except aiohttp.ClientConnectorError as exc:
+            raise _connector_error(exc) from exc
+        except aiohttp.ServerDisconnectedError as exc:
+            raise ContreeConnectionError(original=exc, retryable=True) from exc
         except aiohttp.ClientConnectionError as exc:
-            raise ContreeAiohttpConnectionError.wrap(exc) from exc
+            retryable = isinstance(exc, OSError) and _is_retryable_os_error(exc)
+            raise ContreeConnectionError(original=exc, retryable=retryable) from exc
+        except aiohttp.ClientError as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except ValueError as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except OSError as exc:
+            raise ContreeConnectionError(
+                original=exc,
+                retryable=_is_retryable_os_error(exc),
+            ) from exc
 
     async def close(self) -> None:
         if (

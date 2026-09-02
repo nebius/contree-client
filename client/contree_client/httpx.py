@@ -8,7 +8,15 @@ from collections.abc import AsyncGenerator, Iterator
 import httpx
 
 from . import base
-from .exceptions import ContreeConnectionError, ContreeTimeoutError, DecompressionError
+from .exceptions import (
+    ContreeConnectionError,
+    ContreeError,
+    ContreeTimeoutError,
+    ContreeTransportError,
+    DecompressionError,
+    _has_retryable_os_error,
+    _is_retryable_os_error,
+)
 from .runtime import (
     RequestSpec,
     ResponseData,
@@ -23,43 +31,36 @@ from .spec_info import DEFAULT_BASE_URL
 from .types import logger
 
 
-class ContreeHttpxConnectionError(ContreeConnectionError, httpx.TransportError):
-    """A `ContreeConnectionError` that is also an `httpx.TransportError`."""
+def _api_error(exc: httpx.HTTPStatusError) -> ContreeError:
+    response = exc.response
+    if 200 <= response.status_code < 300:
+        return ContreeTransportError(original=exc)
+    try:
+        body = response.content
+    except httpx.StreamError:
+        body = str(exc).encode()
+    return error_for_response(
+        ResponseData(
+            status=response.status_code,
+            headers={k.lower(): v for k, v in response.headers.items()},
+            body=body,
+        ),
+        original=exc,
+    )
 
-    @classmethod
-    def wrap(cls, original: BaseException) -> BaseException:
-        try:
-            wrapped = cls(*original.args)
-            if isinstance(original, httpx.HTTPError):
-                wrapped._request = original._request
-        except Exception:
-            return original
-        wrapped.__cause__ = original
-        return wrapped
+
+def _connection_error(exc: BaseException) -> ContreeConnectionError:
+    return ContreeConnectionError(
+        original=exc,
+        retryable=_has_retryable_os_error(exc),
+    )
 
 
-class ContreeHttpxTimeoutError(ContreeTimeoutError, httpx.TimeoutException):
-    """A `ContreeTimeoutError` that is also an `httpx.TimeoutException`."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        request: httpx.Request | None = None,
-    ) -> None:
-        super().__init__(message)
-        self._request = request
-
-    @classmethod
-    def wrap(cls, original: BaseException) -> BaseException:
-        try:
-            wrapped = cls(*original.args)
-            if isinstance(original, httpx.HTTPError):
-                wrapped._request = original._request
-        except Exception:
-            return original
-        wrapped.__cause__ = original
-        return wrapped
+def _transport_error(exc: BaseException) -> ContreeTransportError:
+    return ContreeTransportError(
+        original=exc,
+        retryable=_has_retryable_os_error(exc),
+    )
 
 
 class ContreeClient(base.ContreeSyncClient):
@@ -67,11 +68,6 @@ class ContreeClient(base.ContreeSyncClient):
 
     log = logger.getChild("httpx")
     UA_TRANSPORT_LIBRARY = library_version(httpx)
-    retryable_errors = (
-        ContreeHttpxConnectionError,
-        ContreeHttpxTimeoutError,
-    )
-    nonretryable_errors = (ssl.SSLError,)
 
     def __init__(
         self,
@@ -123,14 +119,25 @@ class ContreeClient(base.ContreeSyncClient):
                 headers=headers,
                 timeout=timeout,
             )
-        except (httpx.InvalidURL, httpx.UnsupportedProtocol, httpx.LocalProtocolError):
-            raise
+        except httpx.HTTPStatusError as exc:
+            raise _api_error(exc) from exc
         except httpx.TimeoutException as exc:
-            raise ContreeHttpxTimeoutError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
         except httpx.DecodingError as exc:
-            raise DecompressionError.wrap(exc) from exc
+            raise DecompressionError(original=exc) from exc
+        except httpx.ProxyError as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except httpx.ConnectError as exc:
+            raise _connection_error(exc) from exc
         except httpx.TransportError as exc:
-            raise ContreeHttpxConnectionError.wrap(exc) from exc
+            raise _transport_error(exc) from exc
+        except (httpx.HTTPError, httpx.StreamError, httpx.InvalidURL) as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except OSError as exc:
+            raise ContreeConnectionError(
+                original=exc,
+                retryable=_is_retryable_os_error(exc),
+            ) from exc
         data = ResponseData(
             status=response.status_code,
             headers={k.lower(): v for k, v in response.headers.items()},
@@ -187,14 +194,29 @@ class ContreeClient(base.ContreeSyncClient):
                 for chunk in chunks:
                     remaining_timeout(spec.deadline, None)
                     yield chunk
-        except (httpx.InvalidURL, httpx.UnsupportedProtocol, httpx.LocalProtocolError):
-            raise
+        except httpx.HTTPStatusError as exc:
+            raise _api_error(exc) from exc
         except httpx.TimeoutException as exc:
-            raise ContreeHttpxTimeoutError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
         except httpx.DecodingError as exc:
-            raise DecompressionError.wrap(exc) from exc
+            raise DecompressionError(original=exc) from exc
+        except httpx.ProxyError as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except httpx.ConnectError as exc:
+            raise _connection_error(exc) from exc
+        except httpx.RemoteProtocolError as exc:
+            # At this boundary the response stream was already open.
+            # A retry means SSE resumption, not blind request replay.
+            raise ContreeTransportError(original=exc, retryable=True) from exc
         except httpx.TransportError as exc:
-            raise ContreeHttpxConnectionError.wrap(exc) from exc
+            raise _transport_error(exc) from exc
+        except (httpx.HTTPError, httpx.StreamError, httpx.InvalidURL) as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except OSError as exc:
+            raise ContreeConnectionError(
+                original=exc,
+                retryable=_is_retryable_os_error(exc),
+            ) from exc
 
     def close(self) -> None:
         if self.__owns_client:
@@ -206,11 +228,6 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     log = logger.getChild("httpx")
     UA_TRANSPORT_LIBRARY = library_version(httpx)
-    retryable_errors = (
-        ContreeHttpxConnectionError,
-        ContreeHttpxTimeoutError,
-    )
-    nonretryable_errors = (ssl.SSLError,)
 
     def __init__(
         self,
@@ -264,14 +281,25 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 headers=headers,
                 timeout=timeout,
             )
-        except (httpx.InvalidURL, httpx.UnsupportedProtocol, httpx.LocalProtocolError):
-            raise
+        except httpx.HTTPStatusError as exc:
+            raise _api_error(exc) from exc
         except httpx.TimeoutException as exc:
-            raise ContreeHttpxTimeoutError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
         except httpx.DecodingError as exc:
-            raise DecompressionError.wrap(exc) from exc
+            raise DecompressionError(original=exc) from exc
+        except httpx.ProxyError as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except httpx.ConnectError as exc:
+            raise _connection_error(exc) from exc
         except httpx.TransportError as exc:
-            raise ContreeHttpxConnectionError.wrap(exc) from exc
+            raise _transport_error(exc) from exc
+        except (httpx.HTTPError, httpx.StreamError, httpx.InvalidURL) as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except OSError as exc:
+            raise ContreeConnectionError(
+                original=exc,
+                retryable=_is_retryable_os_error(exc),
+            ) from exc
         data = ResponseData(
             status=response.status_code,
             headers={k.lower(): v for k, v in response.headers.items()},
@@ -330,14 +358,29 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 async for chunk in source:
                     remaining_timeout(spec.deadline, None)
                     yield chunk
-        except (httpx.InvalidURL, httpx.UnsupportedProtocol, httpx.LocalProtocolError):
-            raise
+        except httpx.HTTPStatusError as exc:
+            raise _api_error(exc) from exc
         except httpx.TimeoutException as exc:
-            raise ContreeHttpxTimeoutError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
         except httpx.DecodingError as exc:
-            raise DecompressionError.wrap(exc) from exc
+            raise DecompressionError(original=exc) from exc
+        except httpx.ProxyError as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except httpx.ConnectError as exc:
+            raise _connection_error(exc) from exc
+        except httpx.RemoteProtocolError as exc:
+            # At this boundary the response stream was already open.
+            # A retry means SSE resumption, not blind request replay.
+            raise ContreeTransportError(original=exc, retryable=True) from exc
         except httpx.TransportError as exc:
-            raise ContreeHttpxConnectionError.wrap(exc) from exc
+            raise _transport_error(exc) from exc
+        except (httpx.HTTPError, httpx.StreamError, httpx.InvalidURL) as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except OSError as exc:
+            raise ContreeConnectionError(
+                original=exc,
+                retryable=_is_retryable_os_error(exc),
+            ) from exc
 
     async def close(self) -> None:
         if self.__owns_client:

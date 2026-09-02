@@ -2,11 +2,106 @@
 
 from __future__ import annotations
 
+import errno
+import socket
 from typing import Any
+
+_RETRYABLE_ERRNOS = frozenset(
+    value
+    for value in (
+        errno.ECONNABORTED,
+        errno.ECONNREFUSED,
+        errno.ECONNRESET,
+        errno.EHOSTUNREACH,
+        errno.ENETDOWN,
+        errno.ENETRESET,
+        errno.ENETUNREACH,
+        errno.ENOTCONN,
+        errno.EPIPE,
+        errno.ETIMEDOUT,
+        getattr(errno, "EHOSTDOWN", None),
+    )
+    if value is not None
+)
+
+# Python keeps the native Winsock code in OSError.winerror. The errno value is
+# only an approximate POSIX translation, so classify the confirmed transient
+# Winsock failures directly as well.
+_RETRYABLE_WINERRORS = frozenset(
+    {
+        10050,  # WSAENETDOWN
+        10051,  # WSAENETUNREACH
+        10052,  # WSAENETRESET
+        10053,  # WSAECONNABORTED
+        10054,  # WSAECONNRESET
+        10057,  # WSAENOTCONN
+        10058,  # WSAESHUTDOWN
+        10060,  # WSAETIMEDOUT
+        10061,  # WSAECONNREFUSED
+        10064,  # WSAEHOSTDOWN
+        10065,  # WSAEHOSTUNREACH
+        11002,  # WSATRY_AGAIN
+    }
+)
+
+
+def _exception_chain(error: BaseException) -> tuple[BaseException, ...]:
+    """Return the confirmed cause/context chain without following arguments."""
+    chain: list[BaseException] = []
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return tuple(chain)
+
+
+def _is_retryable_os_error(error: OSError) -> bool:
+    """True only for explicitly classified transient OS network failures."""
+    if isinstance(error, socket.gaierror):
+        return error.errno == socket.EAI_AGAIN
+    if isinstance(
+        error,
+        (
+            ConnectionAbortedError,
+            ConnectionRefusedError,
+            ConnectionResetError,
+            BrokenPipeError,
+            TimeoutError,
+        ),
+    ):
+        return True
+    winerror = getattr(error, "winerror", None)
+    return error.errno in _RETRYABLE_ERRNOS or winerror in _RETRYABLE_WINERRORS
+
+
+def _has_retryable_os_error(error: BaseException) -> bool:
+    """Find a confirmed transient OSError in an exception cause chain."""
+    return any(
+        isinstance(current, OSError) and _is_retryable_os_error(current)
+        for current in _exception_chain(error)
+    )
+
+
+def _safe_error_text(error: BaseException) -> str:
+    """Return native diagnostic text even when its formatter is broken."""
+    try:
+        return str(error)
+    except Exception:
+        return type(error).__name__
 
 
 class ContreeError(Exception):
     """Base class for all contree-client errors."""
+
+    def __init__(
+        self,
+        *args: object,
+        original: BaseException | None = None,
+    ) -> None:
+        super().__init__(*args)
+        self._original = original
 
     @property
     def original(self) -> BaseException | None:
@@ -15,27 +110,36 @@ class ContreeError(Exception):
         Mirrors `__cause__`, which also drives Python's chained
         traceback rendering.
         """
-        return self.__cause__
+        return self._original if self._original is not None else self.__cause__
 
 
 class ContreeTransportError(ContreeError):
-    """Wire-level error base; each backend's subclass also inherits its
-    matching native exception type. Construct via :meth:`wrap`."""
+    """The transport could not complete the request-response exchange.
+
+    Transport errors are non-retryable unless the adapter classifies the
+    specific native failure as transient.
+    """
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        original: BaseException | None = None,
+        retryable: bool = False,
+    ) -> None:
+        if message is None:
+            message = (
+                _safe_error_text(original)
+                if original is not None
+                else "Transport failed"
+            )
+        super().__init__(message, original=original)
+        self.retryable = retryable
 
     def __str__(self) -> str:
         """Preserve the native diagnostic text on translated errors."""
         original = self.original
-        return str(original) if original is not None else super().__str__()
-
-    @classmethod
-    def wrap(cls, original: BaseException) -> BaseException:
-        """Build an instance from *original*; return it unwrapped on failure."""
-        try:
-            wrapped = cls(*original.args)
-        except Exception:
-            return original
-        wrapped.__cause__ = original
-        return wrapped
+        return _safe_error_text(original) if original is not None else super().__str__()
 
 
 class ContreeConnectionError(ContreeTransportError):
@@ -45,30 +149,22 @@ class ContreeConnectionError(ContreeTransportError):
         return super().__str__() or "Connection failed"
 
 
-class ContreeTimeoutError(ContreeTransportError, TimeoutError):
-    """Backend-neutral transport timeout.
-
-    Catch :class:`TimeoutError` to handle this error and client operation
-    deadlines with one handler.
-    """
+class ContreeTimeoutError(ContreeTransportError):
+    """A backend timeout while executing the request."""
 
     def __str__(self) -> str:
         """Supply a message when a backend raises a bare timeout."""
         return super().__str__() or "Request timed out"
 
 
-class ContreeStreamError(ContreeTransportError):
-    """The response body arrived but could not be consumed correctly."""
-
-
-class DecompressionError(ContreeStreamError):
+class DecompressionError(ContreeTransportError):
     """The compressed response body ended prematurely or is corrupt."""
 
     def __str__(self) -> str:
         return ContreeTransportError.__str__(self) or "Response decompression failed"
 
 
-class SSEStreamError(ContreeStreamError):
+class SSEStreamError(ContreeTransportError):
     """The server terminated an SSE stream with an in-band error frame.
 
     Per the API convention this is the in-band equivalent of a 410:
@@ -86,18 +182,7 @@ class SSEStreamError(ContreeStreamError):
         self.last_event_id = last_event_id
 
 
-class ContreeHTTPError(ContreeTransportError):
-    """A full HTTP response with a status line was received."""
-
-    status: int
-
-    @classmethod
-    def wrap(cls, original: BaseException) -> BaseException:
-        """Require backend subclasses to reconstruct status metadata."""
-        return original
-
-
-class ContreeAPIError(ContreeHTTPError):
+class ContreeAPIError(ContreeError):
     """An HTTP error response returned by the Contree API."""
 
     def __init__(
@@ -107,8 +192,9 @@ class ContreeAPIError(ContreeHTTPError):
         *,
         traceback: list[str] | None = None,
         retry_after: int | None = None,
+        original: BaseException | None = None,
     ) -> None:
-        super().__init__(f"HTTP {status}: {error}")
+        super().__init__(f"HTTP {status}: {error}", original=original)
         self.status = status
         self.error = error
         self.traceback = traceback

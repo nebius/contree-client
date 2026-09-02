@@ -23,10 +23,36 @@ def test_client_payload_error_is_retryable(
     generated_package: ModuleType,
 ) -> None:
     module = importlib.import_module("contree_client.aiohttp")
-    error = aiohttp.ClientPayloadError("incomplete chunked response")
+    exceptions = importlib.import_module("contree_client.exceptions")
+    runtime = importlib.import_module("contree_client.runtime")
+    native = aiohttp.ClientPayloadError("incomplete chunked response")
 
-    assert isinstance(error, module.ContreeAsyncClient.retryable_errors)
-    assert not isinstance(error, module.ContreeAsyncClient.nonretryable_errors)
+    class RequestContext:
+        async def __aenter__(self) -> None:
+            raise native
+
+        async def __aexit__(self, *args: object) -> None:
+            pass
+
+    class Session:
+        closed = False
+
+        def request(self, *args: object, **kwargs: object) -> RequestContext:
+            return RequestContext()
+
+    async def scenario() -> BaseException:
+        client = module.ContreeAsyncClient(
+            "token",
+            base_url="http://example.test",
+            aiohttp_session=Session(),
+        )
+        with pytest.raises(exceptions.ContreeTransportError) as caught:
+            await client.request(runtime.RequestSpec(method="GET", path="/x"))
+        return caught.value
+
+    error = asyncio.run(scenario())
+    assert error.retryable is True
+    assert error.original is native
 
 
 async def collect_events(
@@ -136,11 +162,16 @@ def test_wait_operation_keeps_one_deadline_across_payload_interruptions(
 
 async def follow_after_socket_timeout(delay: float, timeout: float) -> None:
     module = importlib.import_module("contree_client.aiohttp")
+    exceptions = importlib.import_module("contree_client.exceptions")
     client = module.ContreeAsyncClient("test-token", base_url="http://127.0.0.1")
 
     async def interrupted_events(*args: Any, **kwargs: Any) -> Any:
         await asyncio.sleep(delay)
-        raise aiohttp.SocketTimeoutError("read stalled")
+        native = aiohttp.SocketTimeoutError("read stalled")
+        raise exceptions.ContreeTimeoutError(
+            original=native,
+            retryable=True,
+        ) from native
         yield  # pragma: no cover - makes this an async generator
 
     client.iter_operation_events = interrupted_events
@@ -170,11 +201,16 @@ def test_follow_operation_events_retries_socket_timeout_until_deadline(
 
 async def wait_after_socket_timeout(delay: float, timeout: float) -> None:
     module = importlib.import_module("contree_client.aiohttp")
+    exceptions = importlib.import_module("contree_client.exceptions")
     client = module.ContreeAsyncClient("test-token", base_url="http://127.0.0.1")
 
     async def interrupted_events(*args: Any, **kwargs: Any) -> Any:
         await asyncio.sleep(delay)
-        raise aiohttp.SocketTimeoutError("read stalled")
+        native = aiohttp.SocketTimeoutError("read stalled")
+        raise exceptions.ContreeTimeoutError(
+            original=native,
+            retryable=True,
+        ) from native
         yield  # pragma: no cover - makes this an async generator
 
     client.iter_operation_events = interrupted_events

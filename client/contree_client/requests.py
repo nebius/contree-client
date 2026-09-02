@@ -13,9 +13,12 @@ from urllib3.util import Timeout as Urllib3Timeout
 from . import base
 from .exceptions import (
     ContreeConnectionError,
-    ContreeStreamError,
+    ContreeError,
     ContreeTimeoutError,
+    ContreeTransportError,
     DecompressionError,
+    _has_retryable_os_error,
+    _is_retryable_os_error,
 )
 from .runtime import (
     CHUNK_SIZE,
@@ -30,36 +33,29 @@ from .spec_info import DEFAULT_BASE_URL
 from .types import logger
 
 
-class ContreeRequestsConnectionError(ContreeConnectionError, requests.ConnectionError):
-    """A `ContreeConnectionError` that is also a `requests.ConnectionError`."""
-
-    @classmethod
-    def wrap(cls, original: BaseException) -> BaseException:
-        try:
-            wrapped = cls(*original.args)
-            if isinstance(original, requests.RequestException):
-                wrapped.response = original.response
-                wrapped.request = original.request
-        except Exception:
-            return original
-        wrapped.__cause__ = original
-        return wrapped
+def _connection_error(exc: BaseException) -> ContreeConnectionError:
+    return ContreeConnectionError(
+        original=exc,
+        retryable=_has_retryable_os_error(exc),
+    )
 
 
-class ContreeRequestsTimeoutError(ContreeTimeoutError, requests.Timeout):
-    """A `ContreeTimeoutError` that is also a `requests.Timeout`."""
-
-    @classmethod
-    def wrap(cls, original: BaseException) -> BaseException:
-        try:
-            wrapped = cls(*original.args)
-            if isinstance(original, requests.RequestException):
-                wrapped.response = original.response
-                wrapped.request = original.request
-        except Exception:
-            return original
-        wrapped.__cause__ = original
-        return wrapped
+def _api_error(exc: requests.HTTPError) -> ContreeError:
+    response = exc.response
+    if response is None or 200 <= response.status_code < 300:
+        return ContreeTransportError(original=exc)
+    try:
+        body = response.content
+    except requests.RequestException:
+        body = str(exc).encode()
+    return error_for_response(
+        ResponseData(
+            status=response.status_code,
+            headers={k.lower(): v for k, v in response.headers.items()},
+            body=body,
+        ),
+        original=exc,
+    )
 
 
 class SSLContextAdapter(requests.adapters.HTTPAdapter):
@@ -80,15 +76,6 @@ class ContreeClient(base.ContreeSyncClient):
 
     log = logger.getChild("requests")
     UA_TRANSPORT_LIBRARY = library_version(requests)
-    retryable_errors = (
-        ContreeRequestsConnectionError,
-        ContreeRequestsTimeoutError,
-        ContreeStreamError,
-    )
-    nonretryable_errors = (
-        requests.exceptions.SSLError,
-        requests.exceptions.ContentDecodingError,
-    )
 
     def __init__(
         self,
@@ -148,14 +135,27 @@ class ContreeClient(base.ContreeSyncClient):
                 timeout=cast(Any, timeout),
                 allow_redirects=False,
             )
+        except requests.HTTPError as exc:
+            raise _api_error(exc) from exc
         except requests.Timeout as exc:
-            raise ContreeRequestsTimeoutError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
         except requests.exceptions.ContentDecodingError as exc:
-            raise DecompressionError.wrap(exc) from exc
+            raise DecompressionError(original=exc) from exc
         except requests.exceptions.ChunkedEncodingError as exc:
-            raise ContreeStreamError.wrap(exc) from exc
+            raise ContreeTransportError(original=exc, retryable=True) from exc
+        except requests.exceptions.SSLError as exc:
+            raise ContreeConnectionError(original=exc) from exc
+        except requests.exceptions.ProxyError as exc:
+            raise ContreeTransportError(original=exc) from exc
         except requests.ConnectionError as exc:
-            raise ContreeRequestsConnectionError.wrap(exc) from exc
+            raise _connection_error(exc) from exc
+        except requests.RequestException as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except OSError as exc:
+            raise ContreeConnectionError(
+                original=exc,
+                retryable=_is_retryable_os_error(exc),
+            ) from exc
         data = ResponseData(
             status=response.status_code,
             headers={k.lower(): v for k, v in response.headers.items()},
@@ -199,14 +199,27 @@ class ContreeClient(base.ContreeSyncClient):
                 allow_redirects=False,
                 stream=True,
             )
+        except requests.HTTPError as exc:
+            raise _api_error(exc) from exc
         except requests.Timeout as exc:
-            raise ContreeRequestsTimeoutError.wrap(exc) from exc
+            raise ContreeTimeoutError(original=exc, retryable=True) from exc
         except requests.exceptions.ContentDecodingError as exc:
-            raise DecompressionError.wrap(exc) from exc
+            raise DecompressionError(original=exc) from exc
         except requests.exceptions.ChunkedEncodingError as exc:
-            raise ContreeStreamError.wrap(exc) from exc
+            raise ContreeTransportError(original=exc, retryable=True) from exc
+        except requests.exceptions.SSLError as exc:
+            raise ContreeConnectionError(original=exc) from exc
+        except requests.exceptions.ProxyError as exc:
+            raise ContreeTransportError(original=exc) from exc
         except requests.ConnectionError as exc:
-            raise ContreeRequestsConnectionError.wrap(exc) from exc
+            raise _connection_error(exc) from exc
+        except requests.RequestException as exc:
+            raise ContreeTransportError(original=exc) from exc
+        except OSError as exc:
+            raise ContreeConnectionError(
+                original=exc,
+                retryable=_is_retryable_os_error(exc),
+            ) from exc
         self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status_code)
         if not 200 <= response.status_code < 300:
             with response:
@@ -236,14 +249,27 @@ class ContreeClient(base.ContreeSyncClient):
                 for chunk in chunks:
                     remaining_timeout(spec.deadline, None)
                     yield chunk
+            except requests.HTTPError as exc:
+                raise _api_error(exc) from exc
             except requests.Timeout as exc:
-                raise ContreeRequestsTimeoutError.wrap(exc) from exc
+                raise ContreeTimeoutError(original=exc, retryable=True) from exc
             except requests.exceptions.ContentDecodingError as exc:
-                raise DecompressionError.wrap(exc) from exc
+                raise DecompressionError(original=exc) from exc
             except requests.exceptions.ChunkedEncodingError as exc:
-                raise ContreeStreamError.wrap(exc) from exc
+                raise ContreeTransportError(original=exc, retryable=True) from exc
+            except requests.exceptions.SSLError as exc:
+                raise ContreeConnectionError(original=exc) from exc
+            except requests.exceptions.ProxyError as exc:
+                raise ContreeTransportError(original=exc) from exc
             except requests.ConnectionError as exc:
-                raise ContreeRequestsConnectionError.wrap(exc) from exc
+                raise _connection_error(exc) from exc
+            except requests.RequestException as exc:
+                raise ContreeTransportError(original=exc) from exc
+            except OSError as exc:
+                raise ContreeConnectionError(
+                    original=exc,
+                    retryable=_is_retryable_os_error(exc),
+                ) from exc
 
     def close(self) -> None:
         if self.__owns_session:
