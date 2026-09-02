@@ -70,7 +70,6 @@ class ContreeClient(base.ContreeSyncClient):
     retryable_errors = (
         ContreeHttpxConnectionError,
         ContreeHttpxTimeoutError,
-        DecompressionError,
     )
     nonretryable_errors = (ssl.SSLError,)
 
@@ -210,7 +209,6 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
     retryable_errors = (
         ContreeHttpxConnectionError,
         ContreeHttpxTimeoutError,
-        DecompressionError,
     )
     nonretryable_errors = (ssl.SSLError,)
 

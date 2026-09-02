@@ -185,7 +185,7 @@ def test_urllib3_request_boundary(
     elif kind == "invalid":
         native = urllib3.exceptions.LocationParseError("bad URL")
     elif kind == "invalid_header":
-        native = ValueError("invalid header")
+        native = urllib3.exceptions.InvalidHeader("invalid header")
     else:
         native = urllib3.exceptions.DecodeError("bad gzip")
 
@@ -312,7 +312,7 @@ def test_requests_request_boundary(
         ("remote_protocol", 2),
         ("invalid_header", 1),
         ("unsupported", 1),
-        ("decode", 2),
+        ("decode", 1),
     ],
 )
 def test_httpx_request_boundary(

@@ -117,7 +117,10 @@ class ContreeClient(base.ContreeSyncClient):
                 decode_content=True,
                 **pool_options,
             )
-        except urllib3.exceptions.LocationValueError:
+        except (
+            urllib3.exceptions.LocationValueError,
+            urllib3.exceptions.InvalidHeader,
+        ):
             raise
         except urllib3.exceptions.NewConnectionError as exc:
             # NewConnectionError subclasses ConnectTimeoutError, but a
@@ -176,7 +179,10 @@ class ContreeClient(base.ContreeSyncClient):
                 decode_content=decode_content,
                 **pool_options,
             )
-        except urllib3.exceptions.LocationValueError:
+        except (
+            urllib3.exceptions.LocationValueError,
+            urllib3.exceptions.InvalidHeader,
+        ):
             raise
         except urllib3.exceptions.NewConnectionError as exc:
             raise ContreeUrllib3ConnectionError.wrap(exc) from exc

@@ -50,6 +50,7 @@ BACKEND_POLICIES = {
     },
     "urllib3": {
         NATIVE: {
+            "InvalidHeader",
             "LocationParseError",
             "LocationValueError",
             "ProxySchemeUnknown",
@@ -66,7 +67,6 @@ BACKEND_POLICIES = {
             "HostChangedError",
             "IncompleteRead",
             "InvalidChunkLength",
-            "InvalidHeader",
             "MaxRetryError",
             "NameResolutionError",
             "NewConnectionError",
@@ -140,7 +140,7 @@ BACKEND_POLICIES = {
             "TimeoutException",
             "WriteTimeout",
         },
-        DECOMPRESSION: {"DecodingError"},
+        DECOMPRESSION_NONRETRYABLE: {"DecodingError"},
     },
     "aiohttp": {
         NATIVE: {
