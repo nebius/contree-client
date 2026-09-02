@@ -7,19 +7,14 @@ import gzip
 import ssl
 from collections.abc import AsyncGenerator
 from contextlib import suppress
-from functools import lru_cache
 
 import aiohttp
 
 from . import base
 from .exceptions import (
-    ContreeConnectionClosedError,
     ContreeConnectionError,
-    ContreeHTTPError,
-    ContreeSSLError,
     ContreeStreamError,
     ContreeTimeoutError,
-    ContreeTransportError,
 )
 from .runtime import (
     CHUNK_SIZE,
@@ -44,122 +39,8 @@ class ContreeAiohttpTimeoutError(ContreeTimeoutError, TimeoutError):
     """A `ContreeTimeoutError` that is also a stdlib `TimeoutError`."""
 
 
-class ContreeAiohttpServerTimeoutError(
-    ContreeAiohttpTimeoutError, aiohttp.ServerTimeoutError
-):
-    """A `ContreeAiohttpTimeoutError` that is also an
-    `aiohttp.ServerTimeoutError`.
-
-    This is a subclass of `ContreeAiohttpTimeoutError`, not a sibling.
-    Existing `except ContreeAiohttpTimeoutError` call sites still match
-    it.
-    """
-
-
-class ContreeAiohttpConnectionClosedError(
-    ContreeConnectionClosedError,
-    ContreeAiohttpConnectionError,
-    aiohttp.ServerDisconnectedError,
-):
-    """A closed-connection error catchable through both hierarchies."""
-
-
 class ContreeAiohttpStreamError(ContreeStreamError, aiohttp.ClientPayloadError):
-    """A `ContreeProtocolError` that is also an `aiohttp.ClientPayloadError`."""
-
-
-class ContreeAiohttpSSLError(
-    ContreeSSLError, ContreeAiohttpConnectionError, aiohttp.ClientSSLError
-):
-    """A `ContreeSSLError` that is also an `aiohttp.ClientSSLError`."""
-
-
-class ContreeAiohttpFingerprintError(
-    ContreeSSLError,
-    ContreeAiohttpConnectionError,
-    aiohttp.ServerFingerprintMismatch,
-):
-    """A readable TLS certificate-fingerprint mismatch."""
-
-    def __str__(self) -> str:
-        return (
-            f"TLS fingerprint mismatch for {self.host}:{self.port}: "
-            f"expected {self.expected.hex()}, got {self.got.hex()}"
-        )
-
-
-class ContreeAiohttpAPIError(ContreeHTTPError, aiohttp.ClientResponseError):
-    """A `ContreeHTTPError` that is also an `aiohttp.ClientResponseError`."""
-
-    @classmethod
-    def wrap(cls, original: BaseException) -> BaseException:
-        if not isinstance(original, aiohttp.ClientResponseError):
-            return original
-        try:
-            wrapped = cls(
-                original.request_info,
-                original.history,
-                status=original.status,
-                message=original.message,
-                headers=original.headers,
-            )
-        except Exception:
-            return original
-        wrapped.__cause__ = original
-        return wrapped
-
-
-@lru_cache
-def translate_exc_class(
-    exc_type: type[BaseException],
-) -> type[ContreeTransportError] | None:
-    """Return the Contree hybrid class for a native exception type.
-
-    Return None when unrecognized. The cache resolves each distinct
-    type once, not on every call.
-
-    aiohttp's own hierarchy overlaps in three places. `ServerTimeoutError`
-    is also a `ClientConnectionError`. `ClientConnectorSSLError` is also
-    a `ClientConnectorError`. `ServerDisconnectedError` is also a
-    `ClientConnectionError`. Match each before the generic
-    connection-error bucket below it.
-    """
-    if issubclass(exc_type, aiohttp.ServerTimeoutError):
-        return ContreeAiohttpServerTimeoutError
-    if issubclass(exc_type, (TimeoutError, asyncio.TimeoutError)):
-        return ContreeAiohttpTimeoutError
-    if issubclass(exc_type, aiohttp.ServerFingerprintMismatch):
-        return ContreeAiohttpFingerprintError
-    if issubclass(exc_type, aiohttp.ServerDisconnectedError):
-        return ContreeAiohttpConnectionClosedError
-    if issubclass(exc_type, aiohttp.ClientSSLError):
-        return ContreeAiohttpSSLError
-    if issubclass(exc_type, aiohttp.ClientPayloadError):
-        return ContreeAiohttpStreamError
-    if issubclass(exc_type, aiohttp.ClientResponseError):
-        return ContreeAiohttpAPIError
-    if issubclass(exc_type, aiohttp.ClientConnectionError):
-        return ContreeAiohttpConnectionError
-    return None
-
-
-def translate_error(native: BaseException) -> BaseException:
-    """Map a native aiohttp exception to its Contree equivalent. Return
-    native unchanged when unrecognized."""
-    cls = translate_exc_class(type(native))
-    if cls is None:
-        return native
-    if cls is ContreeAiohttpAPIError:
-        # cls comes from translate_exc_class, only for ClientResponseError types
-        assert isinstance(native, aiohttp.ClientResponseError)
-        wrapped = ContreeAiohttpAPIError.wrap(native)
-        if not isinstance(wrapped, ContreeAiohttpAPIError):
-            return native
-        return wrapped
-    wrapped = cls.wrap(native)
-    if wrapped is native:
-        return native
-    return wrapped
+    """A `ContreeStreamError` that is also an `aiohttp.ClientPayloadError`."""
 
 
 class ContreeAsyncClient(base.ContreeAsyncClient):
@@ -173,13 +54,12 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
     UA_TRANSPORT_LIBRARY = library_version(aiohttp)
     retryable_errors = (
         aiohttp.ClientConnectionError,
-        aiohttp.ServerConnectionError,
         aiohttp.ClientPayloadError,
         ContreeAiohttpTimeoutError,
     )
     nonretryable_errors = (
-        ContreeAiohttpSSLError,
-        ContreeAiohttpFingerprintError,
+        aiohttp.ClientSSLError,
+        aiohttp.ServerFingerprintMismatch,
     )
 
     def __init__(
@@ -228,6 +108,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     async def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
+        headers = list(self.build_headers(spec))
         timeout = remaining_timeout(spec.deadline, self.timeout)
         client_timeout = (
             aiohttp.ClientTimeout(total=timeout)
@@ -239,7 +120,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 spec.method,
                 url,
                 data=spec.body,
-                headers=self.build_headers(spec),
+                headers=headers,
                 allow_redirects=False,
                 timeout=client_timeout,
             ) as response:
@@ -249,11 +130,12 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                     headers={k.lower(): v for k, v in response.headers.items()},
                     body=body,
                 )
-        except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError) as exc:
-            translated = translate_error(exc)
-            if translated is exc:
-                raise
-            raise translated from exc
+        except (aiohttp.ServerTimeoutError, TimeoutError, asyncio.TimeoutError) as exc:
+            raise ContreeAiohttpTimeoutError.wrap(exc) from exc
+        except aiohttp.ClientPayloadError as exc:
+            raise ContreeAiohttpStreamError.wrap(exc) from exc
+        except aiohttp.ClientConnectionError as exc:
+            raise ContreeAiohttpConnectionError.wrap(exc) from exc
         remaining_timeout(spec.deadline, None)
         return data
 
@@ -263,6 +145,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         auto_decompress: bool = True,
     ) -> AsyncGenerator[bytes, None]:
         url = self.build_url(spec)
+        headers = list(self.build_headers(spec))
         connect_timeout = remaining_timeout(spec.deadline, self.timeout)
         read_timeout = remaining_timeout(
             spec.deadline,
@@ -286,7 +169,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 spec.method,
                 url,
                 data=spec.body,
-                headers=self.build_headers(spec),
+                headers=headers,
                 allow_redirects=False,
                 auto_decompress=auto_decompress,
                 timeout=client_timeout,
@@ -297,7 +180,11 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 if not 200 <= response.status < 300:
                     try:
                         body = await response.read()
-                    except self.retryable_errors:
+                    except (
+                        aiohttp.ClientConnectionError,
+                        aiohttp.ClientPayloadError,
+                        TimeoutError,
+                    ):
                         # The status is authoritative even when its optional
                         # diagnostic body is interrupted.
                         body = b""
@@ -318,11 +205,12 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 async for chunk in response.content.iter_chunked(CHUNK_SIZE):
                     remaining_timeout(spec.deadline, None)
                     yield chunk
-        except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError) as exc:
-            translated = translate_error(exc)
-            if translated is exc:
-                raise
-            raise translated from exc
+        except (aiohttp.ServerTimeoutError, TimeoutError, asyncio.TimeoutError) as exc:
+            raise ContreeAiohttpTimeoutError.wrap(exc) from exc
+        except aiohttp.ClientPayloadError as exc:
+            raise ContreeAiohttpStreamError.wrap(exc) from exc
+        except aiohttp.ClientConnectionError as exc:
+            raise ContreeAiohttpConnectionError.wrap(exc) from exc
 
     async def close(self) -> None:
         if (

@@ -1,8 +1,7 @@
 export declare class ContreeError extends Error {}
 
 export declare class ContreeTransportError extends ContreeError {}
-export declare class ContreeProtocolError extends ContreeTransportError {}
-export declare class ContreeStreamError extends ContreeProtocolError {}
+export declare class ContreeStreamError extends ContreeTransportError {}
 
 export declare class SSEStreamError extends ContreeStreamError {
   lastEventId: number | null;

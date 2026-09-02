@@ -8,8 +8,7 @@ export class ContreeError extends Error {
 }
 
 export class ContreeTransportError extends ContreeError {}
-export class ContreeProtocolError extends ContreeTransportError {}
-export class ContreeStreamError extends ContreeProtocolError {}
+export class ContreeStreamError extends ContreeTransportError {}
 
 export class SSEStreamError extends ContreeStreamError {
   constructor(message, { lastEventId = null } = {}) {

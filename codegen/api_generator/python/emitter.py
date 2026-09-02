@@ -432,6 +432,17 @@ class ContreeClientBase:
     UA_PYTHON_VERSION = f"Python/{{'.'.join(map(str, sys.version_info[:3]))}}"
     UA_PLATFORM = platform.platform()
 
+    def _is_nonretryable(self, error: BaseException) -> bool:
+        """Check the translated error and its native cause chain."""
+        current: BaseException | None = error
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            if isinstance(current, self.nonretryable_errors):
+                return True
+            seen.add(id(current))
+            current = current.__cause__ or current.__context__
+        return False
+
     def __init__(
         self,
         token: str,
@@ -670,8 +681,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                     deadline_limited and isinstance(exc, ContreeTimeoutError),
                 ):
                     raise TimeoutError(REQUEST_DEADLINE_MESSAGE) from exc
-                unretryable = isinstance(exc, self.nonretryable_errors)
-                if not replay_safe or unretryable or exhausted:
+                if not replay_safe or self._is_nonretryable(exc) or exhausted:
                     raise
                 delay = next(delays)
                 self.log.warning(
@@ -922,7 +932,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                 continue
             except (ContreeTimeoutError, *self.retryable_errors) as exc:
                 check_deadline()
-                if isinstance(exc, self.nonretryable_errors):
+                if self._is_nonretryable(exc):
                     raise
                 self.log.warning("stream broken (last_id=%s): %s", last_id, exc)
             # the stream ended or broke without a completion frame:
@@ -1087,8 +1097,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                     deadline_limited and isinstance(exc, ContreeTimeoutError),
                 ):
                     raise TimeoutError(REQUEST_DEADLINE_MESSAGE) from exc
-                unretryable = isinstance(exc, self.nonretryable_errors)
-                if not replay_safe or unretryable or exhausted:
+                if not replay_safe or self._is_nonretryable(exc) or exhausted:
                     raise
                 delay = next(delays)
                 self.log.warning(
@@ -1367,7 +1376,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 continue
             except (ContreeTimeoutError, *self.retryable_errors) as exc:
                 check_deadline()
-                if isinstance(exc, self.nonretryable_errors):
+                if self._is_nonretryable(exc):
                     raise
                 self.log.warning("stream broken (last_id=%s): %s", last_id, exc)
             # the stream ended or broke without a completion frame:
@@ -1743,12 +1752,9 @@ EXCEPTION_NAMES = [
     "BadRequestError",
     "ConflictError",
     "ContreeAPIError",
-    "ContreeConnectionClosedError",
     "ContreeConnectionError",
     "ContreeError",
     "ContreeHTTPError",
-    "ContreeProtocolError",
-    "ContreeSSLError",
     "ContreeStreamError",
     "ContreeTimeoutError",
     "ContreeTransportError",

@@ -10,16 +10,14 @@ import {
 } from "../lib/runtime.js";
 import {
   ContreeError,
-  ContreeProtocolError,
   ContreeStreamError,
   ContreeTransportError,
   SSEStreamError,
 } from "../lib/errors.js";
 
-test("stream errors retain the compatibility hierarchy", () => {
+test("stream errors retain the transport hierarchy", () => {
   const error = new SSEStreamError("stream failed");
   assert.ok(error instanceof ContreeStreamError);
-  assert.ok(error instanceof ContreeProtocolError);
   assert.ok(error instanceof ContreeTransportError);
   assert.ok(error instanceof ContreeError);
 });

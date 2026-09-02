@@ -45,20 +45,6 @@ class ContreeConnectionError(ContreeTransportError):
         return super().__str__() or "Connection failed"
 
 
-class ContreeSSLError(ContreeConnectionError):
-    """The TLS handshake or certificate verification failed."""
-
-    def __str__(self) -> str:
-        return ContreeTransportError.__str__(self) or "TLS connection failed"
-
-
-class ContreeConnectionClosedError(ContreeConnectionError):
-    """The peer closed the connection."""
-
-    def __str__(self) -> str:
-        return ContreeTransportError.__str__(self) or "Peer closed the connection"
-
-
 class ContreeTimeoutError(ContreeTransportError, TimeoutError):
     """Backend-neutral transport timeout.
 
@@ -71,22 +57,8 @@ class ContreeTimeoutError(ContreeTransportError, TimeoutError):
         return super().__str__() or "Request timed out"
 
 
-class ContreeProtocolError(ContreeTransportError):
-    """The request or response violates the wire protocol.
-
-    Examples include malformed framing, broken chunked encoding, and
-    a corrupt response payload.
-    """
-
-    def __str__(self) -> str:
-        return super().__str__() or "Protocol error"
-
-
-class ContreeStreamError(ContreeProtocolError):
-    """Compatibility base for response-body and SSE stream errors.
-
-    Deprecated: catch :class:`ContreeProtocolError` for new code.
-    """
+class ContreeStreamError(ContreeTransportError):
+    """The response body arrived but could not be consumed correctly."""
 
 
 class DecompressionError(ContreeStreamError):

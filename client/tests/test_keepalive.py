@@ -349,9 +349,11 @@ def test_stdlib_pool_replaces_dropped_connection_without_resend(
         original = client._send_on
         sends = []
 
-        def counting_send(connection, spec):  # type: ignore[no-untyped-def]
+        def counting_send(  # type: ignore[no-untyped-def]
+            connection, spec, target, headers, timeout
+        ):
             sends.append(spec.path)
-            return original(connection, spec)
+            return original(connection, spec, target, headers, timeout)
 
         client._send_on = counting_send
         assert client.whoami().permissions
@@ -385,11 +387,13 @@ def test_stdlib_pool_resends_once_on_stale_keepalive(
         original = client._send_on
         failed = []
 
-        def flaky_send(connection, spec):  # type: ignore[no-untyped-def]
+        def flaky_send(  # type: ignore[no-untyped-def]
+            connection, spec, target, headers, timeout
+        ):
             if not failed:
                 failed.append(spec)
                 raise http.client.BadStatusLine("")
-            return original(connection, spec)
+            return original(connection, spec, target, headers, timeout)
 
         client._send_on = flaky_send
         assert client.whoami().permissions
@@ -414,11 +418,13 @@ def test_stdlib_pool_never_resends_non_idempotent_requests(
         original = client._send_on
         failed = []
 
-        def flaky_send(connection, spec):  # type: ignore[no-untyped-def]
+        def flaky_send(  # type: ignore[no-untyped-def]
+            connection, spec, target, headers, timeout
+        ):
             if not failed:
                 failed.append(spec)
                 raise BrokenPipeError("stale keepalive")
-            return original(connection, spec)
+            return original(connection, spec, target, headers, timeout)
 
         http = importlib.import_module("contree_client.http")
         client._send_on = flaky_send
@@ -449,11 +455,13 @@ def test_stdlib_pool_stale_connection_replays_file_body(
         original = client._send_on
         failed = []
 
-        def flaky_send(connection, spec):  # type: ignore[no-untyped-def]
+        def flaky_send(  # type: ignore[no-untyped-def]
+            connection, spec, target, headers, timeout
+        ):
             if not failed:
                 failed.append(spec.body.read())  # the send drained it
                 raise BrokenPipeError("stale keepalive")
-            return original(connection, spec)
+            return original(connection, spec, target, headers, timeout)
 
         client._send_on = flaky_send
         # the stub route is a POST, but replay safety is the caller's

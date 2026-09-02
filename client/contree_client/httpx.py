@@ -4,21 +4,11 @@ from __future__ import annotations
 
 import ssl
 from collections.abc import AsyncGenerator, Iterator
-from functools import lru_cache
 
 import httpx
 
 from . import base
-from .exceptions import (
-    ContreeConnectionClosedError,
-    ContreeConnectionError,
-    ContreeHTTPError,
-    ContreeProtocolError,
-    ContreeSSLError,
-    ContreeTimeoutError,
-    ContreeTransportError,
-    DecompressionError,
-)
+from .exceptions import ContreeConnectionError, ContreeTimeoutError, DecompressionError
 from .runtime import (
     RequestSpec,
     ResponseData,
@@ -72,126 +62,17 @@ class ContreeHttpxTimeoutError(ContreeTimeoutError, httpx.TimeoutException):
         return wrapped
 
 
-class ContreeHttpxSSLError(
-    ContreeSSLError, ContreeHttpxConnectionError, httpx.ConnectError
-):
-    """A `ContreeSSLError` that is also an `httpx.ConnectError`."""
-
-
-class ContreeHttpxProtocolError(
-    ContreeProtocolError, ContreeHttpxConnectionError, httpx.ProtocolError
-):
-    """A protocol error catchable through both existing hierarchies."""
-
-
-class ContreeHttpxRemoteProtocolError(
-    ContreeConnectionClosedError,
-    ContreeHttpxProtocolError,
-    httpx.RemoteProtocolError,
-):
-    """A translated `httpx.RemoteProtocolError`."""
-
-
-class ContreeHttpxLocalProtocolError(
-    ContreeHttpxProtocolError, httpx.LocalProtocolError
-):
-    """A translated `httpx.LocalProtocolError`."""
-
-
-class ContreeHttpxDecompressionError(DecompressionError, httpx.DecodingError):
-    """A decoding error that remains an `httpx.DecodingError`."""
-
-    @classmethod
-    def wrap(cls, original: BaseException) -> BaseException:
-        try:
-            wrapped = cls(*original.args)
-            if isinstance(original, httpx.HTTPError):
-                wrapped._request = original._request
-        except Exception:
-            return original
-        wrapped.__cause__ = original
-        return wrapped
-
-
-class ContreeHttpxAPIError(ContreeHTTPError, httpx.HTTPStatusError):
-    """A `ContreeHTTPError` that is also an `httpx.HTTPStatusError`."""
-
-
-@lru_cache
-def translate_exc_class(
-    exc_type: type[BaseException],
-) -> type[ContreeTransportError] | None:
-    """Return the Contree hybrid class for a native exception type.
-
-    Return None when unrecognized. The cache resolves each distinct
-    type once, not on every call.
-
-    ConnectError, ConnectTimeout, and the protocol-error subclasses all
-    share `httpx.TransportError` as a common ancestor. Check it last,
-    as the generic fallback.
-
-    This function does not cover two cases. `httpx.ConnectError` needs
-    its `__cause__`, not just its type, to pick SSL vs. plain.
-    `httpx.HTTPStatusError` needs `request`/`response` to construct.
-    `translate_error()` handles both before it calls this cache.
-    """
-    if issubclass(exc_type, httpx.TimeoutException):
-        return ContreeHttpxTimeoutError
-    if issubclass(exc_type, httpx.DecodingError):
-        return ContreeHttpxDecompressionError
-    if issubclass(exc_type, httpx.RemoteProtocolError):
-        return ContreeHttpxRemoteProtocolError
-    if issubclass(exc_type, httpx.LocalProtocolError):
-        return ContreeHttpxLocalProtocolError
-    if issubclass(exc_type, httpx.ProtocolError):
-        return ContreeHttpxProtocolError
-    if issubclass(exc_type, httpx.TransportError):
-        return ContreeHttpxConnectionError
-    return None
-
-
-def translate_error(native: BaseException) -> BaseException:
-    """Map a native httpx exception to its Contree equivalent. Return
-    native unchanged when unrecognized."""
-    cause = native.__cause__
-    context = native.__context__
-    caused_by_ssl = (
-        isinstance(cause, ssl.SSLError)
-        or isinstance(context, ssl.SSLError)
-        or (cause is not None and isinstance(cause.__cause__, ssl.SSLError))
-        or (context is not None and isinstance(context.__cause__, ssl.SSLError))
-    )
-    if isinstance(native, httpx.ConnectError) and caused_by_ssl:
-        wrapped = ContreeHttpxSSLError.wrap(native)
-        if wrapped is native:
-            return native
-        return wrapped
-    if isinstance(native, httpx.HTTPStatusError):
-        wrapped = ContreeHttpxAPIError(
-            str(native), request=native.request, response=native.response
-        )
-        wrapped.status = native.response.status_code
-        wrapped.__cause__ = native
-        return wrapped
-    cls = translate_exc_class(type(native))
-    if cls is None:
-        return native
-    wrapped = cls.wrap(native)
-    if wrapped is native:
-        return native
-    return wrapped
-
-
 class ContreeClient(base.ContreeSyncClient):
     """Synchronous Contree API client on top of `httpx.Client`."""
 
     log = logger.getChild("httpx")
     UA_TRANSPORT_LIBRARY = library_version(httpx)
-    retryable_errors = (httpx.TransportError,)
-    nonretryable_errors = (
-        ContreeHttpxSSLError,
-        ContreeHttpxLocalProtocolError,
+    retryable_errors = (
+        ContreeHttpxConnectionError,
+        ContreeHttpxTimeoutError,
+        DecompressionError,
     )
+    nonretryable_errors = (ssl.SSLError,)
 
     def __init__(
         self,
@@ -227,6 +108,8 @@ class ContreeClient(base.ContreeSyncClient):
 
     def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
+        content = request_content(spec.body)
+        headers = list(self.build_headers(spec))
         timeout = (
             httpx.USE_CLIENT_DEFAULT
             if spec.deadline is None
@@ -236,16 +119,19 @@ class ContreeClient(base.ContreeSyncClient):
             response = self._client.request(
                 spec.method,
                 url,
-                content=request_content(spec.body),
+                content=content,
                 # httpx wants a Sequence, materialize the iterable
-                headers=list(self.build_headers(spec)),
+                headers=headers,
                 timeout=timeout,
             )
-        except httpx.HTTPError as exc:
-            translated = translate_error(exc)
-            if translated is exc:
-                raise
-            raise translated from exc
+        except (httpx.InvalidURL, httpx.UnsupportedProtocol, httpx.LocalProtocolError):
+            raise
+        except httpx.TimeoutException as exc:
+            raise ContreeHttpxTimeoutError.wrap(exc) from exc
+        except httpx.DecodingError as exc:
+            raise DecompressionError.wrap(exc) from exc
+        except httpx.TransportError as exc:
+            raise ContreeHttpxConnectionError.wrap(exc) from exc
         data = ResponseData(
             status=response.status_code,
             headers={k.lower(): v for k, v in response.headers.items()},
@@ -260,6 +146,8 @@ class ContreeClient(base.ContreeSyncClient):
         auto_decompress: bool = True,
     ) -> Iterator[bytes]:
         url = self.build_url(spec)
+        content = request_content(spec.body)
+        headers = list(self.build_headers(spec))
         timeout = remaining_timeout(spec.deadline, self.timeout)
         read_timeout = remaining_timeout(
             spec.deadline,
@@ -269,9 +157,9 @@ class ContreeClient(base.ContreeSyncClient):
             with self._client.stream(
                 spec.method,
                 url,
-                content=request_content(spec.body),
+                content=content,
                 # httpx wants a Sequence, materialize the iterable
-                headers=list(self.build_headers(spec)),
+                headers=headers,
                 timeout=httpx.Timeout(
                     timeout,
                     read=read_timeout,
@@ -300,11 +188,14 @@ class ContreeClient(base.ContreeSyncClient):
                 for chunk in chunks:
                     remaining_timeout(spec.deadline, None)
                     yield chunk
-        except httpx.HTTPError as exc:
-            translated = translate_error(exc)
-            if translated is exc:
-                raise
-            raise translated from exc
+        except (httpx.InvalidURL, httpx.UnsupportedProtocol, httpx.LocalProtocolError):
+            raise
+        except httpx.TimeoutException as exc:
+            raise ContreeHttpxTimeoutError.wrap(exc) from exc
+        except httpx.DecodingError as exc:
+            raise DecompressionError.wrap(exc) from exc
+        except httpx.TransportError as exc:
+            raise ContreeHttpxConnectionError.wrap(exc) from exc
 
     def close(self) -> None:
         if self.__owns_client:
@@ -316,11 +207,12 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     log = logger.getChild("httpx")
     UA_TRANSPORT_LIBRARY = library_version(httpx)
-    retryable_errors = (httpx.TransportError,)
-    nonretryable_errors = (
-        ContreeHttpxSSLError,
-        ContreeHttpxLocalProtocolError,
+    retryable_errors = (
+        ContreeHttpxConnectionError,
+        ContreeHttpxTimeoutError,
+        DecompressionError,
     )
+    nonretryable_errors = (ssl.SSLError,)
 
     def __init__(
         self,
@@ -356,6 +248,8 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     async def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
+        content = async_request_content(spec.body)
+        headers = list(self.build_headers(spec))
         timeout = (
             httpx.USE_CLIENT_DEFAULT
             if spec.deadline is None
@@ -367,16 +261,19 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 url,
                 # a file-like body must become an ASYNC iterator: httpx
                 # refuses sync iterables on an AsyncClient
-                content=async_request_content(spec.body),
+                content=content,
                 # httpx wants a Sequence, materialize the iterable
-                headers=list(self.build_headers(spec)),
+                headers=headers,
                 timeout=timeout,
             )
-        except httpx.HTTPError as exc:
-            translated = translate_error(exc)
-            if translated is exc:
-                raise
-            raise translated from exc
+        except (httpx.InvalidURL, httpx.UnsupportedProtocol, httpx.LocalProtocolError):
+            raise
+        except httpx.TimeoutException as exc:
+            raise ContreeHttpxTimeoutError.wrap(exc) from exc
+        except httpx.DecodingError as exc:
+            raise DecompressionError.wrap(exc) from exc
+        except httpx.TransportError as exc:
+            raise ContreeHttpxConnectionError.wrap(exc) from exc
         data = ResponseData(
             status=response.status_code,
             headers={k.lower(): v for k, v in response.headers.items()},
@@ -391,6 +288,8 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         auto_decompress: bool = True,
     ) -> AsyncGenerator[bytes, None]:
         url = self.build_url(spec)
+        content = async_request_content(spec.body)
+        headers = list(self.build_headers(spec))
         timeout = remaining_timeout(spec.deadline, self.timeout)
         read_timeout = remaining_timeout(
             spec.deadline,
@@ -402,9 +301,9 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 url,
                 # a file-like body must become an ASYNC iterator: httpx
                 # refuses sync iterables on an AsyncClient
-                content=async_request_content(spec.body),
+                content=content,
                 # httpx wants a Sequence, materialize the iterable
-                headers=list(self.build_headers(spec)),
+                headers=headers,
                 timeout=httpx.Timeout(
                     timeout,
                     read=read_timeout,
@@ -433,11 +332,14 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 async for chunk in source:
                     remaining_timeout(spec.deadline, None)
                     yield chunk
-        except httpx.HTTPError as exc:
-            translated = translate_error(exc)
-            if translated is exc:
-                raise
-            raise translated from exc
+        except (httpx.InvalidURL, httpx.UnsupportedProtocol, httpx.LocalProtocolError):
+            raise
+        except httpx.TimeoutException as exc:
+            raise ContreeHttpxTimeoutError.wrap(exc) from exc
+        except httpx.DecodingError as exc:
+            raise DecompressionError.wrap(exc) from exc
+        except httpx.TransportError as exc:
+            raise ContreeHttpxConnectionError.wrap(exc) from exc
 
     async def close(self) -> None:
         if self.__owns_client:

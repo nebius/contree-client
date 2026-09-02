@@ -187,7 +187,6 @@ def test_aiohttp_payload_error_is_catchable_both_ways(
 
     error = asyncio.run(scenario())
     assert isinstance(error, exceptions.ContreeStreamError)
-    assert isinstance(error, exceptions.ContreeProtocolError)
     assert isinstance(error, exceptions.ContreeTransportError)
     assert isinstance(error, aiohttp.ClientPayloadError)
 
