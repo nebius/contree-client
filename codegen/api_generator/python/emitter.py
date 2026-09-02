@@ -744,6 +744,8 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                 raise TimeoutError(
                     f"operation {operation_id} status probe exceeded its deadline"
                 ) from exc
+            if self._is_nonretryable(exc):
+                raise
             return False
         except TimeoutError as exc:
             if deadline is not None:
@@ -879,6 +881,8 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                                 timeout_limited=request_deadline_limited
                                 and isinstance(exc, ContreeTimeoutError)
                             )
+                            if self._is_nonretryable(exc):
+                                raise
                             response = None
                         except TimeoutError:
                             check_deadline(timeout_limited=True)
@@ -1174,6 +1178,8 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 raise TimeoutError(
                     f"operation {operation_id} status probe exceeded its deadline"
                 ) from exc
+            if self._is_nonretryable(exc):
+                raise
             return False
         except (asyncio.TimeoutError, TimeoutError) as exc:
             if deadline is not None:
@@ -1323,6 +1329,8 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                                 timeout_limited=request_deadline_limited
                                 and isinstance(exc, ContreeTimeoutError)
                             )
+                            if self._is_nonretryable(exc):
+                                raise
                             response = None
                         except (asyncio.TimeoutError, TimeoutError):
                             check_deadline(timeout_limited=True)

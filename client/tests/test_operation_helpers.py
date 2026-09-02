@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import ssl
 import time
 from collections.abc import Callable
 from types import ModuleType
@@ -204,6 +205,42 @@ def test_terminal_probe_bypasses_retry_policy(
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
+def test_terminal_probe_reraises_nonretryable_transport_error(
+    generated_package: ModuleType,
+    asynchronous: bool,
+) -> None:
+    exceptions = importlib.import_module("contree_client.exceptions")
+    testing = importlib.import_module("contree_client.testing")
+    client_class = testing.ContreeAsyncClient if asynchronous else testing.ContreeClient
+    client = client_class()
+    client.nonretryable_errors = (ssl.SSLError,)
+    original = ssl.SSLError("certificate verify failed")
+    translated = exceptions.ContreeConnectionError.wrap(original)
+    attempts = 0
+
+    def fail(_spec: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        raise translated
+
+    with pytest.raises(exceptions.ContreeConnectionError) as excinfo:
+        if asynchronous:
+
+            async def async_fail(spec: Any) -> Any:
+                return fail(spec)
+
+            client.request = async_fail
+            asyncio.run(client.operation_terminal(PENDING_OPERATION_UUID))
+        else:
+            client.request = fail
+            client.operation_terminal(PENDING_OPERATION_UUID)
+
+    assert excinfo.value is translated
+    assert excinfo.value.original is original
+    assert attempts == 1
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
 def test_polling_probe_bypasses_retry_policy(
     generated_package: ModuleType,
     asynchronous: bool,
@@ -260,6 +297,55 @@ def test_polling_probe_bypasses_retry_policy(
 
     assert [event.type for event in events] == ["completion"]
     assert attempts == 1
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_polling_probe_reraises_nonretryable_transport_error(
+    generated_package: ModuleType,
+    asynchronous: bool,
+) -> None:
+    exceptions = importlib.import_module("contree_client.exceptions")
+    testing = importlib.import_module("contree_client.testing")
+    client_class = testing.ContreeAsyncClient if asynchronous else testing.ContreeClient
+    client = client_class()
+    client.nonretryable_errors = (ssl.SSLError,)
+    client.mock(
+        "iter_operation_events",
+        error=exceptions.ContreeAPIError(404, "events unavailable"),
+    )
+    original = ssl.SSLError("certificate verify failed")
+    translated = exceptions.ContreeConnectionError.wrap(original)
+    status_requests = 0
+
+    def fail_status(_spec: Any) -> Any:
+        nonlocal status_requests
+        status_requests += 1
+        raise translated
+
+    with pytest.raises(exceptions.ContreeConnectionError) as excinfo:
+        if asynchronous:
+
+            async def async_fail_status(spec: Any) -> Any:
+                return fail_status(spec)
+
+            client.request = async_fail_status
+
+            async def collect() -> list[Any]:
+                return [
+                    event
+                    async for event in client.follow_operation_events(
+                        PENDING_OPERATION_UUID
+                    )
+                ]
+
+            asyncio.run(collect())
+        else:
+            client.request = fail_status
+            list(client.follow_operation_events(PENDING_OPERATION_UUID))
+
+    assert excinfo.value is translated
+    assert excinfo.value.original is original
+    assert status_requests == 1
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
