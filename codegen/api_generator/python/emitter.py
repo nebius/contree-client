@@ -10,13 +10,33 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
+from api_generator.documentation import (
+    build_docstring,
+    description_body,
+    documentation_text,
+    render_docstring,
+)
 from api_generator.emitter import GENERATED_NOTE, Emitter
 from api_generator.ir import (
-    INDENT,
-    OpDef,
+    ArgumentDef,
+    ArgumentPresence,
+    BodyKind,
+    Documentation,
+    FieldDef,
+    ModelDef,
+    ModelTrait,
+    OperationDef,
+    ParameterDef,
+    ParameterEncoding,
+    ParameterLocation,
+    ResponseMode,
     SpecIR,
-    build_docstring,
+    SuccessPolicy,
+    TypeKind,
+    TypeRef,
 )
+
+INDENT = "    "
 
 # Files the generator owns inside the otherwise static package.
 GENERATED_FILES = (
@@ -27,34 +47,7 @@ GENERATED_FILES = (
     "spec_info.py",
 )
 
-EVENT_DATA_BLOCK = '''
-EventData = (
-    EventDataInit
-    | EventDataSpawn
-    | EventDataStream
-    | EventDataExit
-    | EventDataTruncated
-    | EventDataSizeCap
-    | EventDataNetwork
-    | EventDataShutdown
-    | EventDataCompletion
-)
-
-EVENT_DATA_PARSERS: dict[str, Callable[[dict[str, Any]], EventData]] = {
-    "init": EventDataInit.from_dict,
-    "spawn": EventDataSpawn.from_dict,
-    "stdin": EventDataStream.from_dict,
-    "stdout": EventDataStream.from_dict,
-    "stderr": EventDataStream.from_dict,
-    "exit": EventDataExit.from_dict,
-    "truncated": EventDataTruncated.from_dict,
-    "size_cap": EventDataSizeCap.from_dict,
-    "network": EventDataNetwork.from_dict,
-    "shutdown": EventDataShutdown.from_dict,
-    "completion": EventDataCompletion.from_dict,
-}
-
-
+EVENT_DATA_HELPERS = '''
 def parse_event_data(
     event_type: str,
     data: Any,
@@ -205,6 +198,279 @@ def import_block(module: str, names: Iterable[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def render_type_ref(type_ref: TypeRef) -> str:
+    atoms = {
+        TypeKind.ANY: "Any",
+        TypeKind.STRING: "str",
+        TypeKind.INTEGER: "int",
+        TypeKind.NUMBER: "float",
+        TypeKind.BOOLEAN: "bool",
+        TypeKind.DATETIME: "datetime",
+        TypeKind.BYTES: "bytes",
+        TypeKind.BINARY_STREAM: "IO[bytes]",
+    }
+    atom = atoms.get(type_ref.kind)
+    if atom is not None:
+        return atom
+    if type_ref.kind in (TypeKind.MODEL, TypeKind.ENUM, TypeKind.ALIAS):
+        if type_ref.name is None:
+            raise ValueError(f"{type_ref.kind.name} type has no name")
+        return type_ref.name
+    if type_ref.kind is TypeKind.LITERAL:
+        return "Literal[" + ", ".join(repr(value) for value in type_ref.values) + "]"
+    if type_ref.kind is TypeKind.LIST:
+        return f"list[{render_type_ref(type_ref.arguments[0])}]"
+    if type_ref.kind is TypeKind.SEQUENCE:
+        return f"Sequence[{render_type_ref(type_ref.arguments[0])}]"
+    if type_ref.kind is TypeKind.MAP:
+        return f"dict[str, {render_type_ref(type_ref.arguments[0])}]"
+    if type_ref.kind is TypeKind.UNION:
+        return " | ".join(render_type_ref(item) for item in type_ref.arguments)
+    raise ValueError(f"unsupported Python type kind: {type_ref.kind.name}")
+
+
+def render_parse_value(type_ref: TypeRef, expr: str) -> str:
+    if type_ref.kind is TypeKind.DATETIME:
+        return f"parse_datetime({expr})"
+    if type_ref.kind is TypeKind.MODEL:
+        return f"{type_ref.name}.from_dict({expr})"
+    if type_ref.kind is TypeKind.ENUM:
+        return f"{type_ref.name}({expr})"
+    if type_ref.kind is TypeKind.LIST:
+        item = render_parse_value(type_ref.arguments[0], "item")
+        return expr if item == "item" else f"[{item} for item in {expr}]"
+    if type_ref.kind is TypeKind.MAP:
+        value = render_parse_value(type_ref.arguments[0], "value")
+        if value == "value":
+            return expr
+        return f"{{key: {value} for key, value in {expr}.items()}}"
+    return expr
+
+
+LINE_LIMIT = 88
+# Implicit-concatenation chunks are laid out by the formatter at the
+# metadata-value depth: dict items sit at column 12, chunks at 16.
+METADATA_ITEM_COLUMN = 12
+CHUNK_WIDTH = LINE_LIMIT - METADATA_ITEM_COLUMN - 4
+
+
+def render_string_literal(value: object, offset: int = 0) -> str:
+    literal = repr(value)
+    if not isinstance(value, str) or offset + len(literal) <= LINE_LIMIT:
+        return literal
+    chunks: list[str] = []
+    current = ""
+    for part in re.split(r"(?<= )", value):
+        if current and len(repr(current + part)) > CHUNK_WIDTH:
+            chunks.append(current)
+            current = part
+        else:
+            current += part
+    if current:
+        chunks.append(current)
+    return "(" + " ".join(repr(chunk) for chunk in chunks) + ")"
+
+
+def render_field_annotation(field_def: FieldDef) -> str:
+    annotation = render_type_ref(field_def.type)
+    if field_def.nullable and not annotation.endswith("| None"):
+        annotation = f"{annotation} | None"
+    if not field_def.required:
+        annotation = f"{annotation} | EllipsisType"
+    return annotation
+
+
+def render_field_metadata(field_def: FieldDef) -> str:
+    documentation = field_def.documentation
+    items: list[str] = []
+    for key, value, present in (
+        (
+            "description",
+            documentation.description,
+            bool(documentation.description),
+        ),
+        ("example", documentation.example, documentation.has_example),
+        ("default", field_def.default_value, field_def.has_default),
+    ):
+        if not present:
+            continue
+        offset = METADATA_ITEM_COLUMN + len(f'"{key}": ') + len(",")
+        items.append(f'"{key}": {render_string_literal(value, offset)}')
+    return "{" + ", ".join(items) + "}" if items else ""
+
+
+def render_field_declaration(field_def: FieldDef) -> str:
+    annotation = render_field_annotation(field_def)
+    metadata = render_field_metadata(field_def)
+    if not metadata:
+        declaration = f"{field_def.name}: {annotation}"
+        if not field_def.required:
+            declaration += " = ..."
+        return declaration
+    arguments = [] if field_def.required else ["default=..."]
+    arguments.append(f"metadata={metadata}")
+    return f"{field_def.name}: {annotation} = field({', '.join(arguments)})"
+
+
+def render_discriminator_parse(field_def: FieldDef, expr: str) -> str:
+    discriminator = field_def.discriminator
+    if discriminator is None:
+        raise ValueError(f"{field_def.name} has no discriminator")
+    if discriminator.name == "EventData":
+        return f'parse_event_data(data["{discriminator.parent_field}"], {expr})'
+    rendered = render_parse_value(discriminator.fallback, expr)
+    for value, type_ref in reversed(discriminator.cases):
+        parsed = render_parse_value(type_ref, expr)
+        rendered = (
+            f'{parsed} if data.get("{discriminator.parent_field}") == {value!r}'
+            f" else {rendered}"
+        )
+    return rendered
+
+
+def render_field_parse(field_def: FieldDef) -> str:
+    source = f'data["{field_def.wire_name}"]'
+    present = f'data.get("{field_def.wire_name}")'
+    missing = f'data.get("{field_def.wire_name}", ...)'
+    parsed = (
+        render_discriminator_parse(field_def, source)
+        if field_def.discriminator is not None
+        else render_parse_value(field_def.type, source)
+    )
+    if field_def.required:
+        if parsed == source:
+            return source if not field_def.nullable else present
+        if not field_def.nullable:
+            return parsed
+        return f"({parsed}) if {present} is not None else None"
+    if parsed == source:
+        return missing
+    return f"({parsed}) if {present} is not None else {missing}"
+
+
+STREAM_VALUE_METHODS = '''
+    def as_bytes(self) -> bytes:
+        """The payload decoded to raw bytes.
+
+        ``base64`` values are decoded; ``ascii`` text is UTF-8
+        encoded. Undecodable base64 becomes empty bytes instead of
+        failing a live stream.
+        """
+        if not self.value:
+            return b""
+        if self.encoding == "base64":
+            try:
+                return base64.b64decode(self.value)
+            except (binascii.Error, ValueError):
+                return b""
+        return self.value.encode("utf-8", errors="replace")
+
+    def as_text(self) -> str:
+        """The payload decoded to text (UTF-8, errors replaced)."""
+        if self.encoding == "base64":
+            return self.as_bytes().decode("utf-8", errors="replace")
+        return self.value
+
+    @classmethod
+    def from_bytes(cls, value: bytes) -> "{name}":
+        """Build a payload from raw bytes.
+
+        Printable ASCII (plus tab/newline/carriage return) is stored
+        as ``ascii``; anything else is base64-encoded - the same rule
+        the server applies on its side.
+        """
+        if all(32 <= byte < 127 or byte in (9, 10, 13) for byte in value):
+            return cls(value=value.decode("ascii"), encoding="ascii")
+        return cls(
+            value=base64.b64encode(value).decode("ascii"),
+            encoding="base64",
+        )
+
+    @classmethod
+    def from_text(cls, value: str) -> "{name}":
+        """Build a payload from text (UTF-8 encoded unless ASCII)."""
+        return cls.from_bytes(value.encode("utf-8"))
+'''
+
+FILESPEC_MODE_METHODS = """
+    def __post_init__(self) -> None:
+        # the wire format is an octal string; accept a plain int too
+        if isinstance(self.mode, int):
+            self.mode = f"{{self.mode:04o}}"
+"""
+
+
+def ordered_model_fields(model: ModelDef) -> list[FieldDef]:
+    required = [field for field in model.fields if field.required]
+    optional = [field for field in model.fields if not field.required]
+    return required + optional
+
+
+def model_needs_parse_override(model: ModelDef) -> bool:
+    return any(
+        field.discriminator is not None
+        or render_parse_value(field.type, "value") != "value"
+        for field in model.fields
+    )
+
+
+def render_model(model: ModelDef) -> str:
+    lines: list[str] = ["@dataclass", f"class {model.name}(ContreeModel):"]
+    if model.description:
+        lines.extend(
+            build_docstring(
+                INDENT,
+                model.description,
+                description_body(model.description),
+            )
+        )
+        lines.append("")
+    fields = ordered_model_fields(model)
+    lines.extend(f"{INDENT}{render_field_declaration(field)}" for field in fields)
+    if model_needs_parse_override(model):
+        lines.append("")
+        lines.append(f"{INDENT}@classmethod")
+        lines.append(
+            f"{INDENT}def parse_fields(cls, data: dict[str, Any]) -> dict[str, Any]:"
+        )
+        lines.append(f"{INDENT * 2}return {{")
+        lines.extend(
+            f'{INDENT * 3}"{field.name}": {render_field_parse(field)},'
+            for field in fields
+        )
+        lines.append(f"{INDENT * 2}}}")
+    if ModelTrait.STREAM_VALUE in model.traits:
+        lines.append(STREAM_VALUE_METHODS.format(name=model.name).rstrip("\n"))
+    if ModelTrait.FILE_MODE in model.traits:
+        lines.append(FILESPEC_MODE_METHODS.format(name=model.name).rstrip("\n"))
+    return "\n".join(lines)
+
+
+def render_event_data_block(ir: SpecIR) -> str:
+    model_names: list[str] = []
+    parser_lines: list[str] = []
+    for event_type, type_ref in ir.event_data_variants:
+        if type_ref.kind is not TypeKind.MODEL or type_ref.name is None:
+            raise ValueError(f"event data variant {event_type!r} is not a model")
+        if type_ref.name not in model_names:
+            model_names.append(type_ref.name)
+        parser_lines.append(f'    "{event_type}": {type_ref.name}.from_dict,')
+
+    alias_lines = ["EventData = ("]
+    for index, name in enumerate(model_names):
+        prefix = "    " if index == 0 else "    | "
+        alias_lines.append(f"{prefix}{name}")
+    alias_lines.append(")")
+    parser = [
+        "EVENT_DATA_PARSERS: dict[str, Callable[[dict[str, Any]], EventData]] = {",
+        *parser_lines,
+        "}",
+    ]
+    return "\n\n".join(
+        ("\n".join(alias_lines), "\n".join(parser), EVENT_DATA_HELPERS.strip("\n"))
+    )
+
+
 def render_operation_status(ir: SpecIR) -> str:
     members = "\n".join(f'{INDENT}{value} = "{value}"' for value in ir.status_values)
     terminal = ", ".join(
@@ -273,8 +539,8 @@ def render_models(ir: SpecIR) -> str:
         f"OperationEventType = Literal[\n{event_type_literal}\n]",
         render_operation_status(ir),
     ]
-    parts.extend(cls.render() for cls in ir.classes)
-    parts.append(EVENT_DATA_BLOCK.strip("\n"))
+    parts.extend(render_model(model) for model in ir.models)
+    parts.append(render_event_data_block(ir))
     return "\n\n\n".join(parts) + "\n"
 
 
@@ -283,14 +549,345 @@ def render_models(ir: SpecIR) -> str:
 # ---------------------------------------------------------------------------
 
 
+def render_documentation(documentation: Documentation) -> str:
+    return documentation_text(
+        documentation.description,
+        documentation.example,
+        documentation.has_example,
+    )
+
+
+def render_function(
+    name: str,
+    signature: str,
+    return_annotation: str,
+    docstring: str,
+    body: list[str],
+) -> str:
+    lines = [f"def {name}({signature}) -> {return_annotation}:"]
+    if docstring:
+        lines.extend(render_docstring(docstring, INDENT))
+    lines.extend(f"{INDENT}{line}" if line else "" for line in body)
+    return "\n".join(lines)
+
+
+def render_argument_annotation(argument: ArgumentDef) -> str:
+    annotation = render_type_ref(argument.type)
+    if (
+        argument.nullable or argument.presence is ArgumentPresence.OMIT_IF_NULL
+    ) and not annotation.endswith("| None"):
+        annotation = f"{annotation} | None"
+    if argument.presence is ArgumentPresence.OMIT_IF_UNSET:
+        annotation = f"{annotation} | EllipsisType"
+    return annotation
+
+
+def render_argument_default(argument: ArgumentDef) -> str | None:
+    return {
+        ArgumentPresence.REQUIRED: None,
+        ArgumentPresence.OMIT_IF_NULL: "None",
+        ArgumentPresence.OMIT_IF_FALSE: "False",
+        ArgumentPresence.OMIT_IF_UNSET: "...",
+    }[argument.presence]
+
+
+def ordered_operation_arguments(operation: OperationDef) -> list[ArgumentDef]:
+    required = [argument for argument in operation.arguments if argument.required]
+    optional = [argument for argument in operation.arguments if not argument.required]
+    return required + optional
+
+
+def render_operation_signature(operation: OperationDef) -> str:
+    arguments = ordered_operation_arguments(operation)
+    required = [argument for argument in arguments if argument.required]
+    optional = [argument for argument in arguments if not argument.required]
+    parts = [
+        f"{argument.name}: {render_argument_annotation(argument)}"
+        for argument in required
+    ]
+    if optional:
+        parts.append("*")
+        parts.extend(
+            f"{argument.name}: {render_argument_annotation(argument)}"
+            f" = {render_argument_default(argument)}"
+            for argument in optional
+        )
+    return ", ".join(parts)
+
+
+def render_passthrough(operation: OperationDef) -> str:
+    return ", ".join(
+        f"{argument.name}={argument.name}" for argument in operation.arguments
+    )
+
+
+def argument_by_name(operation: OperationDef, name: str) -> ArgumentDef:
+    for argument in operation.arguments:
+        if argument.name == name:
+            return argument
+    raise ValueError(f"operation {operation.name!r} has no argument {name!r}")
+
+
+def render_dump_value(type_ref: TypeRef, expr: str) -> str:
+    if type_ref.kind is TypeKind.DATETIME:
+        return f"{expr}.isoformat()"
+    if type_ref.kind is TypeKind.MODEL:
+        return f"{expr}.to_dict()"
+    if type_ref.kind is TypeKind.ENUM:
+        return f"{expr}.value"
+    if type_ref.kind in (TypeKind.LIST, TypeKind.SEQUENCE):
+        item = render_dump_value(type_ref.arguments[0], "item")
+        return expr if item == "item" else f"[{item} for item in {expr}]"
+    if type_ref.kind is TypeKind.MAP:
+        value = render_dump_value(type_ref.arguments[0], "value")
+        if value == "value":
+            return expr
+        return f"{{key: {value} for key, value in {expr}.items()}}"
+    return expr
+
+
+def render_parameter_value(parameter: ParameterDef) -> str:
+    name = parameter.argument
+    if parameter.encoding is ParameterEncoding.TIME:
+        return f"format_time_param({name})"
+    if parameter.encoding is ParameterEncoding.STRING:
+        return f"str({name})"
+    return name
+
+
+def render_parameter_assignment(
+    operation: OperationDef,
+    parameter: ParameterDef,
+    target: str,
+) -> list[str]:
+    argument = argument_by_name(operation, parameter.argument)
+    if parameter.encoding is ParameterEncoding.ONE_IF_TRUE:
+        return [
+            f"if {argument.name}:",
+            f'{INDENT}{target} = "1"',
+        ]
+    assignment = f"{target} = {render_parameter_value(parameter)}"
+    if argument.required:
+        return [assignment]
+    if argument.presence is ArgumentPresence.OMIT_IF_UNSET:
+        condition = f"{argument.name} is not ..."
+    elif argument.presence is ArgumentPresence.OMIT_IF_FALSE:
+        condition = argument.name
+    else:
+        condition = f"{argument.name} is not None"
+    return [f"if {condition}:", f"{INDENT}{assignment}"]
+
+
+def render_request_body(operation: OperationDef) -> list[str]:
+    body = operation.request.body
+    if body is None or body.kind is BodyKind.BINARY:
+        return []
+    if body.kind is BodyKind.JSON_MODEL:
+        if body.model is None:
+            raise ValueError(f"operation {operation.name!r} has no body model")
+        arguments = ", ".join(
+            f"{binding.argument}={binding.argument}" for binding in body.bindings
+        )
+        return [f"payload = {render_type_ref(body.model)}({arguments}).to_dict()"]
+
+    lines = ["payload: dict[str, Any] = {}"]
+    for binding in body.bindings:
+        argument = argument_by_name(operation, binding.argument)
+        dumped = render_dump_value(argument.type, argument.name)
+        assignment = f'payload["{binding.wire_name}"] = {dumped}'
+        if argument.required:
+            lines.append(assignment)
+        else:
+            lines.append(f"if {argument.name} is not ...:")
+            lines.append(f"{INDENT}{assignment}")
+    return lines
+
+
+def render_request_path(operation: OperationDef) -> str:
+    path_parameters = [
+        parameter
+        for parameter in operation.request.parameters
+        if parameter.location is ParameterLocation.PATH
+    ]
+    if not path_parameters:
+        return f'request_path = "{operation.path}"'
+    rendered = operation.path
+    for parameter in path_parameters:
+        rendered = rendered.replace(
+            "{" + parameter.wire_name + "}",
+            "{quote_path(" + parameter.argument + ")}",
+        )
+    return f'request_path = f"{rendered}"'
+
+
+def render_request_builder(operation: OperationDef) -> str:
+    query = [
+        parameter
+        for parameter in operation.request.parameters
+        if parameter.location is ParameterLocation.QUERY
+    ]
+    headers = [
+        parameter
+        for parameter in operation.request.parameters
+        if parameter.location is ParameterLocation.HEADER
+    ]
+    body: list[str] = []
+    if query:
+        query_type = (
+            "str | Sequence[str]"
+            if any(parameter.repeatable for parameter in query)
+            else "str"
+        )
+        body.append(f"query: dict[str, {query_type}] = {{}}")
+        for parameter in query:
+            body.extend(
+                render_parameter_assignment(
+                    operation,
+                    parameter,
+                    f'query["{parameter.wire_name}"]',
+                )
+            )
+    if headers:
+        body.append("headers: dict[str, str] = {}")
+        for parameter in headers:
+            body.extend(
+                render_parameter_assignment(
+                    operation,
+                    parameter,
+                    f'headers["{parameter.wire_name}"]',
+                )
+            )
+    body.extend(render_request_body(operation))
+    body.append(render_request_path(operation))
+
+    request_body = operation.request.body
+    spec_args = [
+        f'method="{operation.http_method}"',
+        "path=request_path",
+        f"idempotent={operation.request.idempotent}",
+    ]
+    if query:
+        spec_args.append("query=query")
+    if headers:
+        spec_args.append("headers=headers")
+    if request_body is not None:
+        if request_body.kind in (BodyKind.JSON_MODEL, BodyKind.JSON_INLINE):
+            spec_args.append("body=json.dumps(payload).encode()")
+            spec_args.append('content_type="application/json"')
+        elif request_body.kind is BodyKind.BINARY:
+            binding = request_body.bindings[0]
+            spec_args.append(f"body={binding.argument}")
+            spec_args.append('content_type="application/octet-stream"')
+    if operation.request.accept is not None:
+        spec_args.append(f'accept="{operation.request.accept}"')
+    body.append(f"return RequestSpec({', '.join(spec_args)})")
+
+    return render_function(
+        f"build_{operation.name}",
+        render_operation_signature(operation),
+        "RequestSpec",
+        f"Build the request for `{operation.http_method} {operation.path}`.",
+        body,
+    )
+
+
+def render_success_condition(operation: OperationDef) -> str:
+    response = operation.response
+    if response.success is SuccessPolicy.ANY_2XX:
+        return "200 <= response.status < 300"
+    if len(response.success_statuses) == 1:
+        return f"response.status == {response.success_statuses[0]}"
+    statuses = ", ".join(str(status) for status in response.success_statuses)
+    return f"response.status in ({statuses})"
+
+
+def render_json_response(operation: OperationDef) -> list[str]:
+    response_type = operation.response.type
+    if response_type is None:
+        raise ValueError(f"operation {operation.name!r} has no JSON response type")
+    condition = render_success_condition(operation)
+    if operation.response.json_path:
+        value = "json_object(response)"
+        for part in operation.response.json_path:
+            value += f"[{part!r}]"
+        if response_type.kind is TypeKind.STRING:
+            value = f"str({value})"
+        elif response_type.kind is TypeKind.INTEGER:
+            value = f"int({value})"
+        else:
+            value = render_parse_value(response_type, value)
+        return [f"if {condition}:", f"{INDENT}return {value}"]
+    if response_type.kind is TypeKind.MODEL:
+        return [
+            f"if {condition}:",
+            f"{INDENT}return {response_type.name}.from_dict(json_object(response))",
+        ]
+    if response_type.kind is TypeKind.LIST:
+        item_type = response_type.arguments[0]
+        parsed = render_parse_value(item_type, "item")
+        return [
+            f"if {condition}:",
+            f"{INDENT}return [",
+            f"{INDENT * 2}{parsed} for item in json_array(response)",
+            f"{INDENT}]",
+        ]
+    parsed = render_parse_value(response_type, "json_object(response)")
+    return [f"if {condition}:", f"{INDENT}return {parsed}"]
+
+
+def render_response_parser(operation: OperationDef) -> str | None:
+    response = operation.response
+    if response.mode in (ResponseMode.SSE, ResponseMode.BYTE_STREAM):
+        return None
+    condition = render_success_condition(operation)
+    body: list[str]
+    if response.mode is ResponseMode.JSON:
+        body = render_json_response(operation)
+    elif response.mode is ResponseMode.LOCATION:
+        if response.header_name is None:
+            raise ValueError(f"operation {operation.name!r} has no location header")
+        body = [
+            f"if {condition}:",
+            f'{INDENT}location = response.headers["{response.header_name}"]',
+            f'{INDENT}return location.rstrip("/").rsplit("/", 1)[-1]',
+        ]
+    elif response.mode is ResponseMode.STATUS_BOOL:
+        body = [f"if {condition}:", f"{INDENT}return True"]
+        for status in response.false_statuses:
+            body.extend([f"if response.status == {status}:", f"{INDENT}return False"])
+    elif response.mode is ResponseMode.BYTES:
+        body = [f"if {condition}:", f"{INDENT}return response.body"]
+    elif response.mode is ResponseMode.EMPTY:
+        body = [f"if {condition}:", f"{INDENT}return None"]
+    else:
+        raise ValueError(response.mode)
+    body.append('raise ValueError(f"unexpected HTTP status {response.status}")')
+    return render_function(
+        f"parse_{operation.name}",
+        "response: ResponseData",
+        render_operation_return_type(operation),
+        f"Parse the response of `{operation.http_method} {operation.path}`.",
+        body,
+    )
+
+
+def render_operation_return_type(operation: OperationDef) -> str:
+    if operation.response.mode is ResponseMode.EMPTY:
+        return "None"
+    if operation.response.type is None:
+        return "None"
+    return render_type_ref(operation.response.type)
+
+
 def render_operations(ir: SpecIR) -> str:
     bodies: list[str] = []
-    for op in ir.operations:
-        bodies.append(op.build_src)
-        if op.parse_src:
-            bodies.append(op.parse_src)
+    for operation in ir.operations:
+        bodies.append(render_request_builder(operation))
+        parser = render_response_parser(operation)
+        if parser is not None:
+            bodies.append(parser)
     source = "\n\n\n".join(bodies)
-    model_names = used_names(source, [*ir.class_names, "OperationStatus"])
+    model_names = used_names(source, [*ir.model_names, "OperationStatus"])
     imports = "\n".join(
         [
             "import json",
@@ -1209,40 +1806,52 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
 '''
 
 
-def method_signature(op: OpDef, extra: str = "") -> str:
-    signature = op.signature
+def method_signature(operation: OperationDef) -> str:
+    signature = render_operation_signature(operation)
     if signature:
         return f"self, {signature}"
     return "self"
 
 
 def op_docstring(
-    op: OpDef,
+    operation: OperationDef,
     summary: str | None = None,
     extra_entries: list[tuple[str, str]] | None = None,
 ) -> list[str]:
     """Docstring for a client method: spec summary, description, Args."""
-    entries = [(arg.py_name, arg.doc) for arg in op.args if arg.doc]
+    entries = [
+        (argument.name, text)
+        for argument in operation.arguments
+        if (text := render_documentation(argument.documentation))
+    ]
     entries.extend(extra_entries or [])
     return build_docstring(
         INDENT,
-        summary or op.summary or op.name,
-        op.description,
+        summary or operation.summary or operation.name,
+        operation.description,
         "Args",
         entries,
     )
 
 
-def emit_call_method(op: OpDef, async_mode: bool) -> list[str]:
+def emit_call_method(operation: OperationDef, async_mode: bool) -> list[str]:
     prefix = "async " if async_mode else ""
     awaited = "await self.call(spec)" if async_mode else "self.call(spec)"
     lines = [
-        f"{prefix}def {op.name}({method_signature(op)}) -> {op.return_annotation}:",
+        f"{prefix}def {operation.name}({method_signature(operation)})"
+        f" -> {render_operation_return_type(operation)}:",
     ]
-    lines.extend(op_docstring(op))
-    lines.append(f"{INDENT}spec = operations.build_{op.name}({op.passthrough})")
+    lines.extend(op_docstring(operation))
+    lines.append(
+        f"{INDENT}spec = operations.build_{operation.name}("
+        f"{render_passthrough(operation)})"
+    )
     lines.append(f"{INDENT}self.log_request(spec)")
-    if op.http_method == "HEAD":
+    returns_false_on_not_found = (
+        operation.response.mode is ResponseMode.STATUS_BOOL
+        and 404 in operation.response.false_statuses
+    )
+    if returns_false_on_not_found:
         lines.append(f"{INDENT}try:")
         lines.append(f"{INDENT * 2}response = {awaited}")
         lines.append(f"{INDENT}except NotFoundError:")
@@ -1250,18 +1859,27 @@ def emit_call_method(op: OpDef, async_mode: bool) -> list[str]:
     else:
         lines.append(f"{INDENT}response = {awaited}")
     lines.append(f"{INDENT}self.log_response(spec, response)")
-    lines.append(f"{INDENT}return operations.parse_{op.name}(response)")
+    lines.append(f"{INDENT}return operations.parse_{operation.name}(response)")
     return lines
 
 
-def emit_stream_method(op: OpDef, async_mode: bool) -> list[str]:
+def emit_stream_method(operation: OperationDef, async_mode: bool) -> list[str]:
     prefix = "async " if async_mode else ""
     iterator = "AsyncGenerator[bytes, None]" if async_mode else "Iterator[bytes]"
     lines = [
-        f"{prefix}def {op.name}_stream({method_signature(op)}) -> {iterator}:",
+        f"{prefix}def {operation.name}_stream("
+        f"{method_signature(operation)}) -> {iterator}:",
     ]
-    lines.extend(op_docstring(op, summary=f"Streaming variant of `{op.name}()`."))
-    lines.append(f"{INDENT}spec = operations.build_{op.name}({op.passthrough})")
+    lines.extend(
+        op_docstring(
+            operation,
+            summary=f"Streaming variant of `{operation.name}()`.",
+        )
+    )
+    lines.append(
+        f"{INDENT}spec = operations.build_{operation.name}("
+        f"{render_passthrough(operation)})"
+    )
     lines.append(f"{INDENT}self.log_request(spec)")
     if async_mode:
         # aclosing: an early aclose() of this generator must close the
@@ -1284,15 +1902,23 @@ COMPRESSED_ARG_DOC = (
 )
 
 
-def emit_stream_only_method(op: OpDef, async_mode: bool) -> list[str]:
+def emit_stream_only_method(operation: OperationDef, async_mode: bool) -> list[str]:
     prefix = "async " if async_mode else ""
     iterator = "AsyncGenerator[bytes, None]" if async_mode else "Iterator[bytes]"
-    signature = method_signature(op)
+    signature = method_signature(operation)
     separator = ", " if "*" in signature else ", *, "
     signature = f"{signature}{separator}compressed: bool = False"
-    lines = [f"{prefix}def {op.name}({signature}) -> {iterator}:"]
-    lines.extend(op_docstring(op, extra_entries=[("compressed", COMPRESSED_ARG_DOC)]))
-    lines.append(f"{INDENT}spec = operations.build_{op.name}({op.passthrough})")
+    lines = [f"{prefix}def {operation.name}({signature}) -> {iterator}:"]
+    lines.extend(
+        op_docstring(
+            operation,
+            extra_entries=[("compressed", COMPRESSED_ARG_DOC)],
+        )
+    )
+    lines.append(
+        f"{INDENT}spec = operations.build_{operation.name}("
+        f"{render_passthrough(operation)})"
+    )
     lines.append(f"{INDENT}self.log_request(spec)")
     if async_mode:
         # aclosing: an early aclose() of this generator must close the
@@ -1315,23 +1941,28 @@ def emit_stream_only_method(op: OpDef, async_mode: bool) -> list[str]:
     return lines
 
 
-def emit_sse_method(op: OpDef, async_mode: bool) -> list[str]:
+def emit_sse_method(operation: OperationDef, async_mode: bool) -> list[str]:
     prefix = "async " if async_mode else ""
+    event_type = operation.response.type
+    if event_type is None:
+        raise ValueError(f"SSE operation {operation.name!r} has no event type")
+    event_annotation = render_type_ref(event_type)
     iterator = (
-        "AsyncGenerator[OperationEvent, None]"
+        f"AsyncGenerator[{event_annotation}, None]"
         if async_mode
-        else "Iterator[OperationEvent]"
+        else f"Iterator[{event_annotation}]"
     )
     loop = "async for" if async_mode else "for"
     lines = [
-        (
-            f"{prefix}def {op.name}("
-            f"{method_signature(op)}, deadline: float | None = None"
-            f") -> {iterator}:"
-        ),
+        f"{prefix}def {operation.name}("
+        f"{method_signature(operation)}, deadline: float | None = None"
+        f") -> {iterator}:",
     ]
-    lines.extend(op_docstring(op))
-    lines.append(f"{INDENT}spec = operations.build_{op.name}({op.passthrough})")
+    lines.extend(op_docstring(operation))
+    lines.append(
+        f"{INDENT}spec = operations.build_{operation.name}("
+        f"{render_passthrough(operation)})"
+    )
     lines.append(f"{INDENT}spec.deadline = deadline")
     # a deadline (monotonic seconds) bounds the whole subscription:
     # the socket read timeout covers silent gaps, while the per-chunk
@@ -1342,7 +1973,10 @@ def emit_sse_method(op: OpDef, async_mode: bool) -> list[str]:
     )
     lines.append(f"{INDENT}self.log_request(spec)")
     lines.append(f"{INDENT}parser = SSEParser()")
-    lines.append(f"{INDENT}last_seen = last_event_id")
+    resume_argument = operation.response.resume_argument
+    if resume_argument is None:
+        raise ValueError(f"SSE operation {operation.name!r} has no resume argument")
+    lines.append(f"{INDENT}last_seen = {resume_argument}")
     if async_mode:
         # aclosing: an early aclose() of this generator must close the
         # transport stream too (async finalization is not deterministic)
@@ -1354,7 +1988,7 @@ def emit_sse_method(op: OpDef, async_mode: bool) -> list[str]:
         base = INDENT * 2
     lines.append(f"{base}if deadline is not None and time.monotonic() >= deadline:")
     lines.append(
-        f'{base + INDENT}raise TimeoutError(f"{op.name} exceeded its deadline")'
+        f'{base + INDENT}raise TimeoutError(f"{operation.name} exceeded its deadline")'
     )
     lines.append(f"{base}for frame in parser.feed(chunk):")
     lines.append(f"{base + INDENT}if frame.id is not None:")
@@ -1367,55 +2001,66 @@ def emit_sse_method(op: OpDef, async_mode: bool) -> list[str]:
     return lines
 
 
-# List operations that also get a lazy pagination iterator:
-# operation name -> (iterator name, items accessor, item annotation)
-ITER_LIST_OPERATIONS = {
-    "list_images": ("iter_images", ".images", "Image"),
-    "list_operations": ("iter_operations", "", "OperationSummary"),
-    "list_files": ("iter_files", ".files", "File"),
-}
-
 PAGE_SIZE_DOC = (
     "how many records to fetch per request (the server caps a page at {maximum})"
 )
 ITER_LIMIT_DOC = "stop after this many records in total; None iterates everything"
 
 
-def emit_iter_method(op: OpDef, async_mode: bool) -> list[str]:
+def emit_iter_method(operation: OperationDef, async_mode: bool) -> list[str]:
     """A lazy pagination iterator over one of the list operations.
 
     Mirrors the list method's filters (minus limit/offset), fetching
     pages transparently as the caller consumes items.
     """
-    iter_name, accessor, item = ITER_LIST_OPERATIONS[op.name]
-    maximum = op.page_limit_max or 1000
-    filters = [a for a in op.args if a.py_name not in ("limit", "offset")]
+    pagination = operation.pagination
+    if pagination is None:
+        raise ValueError(f"operation {operation.name!r} is not paginated")
+    accessor = "".join(f".{part}" for part in pagination.items_path)
+    item = render_type_ref(pagination.item_type)
+    maximum = pagination.max_page_size
+    filters = [
+        argument
+        for argument in operation.arguments
+        if argument.name not in (pagination.limit_argument, pagination.offset_argument)
+    ]
     prefix = "async " if async_mode else ""
     awaited = "await " if async_mode else ""
     iterator = f"AsyncGenerator[{item}, None]" if async_mode else f"Iterator[{item}]"
     signature_parts = ["self", "*"]
-    signature_parts.extend(
-        f"{a.py_name}: {a.annotation} = {a.default}" for a in filters
-    )
+    for argument in filters:
+        default = render_argument_default(argument)
+        if default is None:
+            raise ValueError(
+                f"pagination filter {operation.name}.{argument.name} is required"
+            )
+        signature_parts.append(
+            f"{argument.name}: {render_argument_annotation(argument)} = {default}"
+        )
     signature_parts.append(f"page_size: int = {maximum}")
     signature_parts.append("limit: int | None = None")
     passthrough = ", ".join(
         [
-            *(f"{a.py_name}={a.py_name}" for a in filters),
-            "limit=size",
-            "offset=offset",
+            *(f"{argument.name}={argument.name}" for argument in filters),
+            f"{pagination.limit_argument}=size",
+            f"{pagination.offset_argument}=offset",
         ]
     )
     lines = [
-        f"{prefix}def {iter_name}({', '.join(signature_parts)}) -> {iterator}:",
+        f"{prefix}def {pagination.iterator_name}({', '.join(signature_parts)})"
+        f" -> {iterator}:",
     ]
-    entries = [(a.py_name, a.doc) for a in filters if a.doc]
+    entries = [
+        (argument.name, text)
+        for argument in filters
+        if (text := render_documentation(argument.documentation))
+    ]
     entries.append(("page_size", PAGE_SIZE_DOC.format(maximum=maximum)))
     entries.append(("limit", ITER_LIMIT_DOC))
     lines.extend(
         build_docstring(
             INDENT,
-            f"Iterate over {op.name}() results across pages.",
+            f"Iterate over {operation.name}() results across pages.",
             "Offset pagination happens transparently as items are"
             " consumed; breaking out of the loop stops fetching. Note"
             " that offset pagination is not a snapshot - records"
@@ -1446,7 +2091,8 @@ def emit_iter_method(op: OpDef, async_mode: bool) -> list[str]:
             f"{INDENT * 2})",
             f"{INDENT * 2}if size <= 0:",
             f"{INDENT * 3}return",
-            f"{INDENT * 2}page = ({awaited}self.{op.name}({passthrough})){accessor}",
+            f"{INDENT * 2}page = ("
+            f"{awaited}self.{operation.name}({passthrough})){accessor}",
             f"{INDENT * 2}if isinstance(page, EllipsisType) or not page:",
             f"{INDENT * 3}return",
             f"{INDENT * 2}for item in page:",
@@ -1464,21 +2110,21 @@ def emit_iter_method(op: OpDef, async_mode: bool) -> list[str]:
 
 def emit_api_methods(ir: SpecIR, async_mode: bool) -> list[str]:
     blocks: list[str] = []
-    for op in ir.operations:
-        if op.kind == "sse":
-            lines = emit_sse_method(op, async_mode)
-        elif op.kind == "stream":
-            lines = emit_stream_only_method(op, async_mode)
+    for operation in ir.operations:
+        if operation.response.mode is ResponseMode.SSE:
+            lines = emit_sse_method(operation, async_mode)
+        elif operation.response.mode is ResponseMode.BYTE_STREAM:
+            lines = emit_stream_only_method(operation, async_mode)
         else:
-            lines = emit_call_method(op, async_mode)
+            lines = emit_call_method(operation, async_mode)
         blocks.append("\n".join(f"{INDENT}{line}" if line else "" for line in lines))
-        if op.stream_variant:
-            lines = emit_stream_method(op, async_mode)
+        if operation.response.mode is ResponseMode.BYTES:
+            lines = emit_stream_method(operation, async_mode)
             blocks.append(
                 "\n".join(f"{INDENT}{line}" if line else "" for line in lines)
             )
-        if op.name in ITER_LIST_OPERATIONS:
-            lines = emit_iter_method(op, async_mode)
+        if operation.pagination is not None:
+            lines = emit_iter_method(operation, async_mode)
             blocks.append(
                 "\n".join(f"{INDENT}{line}" if line else "" for line in lines)
             )
@@ -1492,7 +2138,7 @@ def render_base(ir: SpecIR) -> str:
     async_source = "\n\n".join([ASYNC_CLASS_HEADER.rstrip("\n"), *async_methods])
     model_names = used_names(
         sync_source,
-        [*ir.class_names, "OperationEvent", "OperationStatus"],
+        [*ir.model_names, "OperationEvent", "OperationStatus"],
     )
     header = BASE_HEADER.format(
         note=GENERATED_NOTE,
@@ -1549,7 +2195,7 @@ EXCEPTION_NAMES = [
 def render_init(ir: SpecIR) -> str:
     model_names = sorted(
         [
-            *ir.class_names,
+            *ir.model_names,
             "ACTIVE_STATUSES",
             "ContreeModel",
             "EventData",

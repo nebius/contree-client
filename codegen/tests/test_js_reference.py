@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from api_generator.ir import build_ir
+from api_generator.ir import ResponseMode, build_ir
 from api_generator.js.emitter import JsEmitter, camel, render_reference
 from api_generator.loader import load_spec
 
@@ -14,10 +14,10 @@ def test_reference_covers_every_operation_and_model(spec_source: str) -> None:
     page = render_reference(ir)
     for op in ir.operations:
         assert f".. js:method:: ContreeClient.{camel(op.name)}(" in page, op.name
-        if op.stream_variant:
+        if op.response.mode is ResponseMode.BYTES:
             assert camel(f"{op.name}_stream") in page
-    for cls in ir.classes:
-        assert f".. js:class:: {cls.name}(" in page, cls.name
+    for model in ir.models:
+        assert f".. js:class:: {model.name}(" in page, model.name
     assert ir.spec_sha256[:12] in page  # provenance line
     # the helpers section documents the hand-written surface
     for helper in ("waitOperation", "followOperationEvents", "ensureFile"):

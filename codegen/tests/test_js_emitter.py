@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-from api_generator.ir import ArgDef, OpDef, ParamDef, build_ir
+from api_generator.ir import (
+    ArgumentDef,
+    ArgumentPresence,
+    OperationDef,
+    ParameterDef,
+    ParameterLocation,
+    RequestDef,
+    TypeKind,
+    TypeRef,
+    build_ir,
+)
 from api_generator.js.emitter import (
     method_call_args,
     op_signature,
@@ -23,15 +33,39 @@ def test_reserved_word_param_is_aliased(spec_source: str) -> None:
 
 
 def test_repeatable_query_params_accept_arrays() -> None:
-    op = OpDef(
+    repeatable_string = TypeRef(
+        TypeKind.UNION,
+        arguments=(
+            TypeRef(TypeKind.STRING),
+            TypeRef(
+                TypeKind.SEQUENCE,
+                arguments=(TypeRef(TypeKind.STRING),),
+            ),
+        ),
+    )
+    op = OperationDef(
         name="inspect_image_grep",
         http_method="GET",
         path="/inspect/{image_uuid}/grep",
         summary="",
-        args=[
-            ArgDef("pattern", "str | Sequence[str]", None),
-            ArgDef("path", "str | Sequence[str] | None", "None"),
-            ArgDef("glob", "str | Sequence[str] | None", "None"),
+        arguments=[
+            ArgumentDef(
+                "pattern",
+                repeatable_string,
+                ArgumentPresence.REQUIRED,
+            ),
+            ArgumentDef(
+                "path",
+                repeatable_string,
+                ArgumentPresence.OMIT_IF_NULL,
+                nullable=True,
+            ),
+            ArgumentDef(
+                "glob",
+                repeatable_string,
+                ArgumentPresence.OMIT_IF_NULL,
+                nullable=True,
+            ),
         ],
     )
 
@@ -53,13 +87,27 @@ def test_reserved_word_required_arg_stays_consistent() -> None:
     same alias through the signature, call site, .d.ts declaration,
     doc signature and builder body (the current spec has no such
     parameter, so this is a synthetic operation)."""
-    op = OpDef(
+    op = OperationDef(
         name="synthetic_op",
         http_method="GET",
         path="/things/{default}",
         summary="",
-        args=[ArgDef("default", "str", None)],
-        params=[ParamDef("default", "default", "path", "str", required=True)],
+        arguments=[
+            ArgumentDef(
+                "default",
+                TypeRef(TypeKind.STRING),
+                ArgumentPresence.REQUIRED,
+            )
+        ],
+        request=RequestDef(
+            parameters=[
+                ParameterDef(
+                    "default",
+                    "default",
+                    ParameterLocation.PATH,
+                )
+            ]
+        ),
     )
     assert method_call_args(op) == "default_"
     assert op_signature(op) == "default_"
