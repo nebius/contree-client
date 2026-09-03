@@ -376,7 +376,6 @@ def test_events_of_finished_operation(
     live: Invoke,
     generated_package: ModuleType,
 ) -> None:
-    exceptions = importlib.import_module("contree_client.exceptions")
     candidates = [
         operation
         for operation in live("list_operations", limit=20, kind="instance")
@@ -387,15 +386,10 @@ def test_events_of_finished_operation(
     operation = candidates[0]
     try:
         events = live("iter_operation_events", operation.uuid, collect=True)
-    except (
-        exceptions.GoneError,
-        exceptions.TooEarlyError,
-        exceptions.SSEStreamError,
-    ) as error:
-        # a cancelled operation's log can be dropped server-side (an
-        # in-band sse_error frame, not a clean 410) - either way there
-        # is nothing left to assert against
-        pytest.skip(f"event log not available: {error}")
+    except Exception as error:
+        if str(operation.status) == "CANCELLED":
+            pytest.skip(f"cancelled operation log not available: {error}")
+        raise
     assert events
     assert all(event.type for event in events)
 

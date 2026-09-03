@@ -7,7 +7,6 @@
  * loaded lazily so browser bundlers never pull them in.
  */
 
-import { ContreeError } from "./errors.js";
 import { DEFAULT_BASE_URL } from "./specInfo.js";
 
 export const AUTH_TYPE_IAM = "iam";
@@ -15,7 +14,7 @@ export const AUTH_TYPE_JWT = "jwt";
 export const PROFILE_PREFIX = "profile:";
 export const DEFAULT_PROFILE = "default";
 
-export class ProfileError extends ContreeError {}
+export class ProfileError extends Error {}
 
 function record() {
   // a null-prototype object: keys come from an external file, and a

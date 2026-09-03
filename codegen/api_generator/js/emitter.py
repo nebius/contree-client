@@ -427,14 +427,18 @@ def render_models_js(ir: SpecIR) -> str:
         HEADER,
         'import { base64ToBytes, bytesToBase64, bytesToText, parseDatetime, textToBytes } from "./runtime.js";',
         f"export const OPERATION_EVENT_TYPES = Object.freeze([{event_types}]);",
-        "/** Operation lifecycle state. */\n"
-        f"export const OperationStatus = Object.freeze({{\n{statuses},\n}});",
+        (
+            "/** Operation lifecycle state. */\n"
+            f"export const OperationStatus = Object.freeze({{\n{statuses},\n}});"
+        ),
         f"export const TERMINAL_STATUSES = new Set([{terminal}]);",
         f"export const ACTIVE_STATUSES = new Set([{active}]);",
-        "/** True for statuses that will never change again. */\n"
-        "export function isTerminalStatus(status) {\n"
-        "  return TERMINAL_STATUSES.has(status);\n"
-        "}",
+        (
+            "/** True for statuses that will never change again. */\n"
+            "export function isTerminalStatus(status) {\n"
+            "  return TERMINAL_STATUSES.has(status);\n"
+            "}"
+        ),
     ]
     parts.extend(render_class_js(cls) for cls in ir.classes)
     parts.append(MODELS_TAIL_JS.format(parsers=parsers).strip())
@@ -683,15 +687,12 @@ def render_parse_fn(op: OpDef) -> str | None:
             f"if ({success}) {{",
             "  return true;",
             "}",
-            "if (response.status === 404) {",
-            "  return false;",
-            "}",
         ]
     elif kind == "bytes":
         body += [f"if ({success}) {{", "  return response.body;", "}"]
     else:  # none
         body += [f"if ({success}) {{", "  return null;", "}"]
-    body.append("throw errorForResponse(response);")
+    body.append("throw new RangeError(`unexpected HTTP status ${response.status}`);")
     lines = [
         f"/** Parse the response of `{op.http_method} {op.path}`. */",
         f"export function {name}(response) {{",
@@ -711,13 +712,7 @@ def render_operations_js(ir: SpecIR) -> str:
             if op.response_model and op.response_kind in ("model", "list_model")
         }
     )
-    imports = [
-        "errorForResponse",
-        "formatTimeParam",
-        "jsonArray",
-        "jsonObject",
-        "quotePath",
-    ]
+    imports = ["formatTimeParam", "jsonArray", "jsonObject", "quotePath"]
     parts.append(f'import {{ {", ".join(imports)} }} from "./runtime.js";')
     if models:
         parts.append(f'import {{ {", ".join(models)} }} from "./models.js";')
@@ -793,14 +788,14 @@ def render_operations_dts(ir: SpecIR) -> str:
 
 CLIENT_HEADER_JS = """
 import {{
-  ContreeAPIError,
-  ContreeError,
+  APIConnectionError,
+  APIStatusError,
+  ERROR_CLASSES,
+  ServerError,
   NotFoundError,
-  SSEStreamError,
 }} from "./errors.js";
 import {{ AUTH_TYPE_IAM, ProfileError, resolveProfile }} from "./profiles.js";
 import {{
-  EVENTS_UNAVAILABLE_STATUSES,
   IS_NODE,
   SSEParser,
   TIGHT_LOOP_FLOOR,
@@ -809,20 +804,15 @@ import {{
   UA_RUNTIME,
   decodeFramePayload,
   encodeQuery,
-  errorForResponse,
   monotonic,
-  retryAfterDelay,
+  responseErrorDetails,
   retryDelays,
   sha256,
   isUuid,
   sleep,
 }} from "./runtime.js";
 import {{ DEFAULT_BASE_URL }} from "./specInfo.js";
-import {{
-  EventDataCompletion,
-  OperationEvent,
-  isTerminalStatus,
-}} from "./models.js";
+import {{ OperationEvent, isTerminalStatus }} from "./models.js";
 import * as operations from "./operations.js";
 
 /** Contree API client on top of the platform fetch.
@@ -854,6 +844,9 @@ export class ContreeClient {{
       throw new RangeError(
         `unsupported baseUrl scheme ${{parsed.protocol}} in ${{baseUrl}}: use http:// or https://`,
       );
+    }}
+    if (parsed.username || parsed.password) {{
+      throw new RangeError("baseUrl must not include credentials");
     }}
     this.token = token ?? null;
     this.baseUrl = baseUrl.replace(/\\/+$/, "");
@@ -922,6 +915,11 @@ export class ContreeClient {{
     if (IS_NODE && !("User-Agent" in headers)) {{
       headers["User-Agent"] = this.userAgent();
     }}
+    try {{
+      new Headers(headers);
+    }} catch {{
+      throw new RangeError("invalid HTTP header name or value");
+    }}
     return headers;
   }}
 
@@ -941,33 +939,86 @@ export class ContreeClient {{
     return options;
   }}
 
-  /** Execute the request and return the buffered response. */
+  /** Execute one request and map its transport and HTTP errors. */
   async request(spec) {{
     const controller = new AbortController();
+    const deadline = spec.deadline ?? null;
+    const remaining = deadline === null ? null : deadline - monotonic();
+    if (remaining !== null && remaining <= 0) {{
+      const cause = new DOMException("request timed out", "TimeoutError");
+      throw new APIConnectionError(cause.message, {{ cause, timedOut: true }});
+    }}
+    const url = this.buildUrl(spec);
+    const options = this._fetchOptions(spec, controller.signal);
+    const timeout =
+      this.timeout === null
+        ? remaining
+        : remaining === null
+          ? this.timeout
+          : Math.min(this.timeout, remaining);
     // an explicit timer, not AbortSignal.timeout(): Node unrefs that
     // timer, so it can never fire when nothing else keeps the event
     // loop alive (custom fetch transports, for one)
     const timer =
-      this.timeout !== null
+      timeout !== null
         ? setTimeout(
             () =>
               controller.abort(
                 new DOMException("request timed out", "TimeoutError"),
               ),
-            this.timeout * 1000,
+            Math.ceil(Math.max(0, timeout) * 1000),
           )
         : null;
     try {{
-      const response = await this._fetch(
-        this.buildUrl(spec),
-        this._fetchOptions(spec, controller.signal),
-      );
-      const body = new Uint8Array(await response.arrayBuffer());
+      let response;
+      try {{
+        response = await this._fetch(url, options);
+      }} catch (cause) {{
+        if (cause?.name === "AbortError" && !controller.signal.aborted) {{
+          throw cause;
+        }}
+        throw new APIConnectionError(String(cause?.message ?? cause), {{
+          cause,
+          timedOut:
+            cause?.name === "TimeoutError" ||
+            controller.signal.reason?.name === "TimeoutError",
+        }});
+      }}
+      if (deadline !== null && monotonic() >= deadline) {{
+        const cause = new DOMException("request timed out", "TimeoutError");
+        throw new APIConnectionError(cause.message, {{ cause, timedOut: true }});
+      }}
+      let body;
+      try {{
+        body = new Uint8Array(await response.arrayBuffer());
+      }} catch (cause) {{
+        if (cause?.name === "AbortError" && !controller.signal.aborted) {{
+          throw cause;
+        }}
+        throw new APIConnectionError(String(cause?.message ?? cause), {{
+          cause,
+          timedOut:
+            cause?.name === "TimeoutError" ||
+            controller.signal.reason?.name === "TimeoutError",
+        }});
+      }}
+      if (deadline !== null && monotonic() >= deadline) {{
+        const cause = new DOMException("request timed out", "TimeoutError");
+        throw new APIConnectionError(cause.message, {{ cause, timedOut: true }});
+      }}
       const headers = {{}};
       response.headers.forEach((value, key) => {{
         headers[key.toLowerCase()] = value;
       }});
-      return {{ status: response.status, headers, body, url: response.url }};
+      const data = {{ status: response.status, headers, body, url: response.url }};
+      if (response.status >= 400) {{
+        const {{ error, traceback, retryAfter }} = responseErrorDetails(data);
+        const ErrorClass =
+          ERROR_CLASSES.get(response.status) ??
+          (response.status >= 500 ? ServerError : APIStatusError);
+        throw new ErrorClass(response.status, error, {{ traceback, retryAfter }});
+      }}
+      return data;
     }} finally {{
       if (timer !== null) {{
         clearTimeout(timer);
@@ -975,19 +1026,7 @@ export class ContreeClient {{
     }}
   }}
 
-  /** fetch reports network failures as TypeError; timeouts abort. */
-  _transportRetryable(error) {{
-    return error instanceof TypeError;
-  }}
-
-  _transportNonretryable(error) {{
-    return (
-      error instanceof DOMException &&
-      (error.name === "AbortError" || error.name === "TimeoutError")
-    );
-  }}
-
-  /** One transparent reconnect for a replayable idempotent request:
+  /** One transparent reconnect for a replayable connection error:
    * fetch pools keep-alive sockets and cannot pre-check them the way
    * the Python adapters do, so the first request on a socket the
    * server already closed fails without ever reaching the server. */
@@ -999,8 +1038,8 @@ export class ContreeClient {{
         !spec.idempotent ||
         (typeof ReadableStream !== "undefined" &&
           spec.body instanceof ReadableStream) ||
-        !this._transportRetryable(error) ||
-        this._transportNonretryable(error)
+        !(error instanceof APIConnectionError) ||
+        error.cause?.name !== "TypeError"
       ) {{
         throw error;
       }}
@@ -1028,41 +1067,44 @@ export class ContreeClient {{
     // contract guarantees both mean the request was rejected before
     // any processing, so replaying is always safe.
     const replaySafe = spec.idempotent || policy.retryUnsafe;
+    const deadline = spec.deadline ?? null;
     const delays = retryDelays(policy.delays);
     let attempts = 0;
     for (;;) {{
       attempts += 1;
       const exhausted =
         policy.maxAttempts !== null && attempts >= policy.maxAttempts;
-      let response;
       try {{
-        response = await this.request(spec);
+        return await this.request(spec);
       }} catch (error) {{
+        const retryableStatus =
+          error instanceof APIStatusError && policy.retryableStatus(error.status);
+        const rejectedBeforeProcessing =
+          error instanceof APIStatusError &&
+          (error.status === 425 || error.status === 429);
         if (
-          !replaySafe ||
-          !this._transportRetryable(error) ||
-          this._transportNonretryable(error) ||
-          exhausted
+          !(error instanceof APIConnectionError) && !retryableStatus ||
+          (!replaySafe && !rejectedBeforeProcessing) ||
+          exhausted ||
+          (deadline !== null && monotonic() >= deadline)
         ) {{
           throw error;
         }}
-        await sleep(delays.next().value);
-        continue;
+        let delay =
+          error instanceof APIStatusError && error.retryAfter !== null
+            ? error.retryAfter
+            : delays.next().value;
+        if (deadline !== null) {{
+          delay = Math.min(delay, Math.max(0, deadline - monotonic()));
+        }}
+        await sleep(delay);
       }}
-      if (!policy.retryableStatus(response.status) || exhausted) {{
-        return response;
-      }}
-      if (!replaySafe && response.status !== 425 && response.status !== 429) {{
-        return response;
-      }}
-      const retryAfter = retryAfterDelay(response);
-      await sleep(retryAfter !== null ? retryAfter : delays.next().value);
     }}
   }}
 
   /** Execute the request and yield response body chunks. */
   async *stream(spec) {{
-    const controller = new AbortController();
+    let controller;
     let timer = null;
     const disarm = () => {{
       if (timer !== null) {{
@@ -1080,21 +1122,33 @@ export class ContreeClient {{
           controller.abort(
             new DOMException("stream read timed out", "TimeoutError"),
           ),
-        Math.max(0, seconds) * 1000,
+        Math.ceil(Math.max(0, seconds) * 1000),
       );
     }};
     const sse = spec.accept === "text/event-stream";
     const deadline = spec.deadline ?? null; // monotonic seconds
     // the budget for the next transport wait: downloads use the
-    // client timeout (idle cap, re-armed per chunk); SSE is unbounded
-    // unless the caller set an absolute deadline - keepalive frames
-    // re-enter abortIn with a shrinking remainder, so the bound stays
-    // absolute no matter how often the server keeps the stream warm
+    // client timeout as an idle cap, bounded by the caller's absolute
+    // deadline; SSE is unbounded unless the caller set a deadline.
+    // Keepalive frames re-enter abortIn with a shrinking remainder, so
+    // the bound stays absolute while the server keeps the stream warm.
     const nextBudget = () => {{
-      if (!sse) {{
-        return this.timeout;
+      const remaining = deadline === null ? null : deadline - monotonic();
+      if (sse || this.timeout === null) {{
+        return remaining;
       }}
-      return deadline === null ? null : deadline - monotonic();
+      return remaining === null
+        ? this.timeout
+        : Math.min(this.timeout, remaining);
+    }};
+    const connectBudget = () => {{
+      const remaining = deadline === null ? null : deadline - monotonic();
+      if (this.timeout === null) {{
+        return remaining;
+      }}
+      return remaining === null
+        ? this.timeout
+        : Math.min(this.timeout, remaining);
     }};
     // the server may close a pooled keep-alive socket between
     // requests and fetch exposes no pool to pre-check (the Python
@@ -1108,57 +1162,68 @@ export class ContreeClient {{
         typeof ReadableStream !== "undefined" &&
         spec.body instanceof ReadableStream
       );
-    const policy = replayable ? this.retry : null;
+    // SSE reconnection belongs to followOperationEvents(), which
+    // checks terminal status after each failed stream.
+    const policy = replayable && !sse ? this.retry : null;
     const maxAttempts =
       policy !== null ? policy.maxAttempts : replayable ? 2 : 1;
     const delays = policy === null ? null : retryDelays(policy.delays);
     let attempts = 0;
     let response;
     for (;;) {{
+      if (deadline !== null && monotonic() >= deadline) {{
+        throw new DOMException("stream read timed out", "TimeoutError");
+      }}
       attempts += 1;
-      abortIn(this.timeout); // the connect phase always has a bound
+      controller = new AbortController();
+      abortIn(connectBudget());
       try {{
         response = await this._fetch(
           this.buildUrl(spec),
           this._fetchOptions(spec, controller.signal),
         );
+        if (deadline !== null && monotonic() >= deadline) {{
+          throw new DOMException("stream read timed out", "TimeoutError");
+        }}
         break;
       }} catch (error) {{
         disarm();
+        const reconnectable =
+          error?.name === "TypeError" ||
+          (policy !== null && error?.name === "TimeoutError");
         if (
-          !this._transportRetryable(error) ||
-          this._transportNonretryable(error) ||
-          (maxAttempts !== null && attempts >= maxAttempts)
+          !reconnectable ||
+          (maxAttempts !== null && attempts >= maxAttempts) ||
+          (deadline !== null && monotonic() >= deadline)
         ) {{
           throw error;
         }}
-        await sleep(delays === null ? 0 : delays.next().value);
+        let delay = delays === null ? 0 : delays.next().value;
+        if (deadline !== null) {{
+          delay = Math.min(delay, Math.max(0, deadline - monotonic()));
+        }}
+        await sleep(delay);
       }}
-    }}
-    if (!(response.status >= 200 && response.status < 300)) {{
-      // the error body is read under the same timer: a 500 with an
-      // endless body must not hang the caller
-      let body;
-      try {{
-        body = new Uint8Array(await response.arrayBuffer());
-      }} finally {{
-        disarm();
-      }}
-      const headers = {{}};
-      response.headers.forEach((value, key) => {{
-        headers[key.toLowerCase()] = value;
-      }});
-      throw errorForResponse({{ status: response.status, headers, body }});
     }}
     disarm();
     const reader = response.body.getReader();
     try {{
+      if (response.status >= 400) {{
+        throw new RangeError(`HTTP ${{response.status}}`);
+      }}
       for (;;) {{
-        abortIn(nextBudget());
+        const budget = nextBudget();
+        if (budget !== null && budget <= 0) {{
+          throw new DOMException("stream read timed out", "TimeoutError");
+        }}
+        abortIn(budget);
         const {{ done, value }} = await reader.read();
         // the timer covers only the transport wait, never the
         // consumer's processing of the yielded chunk
         disarm();
+        if (deadline !== null && monotonic() >= deadline) {{
+          throw new DOMException("stream read timed out", "TimeoutError");
+        }}
         if (done) {{
           return;
         }}
@@ -1179,13 +1244,39 @@ export class ContreeClient {{
   async close() {{}}
 
   /** Best-effort check that the operation reached a terminal state. */
-  async operationTerminal(operationId) {{
+  async operationTerminal(operationId, deadline = null) {{
     let status;
+    const deadlineLimited =
+      deadline !== null &&
+      (this.timeout === null || deadline - monotonic() <= this.timeout);
     try {{
-      status = (await this.getOperationStatus(operationId)).status;
+      // The outer event loop owns retries. Each status probe uses one
+      // transport attempt and stays inside the caller's deadline.
+      const spec = operations.buildGetOperationStatus(operationId);
+      spec.deadline = deadline;
+      status = operations.parseGetOperationStatus(await this.request(spec)).status;
     }} catch (error) {{
-      if (error instanceof ContreeError || this._transportRetryable(error)) {{
+      if (error instanceof APIConnectionError) {{
+        if (
+          deadline !== null &&
+          (monotonic() >= deadline || (deadlineLimited && error.timedOut))
+        ) {{
+          throw new DOMException(
+            `operation ${{operationId}} status probe exceeded its deadline`,
+            "TimeoutError",
+          );
+        }}
         return false;
+      }}
+      if (error instanceof APIStatusError) {{
+        if (
+          error.status === 410 ||
+          error.status === 425 ||
+          error.status === 429 ||
+          error.status >= 500
+        ) {{
+          return false;
+        }}
       }}
       throw error;
     }}
@@ -1196,34 +1287,47 @@ export class ContreeClient {{
    * follows the SSE log until `completion`, then fetches and returns
    * the terminal OperationResponse. */
   async waitOperation(operationId, {{ timeout = null }} = {{}}) {{
+    const deadline = timeout === null ? null : monotonic() + timeout;
     // eslint-disable-next-line no-unused-vars
     for await (const event of this.followOperationEvents(operationId, {{ timeout }})) {{
       // draining the stream is the wait
     }}
-    return await this.getOperationStatus(operationId);
+    const spec = operations.buildGetOperationStatus(operationId);
+    spec.deadline = deadline;
+    const deadlineLimited =
+      deadline !== null &&
+      (this.timeout === null || deadline - monotonic() <= this.timeout);
+    try {{
+      return operations.parseGetOperationStatus(await this.call(spec));
+    }} catch (error) {{
+      if (
+        deadline !== null &&
+        error instanceof APIConnectionError &&
+        (monotonic() >= deadline || (deadlineLimited && error.timedOut))
+      ) {{
+        throw new DOMException(
+          `operation ${{operationId}} did not complete within ${{timeout}}s`,
+          "TimeoutError",
+        );
+      }}
+      throw error;
+    }}
   }}
 
-  /** Stream operation events with transparent reconnection: network
-   * drops, in-band SSE error frames and retryable API statuses
-   * (410/425/5xx) reconnect from the last received event id. A status
-   * meaning the events endpoint itself doesn't exist for this
-   * operation/server (400/404/405/406) stops reconnecting and instead
-   * polls getOperationStatus() until the operation is terminal, then
-   * yields a synthesized `completion` event built from that status
-   * (there is no real event log to relay). Other API errors
-   * propagate. Ends after the `completion` event. */
+  /** Stream operation events with transparent reconnection.
+   * Native stream failures trigger a terminal-status probe and a
+   * reconnect from the last event id. */
   async *followOperationEvents(
     operationId,
     {{ last_event_id = null, spid = null, since = null, timeout = null }} = {{}},
   ) {{
     let lastId = last_event_id;
-    const delays = retryDelays();
     const deadline = timeout === null ? null : monotonic() + timeout;
     const checkDeadline = () => {{
       if (deadline !== null && monotonic() >= deadline) {{
-        throw new ContreeAPIError(
-          0,
+        throw new DOMException(
           `operation ${{operationId}} events did not complete within ${{timeout}}s`,
+          "TimeoutError",
         );
       }}
     }};
@@ -1246,101 +1350,25 @@ export class ContreeClient {{
           checkDeadline();
         }}
       }} catch (error) {{
-        if (error instanceof SSEStreamError) {{
-          if (error.lastEventId !== null) {{
-            lastId = error.lastEventId;
-          }}
-        }} else if (error instanceof ContreeAPIError) {{
-          if (EVENTS_UNAVAILABLE_STATUSES.has(error.status)) {{
-            // the endpoint is gone, not just failing: reconnecting the
-            // same request will never work, but the operation may
-            // still finish - stop touching /events and poll status
-            // instead for the rest of this wait
-            for (;;) {{
-              checkDeadline();
-              let response;
-              try {{
-                response = await this.getOperationStatus(operationId);
-              }} catch (pollError) {{
-                if (
-                  !(pollError instanceof ContreeError) &&
-                  !this._transportRetryable(pollError)
-                ) {{
-                  throw pollError;
-                }}
-                response = null;
-              }}
-              if (
-                response !== null &&
-                response.status !== undefined &&
-                isTerminalStatus(response.status)
-              ) {{
-                // no event log to relay, but a caller of
-                // followOperationEvents must still observe a terminal
-                // completion rather than nothing at all
-                lastId = lastId === null ? 0 : lastId + 1;
-                yield new OperationEvent({{
-                  id: lastId,
-                  ts: new Date(),
-                  type: "completion",
-                  data: new EventDataCompletion({{
-                    status: response.status,
-                    duration_ms:
-                      typeof response.duration === "number"
-                        ? Math.round(response.duration * 1000)
-                        : 0,
-                    result_image_uuid: response.result_image_uuid,
-                    error: response.error,
-                    image_size_bytes:
-                      typeof response.image_size === "number"
-                        ? response.image_size
-                        : undefined,
-                  }}),
-                }});
-                return;
-              }}
-              let pollDelay = delays.next().value;
-              if (deadline !== null) {{
-                pollDelay = Math.min(
-                  pollDelay,
-                  Math.max(0, deadline - monotonic()),
-                );
-              }}
-              await sleep(pollDelay);
-            }}
-          }}
-          const retryable =
-            error.status === 410 ||
-            error.status === 425 ||
-            (error.status >= 500 && error.status < 600);
-          if (!retryable) {{
-            throw error;
-          }}
-          if (await this.operationTerminal(operationId)) {{
-            return;
-          }}
-          let delay =
-            error.retryAfter !== null ? error.retryAfter : delays.next().value;
-          if (deadline !== null) {{
-            // a Retry-After must not sleep past the caller's deadline
-            delay = Math.min(delay, Math.max(0, deadline - monotonic()));
-          }}
-          await sleep(delay);
-          continue;
-        }} else if (
-          !this._transportRetryable(error) ||
-          this._transportNonretryable(error)
-        ) {{
+        if (error?.name === "AbortError") {{
           throw error;
+        }}
+        checkDeadline();
+        if (Number.isInteger(error?.lastEventId)) {{
+          lastId = error.lastEventId;
         }}
       }}
       // the stream ended or broke without a completion frame: the
       // retry must not outlive the operation itself
-      if (await this.operationTerminal(operationId)) {{
+      if (await this.operationTerminal(operationId, deadline)) {{
         return;
       }}
       if (lastId === eventsBefore) {{
-        await sleep(TIGHT_LOOP_FLOOR);
+        let delay = TIGHT_LOOP_FLOOR;
+        if (deadline !== null) {{
+          delay = Math.min(delay, Math.max(0, deadline - monotonic()));
+        }}
+        await sleep(delay);
       }}
     }}
   }}
@@ -1430,13 +1458,29 @@ def render_client_method(op: OpDef) -> list[str]:
     doc = f"  /** {op.summary or op.name} ({op.http_method} {op.path}) */"
     blocks: list[str] = []
     if op.kind in ("call", "bytes"):
-        blocks.append(
-            f"{doc}\n"
-            f"  async {name}({params}) {{\n"
-            f"    const spec = operations.{build}({call_args});\n"
-            f"    return operations.{parse}(await this.call(spec));\n"
-            f"  }}"
-        )
+        if op.response_kind == "bool":
+            blocks.append(
+                f"{doc}\n"
+                f"  async {name}({params}) {{\n"
+                f"    const spec = operations.{build}({call_args});\n"
+                f"    try {{\n"
+                f"      return operations.{parse}(await this.call(spec));\n"
+                f"    }} catch (error) {{\n"
+                f"      if (error instanceof NotFoundError) {{\n"
+                f"        return false;\n"
+                f"      }}\n"
+                f"      throw error;\n"
+                f"    }}\n"
+                f"  }}"
+            )
+        else:
+            blocks.append(
+                f"{doc}\n"
+                f"  async {name}({params}) {{\n"
+                f"    const spec = operations.{build}({call_args});\n"
+                f"    return operations.{parse}(await this.call(spec));\n"
+                f"  }}"
+            )
         if op.stream_variant:
             stream_name = camel(f"{op.name}_stream")
             blocks.append(
@@ -1466,12 +1510,10 @@ def render_client_method(op: OpDef) -> list[str]:
             f"    let lastSeen = options.last_event_id ?? null;\n"
             f"    for await (const chunk of this.stream(spec)) {{\n"
             f"      for (const frame of parser.feed(chunk)) {{\n"
-            f"        const payload = decodeFramePayload(frame, lastSeen);\n"
-            f"        // id-only frames advance the resume cursor even\n"
-            f"        // though they carry no payload\n"
             f"        if (frame.id !== null) {{\n"
             f"          lastSeen = frame.id;\n"
             f"        }}\n"
+            f"        const payload = decodeFramePayload(frame, lastSeen);\n"
             f"        if (payload === null) {{\n"
             f"          continue;\n"
             f"        }}\n"
@@ -1776,17 +1818,17 @@ REFERENCE_HELPERS_RST = """\
 .. js:method:: ContreeClient.followOperationEvents(operationId, options?)
 
    :js:meth:`ContreeClient.iterOperationEvents` with ``follow: true``
-   and transparent reconnection: network drops, in-band ``sse_error``
-   frames and retryable statuses (410/425/5xx) resume from the last
-   received event id; other API errors propagate. Ends after the
-   ``completion`` frame.
+   and transparent reconnection: network drops, transport timeouts,
+   in-band ``sse_error`` frames and retryable statuses (410/425/5xx)
+   resume from the last received event id; other API errors propagate.
+   Ends after the ``completion`` frame.
 
    :param operationId: ``string``
    :param options.last_event_id: ``number | null``
    :param options.spid: ``number | null``
    :param options.since: ``number | null``
    :param options.timeout: ``number | null`` — overall deadline in
-      seconds.
+      seconds; expiry throws a ``TimeoutError`` ``DOMException``.
    :returns: ``AsyncGenerator<OperationEvent>``
 
 .. js:method:: ContreeClient.resolveImage(ref)
@@ -1826,11 +1868,13 @@ def render_reference(ir: SpecIR) -> str:
     parts = [
         f"{heading}\n{'=' * len(heading)}",
         f".. {GENERATED_NOTE}",
-        "Generated from the OpenAPI specification"
-        f" (SHA-256 ``{ir.spec_sha256[:12]}…``). Methods are camelCase;"
-        " model fields and option keys keep their snake_case wire"
-        " spelling. Required arguments are positional, optional ones"
-        " ride in a trailing ``options`` object.",
+        (
+            "Generated from the OpenAPI specification"
+            f" (SHA-256 ``{ir.spec_sha256[:12]}...``). Methods are camelCase;"
+            " model fields and option keys keep their snake_case wire"
+            " spelling. Required arguments are positional, optional ones"
+            " ride in a trailing ``options`` object."
+        ),
         "Client methods\n--------------",
     ]
     parts.extend(render_op_reference(op) for op in ir.operations)
@@ -1863,9 +1907,13 @@ export {
   RETRY_DELAYS,
   RetryPolicy,
   SSEParser,
+  base64ToBytes,
+  bytesToBase64,
+  bytesToText,
   parseDatetime,
   parseRetryAfter,
   sha256,
+  textToBytes,
 } from "./runtime.js";
 export { ContreeClient } from "./client.js";
 export * as operations from "./operations.js";
@@ -1883,9 +1931,13 @@ export {
   RETRY_DELAYS,
   RetryPolicy,
   SSEParser,
+  base64ToBytes,
+  bytesToBase64,
+  bytesToText,
   parseDatetime,
   parseRetryAfter,
   sha256,
+  textToBytes,
 } from "./runtime.js";
 export type { RequestSpec, ResponseData, RequestBody } from "./runtime.js";
 export { ContreeClient, ContreeClientOptions } from "./client.js";

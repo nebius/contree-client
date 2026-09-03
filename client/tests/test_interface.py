@@ -13,9 +13,6 @@ import asyncio
 import importlib
 import inspect
 from types import ModuleType
-from typing import Any
-
-import pytest
 
 SYNC_BACKENDS = ("http", "urllib3", "requests", "httpx", "testing")
 ASYNC_BACKENDS = ("httpx", "aiohttp", "testing")
@@ -163,13 +160,3 @@ def test_adapters_expose_no_public_internals(generated_package: ModuleType) -> N
                 asyncio.run(client.close())
             else:
                 client.close()
-
-
-@pytest.mark.parametrize("attribute", ["retryable_errors", "nonretryable_errors"])
-def test_error_taxonomy_declared(generated_package: ModuleType, attribute: str) -> None:
-    for label, klass, _ in all_backends(generated_package):
-        value: Any = getattr(klass, attribute)
-        assert isinstance(value, tuple), label
-        assert all(
-            isinstance(item, type) and issubclass(item, BaseException) for item in value
-        ), label

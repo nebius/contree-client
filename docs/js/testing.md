@@ -4,6 +4,7 @@
 generated client surface: every API method exists, records its calls
 and replays outcomes you queue — no network, no mocks of your own.
 
+<!-- name: testing_walkthrough; fixtures: operationId as OPERATION_UUID, codeUnderTest -->
 ```js
 import assert from "node:assert/strict";
 import { ContreeClient } from "contree-client/testing";
@@ -28,6 +29,7 @@ Mocked outcomes queue up per operation and the **last one is sticky**,
 so a single mock serves any number of calls while a queue models state
 transitions:
 
+<!-- name: testing_walkthrough; fixtures: executing, success, operationId as id -->
 ```js
 client.mock("getOperationStatus", executing);
 client.mock("getOperationStatus", success);
@@ -40,6 +42,7 @@ await client.getOperationStatus(id); // -> success (sticky)
 Pass `{ error }` to make an operation throw, and arrays for iterator
 operations:
 
+<!-- name: testing_walkthrough; fixtures: initEvent, exitEvent -->
 ```js
 import { NotFoundError } from "contree-client";
 

@@ -36,7 +36,6 @@ PAYLOAD_INTERRUPTION_OPERATION_UUID = "00000000-0000-0000-0000-00000000badd"
 PAYLOAD_TIMEOUT_OPERATION_UUID = "00000000-0000-0000-0000-00000000dead"
 PAYLOAD_STALLED_STATUS_OPERATION_UUID = "00000000-0000-0000-0000-0000000057a1"
 PAYLOAD_FORBIDDEN_OPERATION_UUID = "00000000-0000-0000-0000-000000000403"
-PAYLOAD_FINAL_STATUS_OPERATION_UUID = "00000000-0000-0000-0000-00000000f1a1"
 CLOSING_OPERATION_UUID = "00000000-0000-0000-0000-0000000c105e"
 DROPPING_OPERATION_UUID = "00000000-0000-0000-0000-00000000d40b"
 KEEPALIVE_OPERATION_UUID = "00000000-0000-0000-0000-0000000cee9a"
@@ -439,9 +438,9 @@ def route(request: Captured, attempts: collections.Counter[str]) -> Reply:
         path == f"/v1/operations/{EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID}"
         and method == "GET"
     ):
-        # same missing-events situation, but the operation itself
-        # never finishes - the polling fallback must still honor the
-        # caller's deadline instead of looping forever
+        # The events route is missing and the status endpoint does not
+        # answer. The polling request itself must stay within deadline.
+        time.sleep(STATUS_HANG_SECONDS)
         return json_reply(
             200,
             {
@@ -528,29 +527,6 @@ def route(request: Captured, attempts: collections.Counter[str]) -> Reply:
             status=403,
             content_type="application/json",
             stream_chunks=[b'{"error":"forbidden","status":403}'],
-            truncate_chunked=True,
-        )
-
-    if (
-        path == f"/v1/operations/{PAYLOAD_FINAL_STATUS_OPERATION_UUID}"
-        and method == "GET"
-    ):
-        if attempt > 1:
-            time.sleep(STATUS_HANG_SECONDS)
-        return json_reply(
-            200,
-            {
-                **OPERATION_RESPONSE,
-                "uuid": PAYLOAD_FINAL_STATUS_OPERATION_UUID,
-                "status": "SUCCESS",
-            },
-        )
-
-    if path == f"/v1/operations/{PAYLOAD_FINAL_STATUS_OPERATION_UUID}/events":
-        return Reply(
-            status=200,
-            content_type="text/event-stream",
-            stream_chunks=[b": keepalive\n\n"],
             truncate_chunked=True,
         )
 
@@ -669,13 +645,29 @@ def route(request: Captured, attempts: collections.Counter[str]) -> Reply:
         )
 
     if path == f"/v1/operations/{KEEPALIVE_OPERATION_UUID}/events":
-        # a stream that never says anything useful but keeps the
-        # connection warm with comment frames - the per-recv socket
-        # timeout never fires here, only an absolute deadline can
+        # Keepalive frames prevent an idle timeout. The operation
+        # deadline must still stop the stream.
         return Reply(
             status=200,
             content_type="text/event-stream",
             stream_chunks=[b": keepalive\n\n"] * 500,
+        )
+
+    if (
+        path
+        in {
+            f"/v1/operations/{KEEPALIVE_OPERATION_UUID}",
+            f"/v1/operations/{SLOW_OPERATION_UUID}",
+        }
+        and method == "GET"
+    ):
+        return json_reply(
+            200,
+            {
+                **OPERATION_RESPONSE,
+                "uuid": path.rsplit("/", 1)[-1],
+                "status": "EXECUTING",
+            },
         )
 
     if path == f"/v1/operations/{SLOW_OPERATION_UUID}/events":
@@ -770,6 +762,10 @@ def route(request: Captured, attempts: collections.Counter[str]) -> Reply:
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     stub: StubServer
+
+    def handle(self) -> None:
+        with contextlib.suppress(ConnectionError):
+            super().handle()
 
     def setup(self) -> None:
         # one handler instance per TCP connection: counting them lets

@@ -1,4 +1,4 @@
-"""Exception hierarchy for the Contree API client."""
+"""Public exceptions raised by the Contree API client."""
 
 from __future__ import annotations
 
@@ -6,62 +6,22 @@ from typing import Any
 
 
 class ContreeError(Exception):
-    """Base class for all contree-client errors."""
+    """Base class for normalized buffered request errors."""
 
 
-class ContreeTransportError(ContreeError):
-    """Wire-level error base; each backend's subclass also inherits its
-    matching native exception type. Construct via :meth:`wrap`."""
+class APIConnectionError(ContreeError):
+    """An adapter could not complete a buffered ``request()`` call.
 
-    @classmethod
-    def wrap(cls, original: BaseException) -> BaseException:
-        """Build an instance from *original*; return it unwrapped on failure."""
-        try:
-            return cls(*original.args)
-        except Exception:
-            return original
-
-
-class ContreeConnectionError(ContreeTransportError):
-    """Failed to establish or maintain the connection."""
-
-
-class ContreeTimeoutError(ContreeTransportError):
-    """A connect, read or overall deadline elapsed."""
-
-
-class ContreeStreamError(ContreeTransportError):
-    """The response body arrived but could not be consumed correctly."""
-
-
-class DecompressionError(ContreeStreamError):
-    """The compressed response body ended prematurely or is corrupt."""
-
-
-class SSEStreamError(ContreeStreamError):
-    """The server terminated an SSE stream with an in-band error frame.
-
-    Per the API convention this is the in-band equivalent of a 410:
-    wait briefly and reconnect passing `last_event_id` (the id of the
-    last successfully received event, None when nothing was received).
+    ``timed_out`` identifies a timeout without exposing a backend type.
     """
 
-    def __init__(
-        self,
-        message: str,
-        *,
-        last_event_id: int | None = None,
-    ) -> None:
+    def __init__(self, message: str, *, timed_out: bool = False) -> None:
         super().__init__(message)
-        self.last_event_id = last_event_id
+        self.timed_out = timed_out
 
 
-class ContreeHTTPError(ContreeTransportError):
-    """A full HTTP response with a status line was received."""
-
-
-class ContreeAPIError(ContreeHTTPError):
-    """An HTTP error response returned by the Contree API."""
+class APIStatusError(ContreeError):
+    """A buffered ``request()`` received HTTP status 400 or greater."""
 
     def __init__(
         self,
@@ -78,49 +38,54 @@ class ContreeAPIError(ContreeHTTPError):
         self.retry_after = retry_after
 
 
-class BadRequestError(ContreeAPIError):
-    """400 Bad Request - invalid request parameters."""
+class BadRequestError(APIStatusError):
+    """The API returned HTTP 400 Bad Request."""
 
 
-class UnauthorizedError(ContreeAPIError):
-    """401 Unauthorized - invalid or missing authentication credentials."""
+class AuthenticationError(APIStatusError):
+    """The API returned HTTP 401 Unauthorized."""
 
 
-class ForbiddenError(ContreeAPIError):
-    """403 Forbidden - token does not have sufficient permissions."""
+class PermissionDeniedError(APIStatusError):
+    """The API returned HTTP 403 Forbidden."""
 
 
-class NotFoundError(ContreeAPIError):
-    """404 Not Found - the requested resource does not exist."""
+class NotFoundError(APIStatusError):
+    """The API returned HTTP 404 Not Found."""
 
 
-class ConflictError(ContreeAPIError):
-    """409 Conflict - the operation cannot be completed due to a conflict."""
+class ConflictError(APIStatusError):
+    """The API returned HTTP 409 Conflict."""
 
 
-class GoneError(ContreeAPIError):
-    """410 Gone - retry after the `retry_after` delay."""
+class GoneError(APIStatusError):
+    """The API returned HTTP 410 Gone."""
 
 
-class UnprocessableEntityError(ContreeAPIError):
-    """422 Unprocessable Entity - the path is not usable inside the image."""
+class UnprocessableEntityError(APIStatusError):
+    """The API returned HTTP 422 Unprocessable Entity."""
 
 
-class TooEarlyError(ContreeAPIError):
-    """425 Too Early - not ready yet, retry after the `retry_after` delay."""
+class TooEarlyError(APIStatusError):
+    """The API returned HTTP 425 Too Early."""
 
 
-class ServerError(ContreeAPIError):
-    """5xx - server-side error."""
+class RateLimitError(APIStatusError):
+    """The API returned HTTP 429 Too Many Requests."""
 
 
-ERROR_CLASSES: dict[int, type[ContreeAPIError]] = {
+class ServerError(APIStatusError):
+    """The API returned an HTTP status of 500 or greater."""
+
+
+ERROR_CLASSES: dict[int, type[APIStatusError]] = {
     400: BadRequestError,
-    401: UnauthorizedError,
-    403: ForbiddenError,
+    401: AuthenticationError,
+    403: PermissionDeniedError,
     404: NotFoundError,
     409: ConflictError,
     410: GoneError,
     422: UnprocessableEntityError,
     425: TooEarlyError,
+    429: RateLimitError,
 }

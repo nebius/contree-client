@@ -28,7 +28,7 @@ export interface RequestSpec {
   accept?: string | null;
   idempotent?: boolean;
   redirect?: "manual" | "follow";
-  /** absolute deadline in monotonic seconds; bounds SSE idle waits */
+  /** absolute deadline in monotonic seconds; bounds transport waits */
   deadline?: number | null;
 }
 
@@ -53,7 +53,6 @@ export declare class RetryPolicy {
 export declare function parseRetryAfter(
   value: string | null | undefined,
 ): number | null;
-export declare function retryAfterDelay(response: ResponseData): number | null;
 export declare function sleep(seconds: number): Promise<void>;
 export declare function monotonic(): number;
 export declare function isUuid(ref: string): boolean;
@@ -75,7 +74,11 @@ export declare function jsonObject(
   response: ResponseData,
 ): Record<string, unknown>;
 export declare function jsonArray(response: ResponseData): unknown[];
-export declare function errorForResponse(response: ResponseData): Error;
+export declare function responseErrorDetails(response: ResponseData): {
+  error: unknown;
+  traceback: string[] | null;
+  retryAfter: number | null;
+};
 
 export interface SSEFrame {
   id: number | null;

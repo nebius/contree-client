@@ -1,11 +1,9 @@
-import { ContreeError } from "./errors.js";
-
 export declare const AUTH_TYPE_IAM: "iam";
 export declare const AUTH_TYPE_JWT: "jwt";
 export declare const PROFILE_PREFIX: "profile:";
 export declare const DEFAULT_PROFILE: "default";
 
-export declare class ProfileError extends ContreeError {}
+export declare class ProfileError extends Error {}
 
 export interface Profile {
   name: string;

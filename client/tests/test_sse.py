@@ -69,29 +69,9 @@ def test_decode_event_frame(runtime: ModuleType, models: ModuleType) -> None:
     assert event.spid == 0
 
 
-def test_sse_error_frame_raises(
-    runtime: ModuleType,
-    exceptions: ModuleType,
-) -> None:
-    payload = (
-        b": stream ended with error, retry since last event id\n"
-        b"\n"
-        b"event: sse_error\n"
-        b"data: upstream event source closed unexpectedly\n"
-        b"\n"
-    )
-    frames = frames_from(runtime, payload)
-    assert len(frames) == 1
-    with pytest.raises(exceptions.SSEStreamError, match="upstream") as excinfo:
-        runtime.decode_event_frame(frames[0])
-    assert excinfo.value.last_event_id is None
-
-
-def test_sse_error_frame_carries_last_event_id(
-    runtime: ModuleType,
-    exceptions: ModuleType,
-) -> None:
+def test_sse_error_frame_raises_connection_error(runtime: ModuleType) -> None:
     frame = runtime.SSEFrame(event="sse_error", data="boom")
-    with pytest.raises(exceptions.SSEStreamError) as excinfo:
-        runtime.decode_event_frame(frame, last_event_id=41)
-    assert excinfo.value.last_event_id == 41
+    with pytest.raises(ConnectionError, match="boom") as caught:
+        runtime.decode_event_frame(frame, last_event_id=17)
+    assert type(caught.value) is ConnectionError
+    assert caught.value.__dict__["last_event_id"] == 17

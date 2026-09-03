@@ -248,82 +248,8 @@ async for event in client.iter_operation_events(operation_id, follow=True):
 
 ::::
 
-If the server terminates the stream with an in-band error frame, the
-iterator raises {class}`~contree_client.SSEStreamError` carrying the
-id of the last received event — pass it back to resume:
-
-::::{tab-set}
-
-:::{tab-item} Sync
-:sync: sync
-
-<!--
-name: test_api_events_resume;
-fixtures: client, operation_id
-```python
-def handle(event):
-    pass
-```
--->
-```python
-import time
-
-from contree_client import SSEStreamError
-
-last_event_id = None
-while True:
-    try:
-        for event in client.iter_operation_events(
-            operation_id,
-            follow=True,
-            last_event_id=last_event_id,
-        ):
-            last_event_id = event.id
-            handle(event)
-        break
-    except SSEStreamError as error:
-        last_event_id = error.last_event_id
-        time.sleep(1)
-```
-:::
-
-:::{tab-item} Async
-:sync: async
-
-<!--
-name: async test_api_events_resume_async;
-fixtures: async_client, operation_id
-```python
-client = async_client
-
-
-def handle(event):
-    pass
-```
--->
-```python
-import asyncio
-
-from contree_client import SSEStreamError
-
-last_event_id = None
-while True:
-    try:
-        async for event in client.iter_operation_events(
-            operation_id,
-            follow=True,
-            last_event_id=last_event_id,
-        ):
-            last_event_id = event.id
-            handle(event)
-        break
-    except SSEStreamError as error:
-        last_event_id = error.last_event_id
-        await asyncio.sleep(1)
-```
-:::
-
-::::
+Use `follow_operation_events` when the client must reconnect a broken
+event stream automatically.
 
 (api-files)=
 ## Files
@@ -546,8 +472,10 @@ File downloads have a streaming variant too
 
 ## Error handling
 
-Every non-success HTTP status maps to a subclass of
-{class}`~contree_client.ContreeAPIError` with the parsed error payload:
+Every buffered response status of 400 or greater maps to
+{class}`~contree_client.APIStatusError`. Known statuses use a specific
+subclass. The exception contains `status`, `error`, `traceback`, and
+`retry_after`.
 
 ::::{tab-set}
 
@@ -570,11 +498,11 @@ client.inspect_image(image_uuid)
 -->
 ```python
 from contree_client import (
-    ContreeAPIError,
+    APIStatusError,
+    AuthenticationError,  # 401
     GoneError,        # 410 - retry after error.retry_after seconds
     NotFoundError,    # 404
     TooEarlyError,    # 425 - not ready yet, retry after error.retry_after
-    UnauthorizedError,  # 401
 )
 
 try:
@@ -583,7 +511,7 @@ except NotFoundError:
     ...
 except TooEarlyError as error:
     time.sleep(error.retry_after or 1)
-except ContreeAPIError as error:
+except APIStatusError as error:
     print(error.status, error.error)
 ```
 :::
@@ -608,11 +536,11 @@ await client.inspect_image(image_uuid)
 -->
 ```python
 from contree_client import (
-    ContreeAPIError,
+    APIStatusError,
+    AuthenticationError,  # 401
     GoneError,        # 410 - retry after error.retry_after seconds
     NotFoundError,    # 404
     TooEarlyError,    # 425 - not ready yet, retry after error.retry_after
-    UnauthorizedError,  # 401
 )
 
 try:
@@ -621,62 +549,68 @@ except NotFoundError:
     ...
 except TooEarlyError as error:
     await asyncio.sleep(error.retry_after or 1)
-except ContreeAPIError as error:
+except APIStatusError as error:
     print(error.status, error.error)
 ```
 :::
 
 ::::
 
-`400 → BadRequestError`, `401 → UnauthorizedError`,
-`403 → ForbiddenError`, `404 → NotFoundError`, `409 → ConflictError`,
-`410 → GoneError`, `422 → UnprocessableEntityError`,
-`425 → TooEarlyError`, `5xx → ServerError`.
+`400 → BadRequestError`, `401 → AuthenticationError`,
+`403 → PermissionDeniedError`, `404 → NotFoundError`,
+`409 → ConflictError`, `410 → GoneError`,
+`422 → UnprocessableEntityError`, `425 → TooEarlyError`,
+`429 → RateLimitError`, `>=500 → ServerError`.
+Other error statuses use `APIStatusError` directly.
 
-### Transport errors
+### Exception hierarchy
 
-Every contree-client exception is a {class}`~contree_client.ContreeError`:
+Normalized request failures inherit
+{class}`~contree_client.ContreeError`:
 
 ```
 ContreeError
-└── ContreeTransportError
-    ├── ContreeConnectionError   # refused, unreachable, DNS failure
-    ├── ContreeTimeoutError      # connect/read/overall deadline elapsed
-    ├── ContreeStreamError       # the body arrived but was unreadable
-    │   ├── DecompressionError   # corrupt/truncated compressed body
-    │   └── SSEStreamError       # in-band SSE error frame
-    └── ContreeHTTPError         # a response with a status line arrived
-        └── ContreeAPIError      # the status/subclasses documented above
+├── APIConnectionError
+└── APIStatusError
+    ├── BadRequestError              # 400
+    ├── AuthenticationError          # 401
+    ├── PermissionDeniedError        # 403
+    ├── NotFoundError                # 404
+    ├── ConflictError                # 409
+    ├── GoneError                    # 410
+    ├── UnprocessableEntityError     # 422
+    ├── TooEarlyError                # 425
+    ├── RateLimitError               # 429
+    └── ServerError                  # >=500
 ```
 
-Connection and timeout errors are also an instance of the backend's
-own exception type - catching the transport library's exception
-directly keeps working unchanged, so this is an additive, non-breaking
-way to catch every backend uniformly:
+{class}`~contree_client.APIConnectionError` covers backend failures in an
+adapter's buffered `request()` method. The backend exception remains the
+standard Python `__cause__` for diagnostics. Streaming methods preserve
+their backend's errors. `timed_out` is true for backend timeouts.
 
 <!--
-name: test_transport_error_handling;
+name: test_connection_error_handling;
 fixtures: client
 ```python
-from contree_client.requests import ContreeRequestsConnectionError
+from contree_client import APIConnectionError
 
-client.mock("whoami", error=ContreeRequestsConnectionError("connection refused"))
+client.mock("whoami", error=APIConnectionError("connection refused"))
 ```
 -->
 ```python
-import requests
-
-from contree_client import ContreeConnectionError
+from contree_client import APIConnectionError
 
 try:
     client.whoami()
-except ContreeConnectionError as error:
-    # this backend's own requests.ConnectionError still matches too
-    assert isinstance(error, requests.ConnectionError)
+except APIConnectionError as error:
+    print(error)
+    print(error.__cause__)
 ```
 
-See [Transport adapters](adapters.md#transport-errors) for a caveat on
-one backend.
+Client-side argument errors remain `ValueError` or `TypeError`.
+Operation helper deadlines raise `TimeoutError`. Cancellation,
+`KeyboardInterrupt`, and `SystemExit` are not wrapped.
 
 ## Models
 

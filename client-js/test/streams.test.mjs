@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import { ContreeClient } from "../lib/client.js";
-import { ContreeAPIError } from "../lib/errors.js";
 import {
   EventDataCompletion,
   EventDataExit,
@@ -58,6 +57,70 @@ test("buffered and streaming downloads agree", async () => {
     chunks.push(chunk);
   }
   assert.equal(bytesToText(concat(chunks)), DOWNLOAD_CONTENT);
+});
+
+test("stream readers preserve native errors", async () => {
+  const connectCause = new TypeError("connection failed");
+  let connectAttempts = 0;
+  const disconnected = new ContreeClient("test-token", {
+    baseUrl: "http://localhost:1",
+    fetch: async () => {
+      connectAttempts += 1;
+      throw connectCause;
+    },
+  });
+  await assert.rejects(
+    async () => {
+      for await (const chunk of disconnected.stream({
+        method: "GET",
+        path: "/x",
+        idempotent: true,
+      })) {
+        void chunk;
+      }
+    },
+    (error) => error === connectCause,
+  );
+  assert.equal(connectAttempts, 2);
+
+  const cause = new TypeError("stream interrupted");
+  const interrupted = new ContreeClient("test-token", {
+    baseUrl: "http://localhost:1",
+    fetch: async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(cause);
+          },
+        }),
+        { status: 200 },
+      ),
+  });
+
+  await assert.rejects(
+    async () => {
+      for await (const chunk of interrupted.stream({
+        method: "GET",
+        path: "/x",
+      })) {
+        void chunk;
+      }
+    },
+    (error) => error === cause,
+  );
+
+  const unsuccessful = new ContreeClient("test-token", {
+    baseUrl: "http://localhost:1",
+    fetch: async () => new Response("missing", { status: 404 }),
+  });
+  await assert.rejects(async () => {
+    for await (const chunk of unsuccessful.stream({
+      method: "GET",
+      path: "/x",
+    })) {
+      void chunk;
+    }
+  }, RangeError);
 });
 
 test("archives stream as tar bytes", async () => {
@@ -151,44 +214,102 @@ test("followOperationEvents resumes after an in-band stream error", async () => 
   assert.ok(events[3].data instanceof EventDataCompletion);
 });
 
+test("followOperationEvents retries timeouts until cancellation", async () => {
+  let statusChecks = 0;
+  const retrying = new ContreeClient("test-token", {
+    baseUrl: "http://localhost:1",
+    fetch: async () => {
+      statusChecks += 1;
+      return new Response(
+        JSON.stringify({
+          uuid: OPERATION_UUID,
+          kind: "instance",
+          status:
+            statusChecks === 1
+              ? OperationStatus.EXECUTING
+              : OperationStatus.CANCELLED,
+          metadata: null,
+          result: null,
+        }),
+        { status: 200 },
+      );
+    },
+  });
+  let streamAttempts = 0;
+  retrying.iterOperationEvents = async function* () {
+    streamAttempts += 1;
+    throw new DOMException("stream timed out", "TimeoutError");
+  };
+
+  const events = [];
+  for await (const event of retrying.followOperationEvents(OPERATION_UUID)) {
+    events.push(event);
+  }
+
+  assert.deepEqual(events, []);
+  assert.equal(streamAttempts, 2);
+  assert.equal(statusChecks, 2);
+});
+
+test("followOperationEvents does not retry AbortError", async () => {
+  const retrying = new ContreeClient("test-token", {
+    baseUrl: "http://localhost:1",
+  });
+  let streamAttempts = 0;
+  let statusChecks = 0;
+  retrying.iterOperationEvents = async function* () {
+    streamAttempts += 1;
+    throw new DOMException("request cancelled", "AbortError");
+  };
+  retrying.getOperationStatus = async () => {
+    statusChecks += 1;
+    return { status: OperationStatus.EXECUTING };
+  };
+
+  await assert.rejects(
+    async () => {
+      for await (const event of retrying.followOperationEvents(
+        OPERATION_UUID,
+      )) {
+        void event;
+      }
+    },
+    (error) => error.name === "AbortError",
+  );
+  assert.equal(streamAttempts, 1);
+  assert.equal(statusChecks, 0);
+});
+
 test("waitOperation drains the stream and fetches the terminal status", async () => {
   const operation = await client.waitOperation(OPERATION_UUID);
   assert.equal(operation.status, OperationStatus.SUCCESS);
 });
 
-test("waitOperation falls back to polling when the events route is missing", async () => {
-  // /events 404s outright (older backend, proxy that drops the route,
-  // ...); the operation itself still finishes
+test("waitOperation completes when the events route is missing", async () => {
   const operation = await client.waitOperation(
     EVENTS_UNAVAILABLE_OPERATION_UUID,
   );
   assert.equal(operation.status, OperationStatus.SUCCESS);
 });
 
-test("followOperationEvents yields a completion event when the events route is missing", async () => {
-  // there is no event log to relay, but the caller must still see a
-  // terminal completion event, not an iterator that silently ends
+test("followOperationEvents does not synthesize missing events", async () => {
   const events = [];
   for await (const event of client.followOperationEvents(
     EVENTS_UNAVAILABLE_OPERATION_UUID,
   )) {
     events.push(event);
   }
-  assert.equal(events.length, 1);
-  assert.equal(events[0].type, "completion");
-  assert.ok(events[0].data instanceof EventDataCompletion);
-  assert.equal(events[0].data.status, OperationStatus.SUCCESS);
+  assert.deepEqual(events, []);
 });
 
-test("the polling fallback still honors the deadline when the operation never finishes", async () => {
-  // events unavailable and the operation never finishes: the polling
-  // fallback must still honor the deadline instead of spinning forever
+test("the reconnect loop honors its deadline", async () => {
   await assert.rejects(
     client.waitOperation(EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID, {
       timeout: 0.3,
     }),
     (error) =>
-      error instanceof ContreeAPIError &&
+      error instanceof DOMException &&
+      error.name === "TimeoutError" &&
       error.message.includes(EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID),
   );
 });

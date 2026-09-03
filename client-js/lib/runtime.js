@@ -5,13 +5,6 @@
  * fetch itself, so only the protocol logic lives here.
  */
 
-import {
-  ContreeAPIError,
-  ERROR_CLASSES,
-  ServerError,
-  SSEStreamError,
-} from "./errors.js";
-
 export const CHUNK_SIZE = 65536;
 
 export const PACKAGE_VERSION = "0.1.0";
@@ -37,17 +30,6 @@ export const RETRY_DELAYS = Object.freeze([0.1, 0.2, 0.5, 1.0, 2.0, 5.0]);
 // floor for reconnect loops that made no forward progress, so a server
 // returning immediate empty streams does not spin the client
 export const TIGHT_LOOP_FLOOR = 0.5;
-
-// the events route itself doesn't exist for this operation/server
-// (malformed request an older backend rejects, or a reverse proxy
-// that never forwards it) rather than merely being down: reconnecting
-// will never succeed, but the operation itself may still complete -
-// degrade to polling instead of failing the whole wait. 401/403 are
-// deliberately excluded: an auth/permission failure here likely means
-// the whole client is broken, not just this route, so it still throws
-export const EVENTS_UNAVAILABLE_STATUSES = Object.freeze(
-  new Set([400, 404, 405, 406]),
-);
 
 /** An endless ladder of backoff delays: the ladder is walked once and
  * then the tail delay repeats forever. */
@@ -123,10 +105,6 @@ export function parseRetryAfter(value) {
     return null;
   }
   return Math.max(0, (moment - Date.now()) / 1000);
-}
-
-export function retryAfterDelay(response) {
-  return parseRetryAfter(response.headers["retry-after"] ?? null);
 }
 
 export function sleep(seconds) {
@@ -266,7 +244,9 @@ export function jsonBody(response) {
 export function jsonObject(response) {
   const data = jsonBody(response);
   if (data === null || typeof data !== "object" || Array.isArray(data)) {
-    throw new ContreeAPIError(response.status, "expected a JSON object");
+    const type =
+      data === null ? "null" : Array.isArray(data) ? "array" : typeof data;
+    throw new TypeError(`expected a JSON object, got ${type}`);
   }
   return data;
 }
@@ -274,13 +254,14 @@ export function jsonObject(response) {
 export function jsonArray(response) {
   const data = jsonBody(response);
   if (!Array.isArray(data)) {
-    throw new ContreeAPIError(response.status, "expected a JSON array");
+    const type = data === null ? "null" : typeof data;
+    throw new TypeError(`expected a JSON array, got ${type}`);
   }
   return data;
 }
 
-/** Build the exception matching an error response. */
-export function errorForResponse(response) {
+/** Extract diagnostic fields from an unsuccessful response. */
+export function responseErrorDetails(response) {
   let error = bytesToText(response.body);
   let traceback = null;
   let payload = null;
@@ -301,11 +282,7 @@ export function errorForResponse(response) {
   }
   const parsedRetry = parseRetryAfter(response.headers["retry-after"] ?? null);
   const retryAfter = parsedRetry === null ? null : Math.trunc(parsedRetry);
-  let cls = ERROR_CLASSES.get(response.status);
-  if (cls === undefined) {
-    cls = response.status >= 500 ? ServerError : ContreeAPIError;
-  }
-  return new cls(response.status, error, { traceback, retryAfter });
+  return { error, traceback, retryAfter };
 }
 
 /** Incremental sans-io parser for `text/event-stream` bytes.
@@ -334,7 +311,7 @@ export class SSEParser {
     // accumulated so far: many short data lines must not grow the
     // pending event unboundedly
     if (this.buffer.length + this.pendingSize > SSEParser.MAX_BUFFER) {
-      throw new SSEStreamError(
+      throw new RangeError(
         `SSE frame exceeds ${SSEParser.MAX_BUFFER} bytes before completion`,
       );
     }
@@ -398,30 +375,15 @@ export class SSEParser {
   }
 }
 
-/** Decode an SSE frame's JSON payload.
- *
- * Raises SSEStreamError for in-band `sse_error` frames, carrying
- * *lastEventId* so the caller can reconnect from that point; returns
- * null for frames that carry no event payload. The caller turns the
- * plain object into a typed OperationEvent.
- */
+/** Decode an SSE frame's JSON payload. */
 export function decodeFramePayload(frame, lastEventId = null) {
   if (frame.event === "sse_error") {
-    throw new SSEStreamError(frame.data, { lastEventId });
+    throw Object.assign(new Error(frame.data), { lastEventId });
   }
   if (!frame.data) {
     return null;
   }
-  let payload;
-  try {
-    payload = JSON.parse(frame.data);
-  } catch (error) {
-    // surface protocol corruption through the SSE error channel so
-    // followOperationEvents reconnects instead of crashing
-    throw new SSEStreamError(`malformed SSE event payload: ${error}`, {
-      lastEventId,
-    });
-  }
+  const payload = JSON.parse(frame.data);
   if (
     payload === null ||
     typeof payload !== "object" ||

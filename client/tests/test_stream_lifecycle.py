@@ -116,14 +116,11 @@ def test_follow_early_aclose_closes_inner_iterator(
     asyncio.run(scenario())
 
 
-def test_follow_reconnects_after_decompression_error(
+def test_follow_reconnects_after_truncated_stream(
     generated_package: ModuleType,
 ) -> None:
-    """P2-16: a truncated gzip SSE stream (DecompressionError) is a
-    broken stream: follow must probe the operation and finish/resume
-    instead of crashing."""
+    """A broken stream triggers the terminal operation probe."""
     base = importlib.import_module("contree_client.base")
-    exceptions = importlib.import_module("contree_client.exceptions")
     runtime = importlib.import_module("contree_client.runtime")
 
     class TruncatedStreamClient(base.ContreeSyncClient):
@@ -141,7 +138,7 @@ def test_follow_reconnects_after_decompression_error(
 
         def stream(self, spec, auto_decompress=True):  # type: ignore[no-untyped-def]
             self.stream_attempts += 1
-            raise exceptions.DecompressionError("truncated gzip SSE")
+            raise EOFError("truncated gzip SSE")
             yield b""  # pragma: no cover - makes this a generator
 
         def close(self) -> None:
@@ -159,7 +156,6 @@ def test_sse_id_only_frames_advance_the_resume_cursor(
     """P2-16: an id-only frame carries no payload but must advance the
     Last-Event-Id cursor used for reconnects."""
     base = importlib.import_module("contree_client.base")
-    exceptions = importlib.import_module("contree_client.exceptions")
     runtime = importlib.import_module("contree_client.runtime")
 
     class IdOnlyClient(base.ContreeSyncClient):
@@ -177,8 +173,6 @@ def test_sse_id_only_frames_advance_the_resume_cursor(
             pass
 
     client = IdOnlyClient()
-    with pytest.raises(exceptions.SSEStreamError) as excinfo:
+    with pytest.raises(ConnectionError) as caught:
         list(client.iter_operation_events("00000000-0000-0000-0000-000000000000"))
-    # before the fix the cursor stayed None: the reconnect would have
-    # replayed everything from the beginning
-    assert excinfo.value.last_event_id == 5
+    assert caught.value.__dict__["last_event_id"] == 5

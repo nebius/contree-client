@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { NotFoundError } from "../lib/errors.js";
+import { ContreeError, NotFoundError } from "../lib/errors.js";
 import { InstanceSpawnResponse, OperationEvent } from "../lib/models.js";
 // the documented specifier: package.json exports "./testing" and the
 // self-reference resolves it even inside the package's own tests
@@ -56,11 +56,13 @@ test("mocked errors and iterator operations", async () => {
 
 test("unmocked operations fail loudly, unknown names are rejected", async () => {
   const client = new ContreeClient();
-  await assert.rejects(client.whoami(), /no mock configured/);
-  assert.throws(
-    () => client.mock("nonexistentMethod"),
-    /unknown API operation/,
+  await assert.rejects(
+    client.whoami(),
+    (error) =>
+      !(error instanceof ContreeError) &&
+      /no mock configured/.test(error.message),
   );
+  assert.throws(() => client.mock("nonexistentMethod"), TypeError);
 });
 
 test("constructedWith records the construction arguments", () => {

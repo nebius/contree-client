@@ -115,19 +115,17 @@ def test_iterator_method(testing: ModuleType, models: ModuleType) -> None:
 def test_iterator_error_after_items(
     testing: ModuleType, models: ModuleType, generated_package: ModuleType
 ) -> None:
-    exceptions = importlib.import_module("contree_client.exceptions")
     client = testing.ContreeClient()
     client.mock(
         "iter_operation_events",
         [event(models, 1, "stdout")],
-        error=exceptions.SSEStreamError("broken", last_event_id=1),
+        error=ConnectionError("broken"),
     )
 
     stream = client.iter_operation_events(UUID)
     assert next(stream).id == 1
-    with pytest.raises(exceptions.SSEStreamError) as exc_info:
+    with pytest.raises(ConnectionError):
         next(stream)
-    assert exc_info.value.last_event_id == 1
 
 
 def test_archive_chunks_open_with_tarfile(testing: ModuleType) -> None:

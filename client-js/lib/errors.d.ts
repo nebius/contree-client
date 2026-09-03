@@ -1,11 +1,16 @@
-export declare class ContreeError extends Error {}
-
-export declare class SSEStreamError extends ContreeError {
-  lastEventId: number | null;
-  constructor(message: string, options?: { lastEventId?: number | null });
+export declare class ContreeError extends Error {
+  constructor(message: string, options?: ErrorOptions);
 }
 
-export declare class ContreeAPIError extends ContreeError {
+export declare class APIConnectionError extends ContreeError {
+  timedOut: boolean;
+  constructor(
+    message: string,
+    options?: { cause?: unknown; timedOut?: boolean },
+  );
+}
+
+export declare class APIStatusError extends ContreeError {
   status: number;
   error: unknown;
   traceback: string[] | null;
@@ -17,14 +22,15 @@ export declare class ContreeAPIError extends ContreeError {
   );
 }
 
-export declare class BadRequestError extends ContreeAPIError {}
-export declare class UnauthorizedError extends ContreeAPIError {}
-export declare class ForbiddenError extends ContreeAPIError {}
-export declare class NotFoundError extends ContreeAPIError {}
-export declare class ConflictError extends ContreeAPIError {}
-export declare class GoneError extends ContreeAPIError {}
-export declare class UnprocessableEntityError extends ContreeAPIError {}
-export declare class TooEarlyError extends ContreeAPIError {}
-export declare class ServerError extends ContreeAPIError {}
+export declare class BadRequestError extends APIStatusError {}
+export declare class AuthenticationError extends APIStatusError {}
+export declare class PermissionDeniedError extends APIStatusError {}
+export declare class NotFoundError extends APIStatusError {}
+export declare class ConflictError extends APIStatusError {}
+export declare class GoneError extends APIStatusError {}
+export declare class UnprocessableEntityError extends APIStatusError {}
+export declare class TooEarlyError extends APIStatusError {}
+export declare class RateLimitError extends APIStatusError {}
+export declare class ServerError extends APIStatusError {}
 
-export declare const ERROR_CLASSES: Map<number, typeof ContreeAPIError>;
+export declare const ERROR_CLASSES: Map<number, typeof APIStatusError>;

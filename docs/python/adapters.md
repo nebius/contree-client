@@ -380,20 +380,24 @@ Adapters decode it transparently, incrementally for streams
 
 ## Retries
 
-Retries are opt-in: pass a `RetryPolicy` and every buffered request is
-retried on the backend's transient network errors and on 410/425/5xx
-responses, honoring `Retry-After` (delta-seconds or an HTTP-date) when
-the server sends one and walking a backoff ladder (0.1 → 5 s)
+Retries are opt-in. A `RetryPolicy` retries `APIConnectionError` and
+410/425/429/5xx responses. It honors `Retry-After` when
+the server sends one and uses a backoff ladder (0.1 → 5 s)
 otherwise. The budget is finite by default (10 attempts); unbounded
 retries are an explicit `max_attempts=None`. Non-idempotent requests
 (POST — spawn, import, upload) are **never replayed** unless you opt
 into the double-execution risk with `retry_unsafe=True`: a lost
 response may mean the server already executed the call. File-like
 request bodies are rewound to their initial offset before each attempt
-(non-seekable bodies fail fast). Timeouts are never retried — the
-deadline is user-configured — and streaming requests are never retried
-here: SSE consumers reconnect with `Last-Event-Id` (see
-`follow_operation_events`).
+(non-seekable bodies fail fast). Buffered-request timeouts follow the
+same retry policy. The configured `timeout` applies to each attempt, so
+the complete call can take longer. An explicit `wait_operation` or
+`follow_operation_events` timeout covers event connections, status probes,
+reconnect delays, and the final status fetch. Sync buffered reads can report
+expiry after the response completes. Status probes use one transport attempt
+because the event follower controls reconnection. `RetryPolicy` never retries
+streaming requests. `follow_operation_events` handles native stream failures
+and reconnects with `Last-Event-Id`. A terminal operation stops reconnection.
 
 ::::{tab-set}
 
@@ -441,18 +445,14 @@ client = ContreeAsyncClient(
 
 ::::
 
-## Transport errors
+## Request errors
 
-Every adapter's connection and timeout errors (see [Error
-handling](api.md#transport-errors)) are also an instance of that
-backend's own native exception type, so code already written against
-a specific backend keeps working unchanged.
-
-One gotcha: requests classifies a stalled *read* on an already-open
-stream as its own `ConnectionError`, not `Timeout` - that is requests'
-own choice, not a contree-client one - so a stalled `stream()`
-download on this backend raises `ContreeConnectionError`, not
-`ContreeTimeoutError`.
+All adapters use the shared [exception hierarchy](api.md#exception-hierarchy).
+Their buffered `request()` method maps an HTTP status of 400 or greater
+to the matching `APIStatusError`. Transport failures become
+`APIConnectionError`, with the backend exception as `__cause__`.
+Streaming methods keep backend errors, including HTTP status failures.
+Task cancellation propagates unchanged.
 
 ## User-Agent
 

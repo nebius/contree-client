@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Iterator
 import httpx
 
 from . import base
-from .exceptions import ContreeConnectionError, ContreeTimeoutError
+from .exceptions import APIConnectionError
 from .runtime import (
     RequestSpec,
     ResponseData,
@@ -16,38 +16,11 @@ from .runtime import (
     async_request_content,
     error_for_response,
     library_version,
+    remaining_timeout,
     request_content,
 )
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
-
-
-class ContreeHttpxConnectionError(ContreeConnectionError, httpx.TransportError):
-    """A `ContreeConnectionError` that is also an `httpx.TransportError`."""
-
-    @classmethod
-    def wrap(cls, original: BaseException) -> BaseException:
-        try:
-            wrapped = cls(*original.args)
-            if isinstance(original, httpx.HTTPError):
-                wrapped._request = original._request
-        except Exception:
-            return original
-        return wrapped
-
-
-class ContreeHttpxTimeoutError(ContreeTimeoutError, httpx.TimeoutException):
-    """A `ContreeTimeoutError` that is also an `httpx.TimeoutException`."""
-
-    @classmethod
-    def wrap(cls, original: BaseException) -> BaseException:
-        try:
-            wrapped = cls(*original.args)
-            if isinstance(original, httpx.HTTPError):
-                wrapped._request = original._request
-        except Exception:
-            return original
-        return wrapped
 
 
 class ContreeClient(base.ContreeSyncClient):
@@ -55,8 +28,6 @@ class ContreeClient(base.ContreeSyncClient):
 
     log = logger.getChild("httpx")
     UA_TRANSPORT_LIBRARY = library_version(httpx)
-    retryable_errors = (httpx.TransportError,)
-    nonretryable_errors = (httpx.TimeoutException,)
 
     def __init__(
         self,
@@ -92,23 +63,50 @@ class ContreeClient(base.ContreeSyncClient):
 
     def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
+        content = request_content(spec.body)
+        headers = list(self.build_headers(spec))
+        timeout = (
+            httpx.USE_CLIENT_DEFAULT
+            if spec.deadline is None
+            else remaining_timeout(spec.deadline, self.timeout)
+        )
         try:
             response = self._client.request(
                 spec.method,
                 url,
-                content=request_content(spec.body),
-                # httpx wants a Sequence, materialize the iterable
-                headers=list(self.build_headers(spec)),
+                content=content,
+                headers=headers,
+                timeout=timeout,
             )
-        except self.nonretryable_errors as exc:
-            raise ContreeHttpxTimeoutError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeHttpxConnectionError.wrap(exc) from exc
-        return ResponseData(
-            status=response.status_code,
-            headers={k.lower(): v for k, v in response.headers.items()},
-            body=response.content,
-        )
+            data = ResponseData(
+                status=response.status_code,
+                headers={k.lower(): v for k, v in response.headers.items()},
+                body=response.content,
+            )
+            if response.status_code >= 400:
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            native_response = exc.response
+            try:
+                data = ResponseData(
+                    status=native_response.status_code,
+                    headers={k.lower(): v for k, v in native_response.headers.items()},
+                    body=native_response.content,
+                )
+            except Exception as body_exc:
+                raise APIConnectionError(
+                    str(body_exc),
+                    timed_out=isinstance(body_exc, httpx.TimeoutException),
+                ) from body_exc
+            if native_response.status_code >= 400:
+                raise error_for_response(data.status, data.headers, data.body) from exc
+            raise APIConnectionError(str(exc)) from exc
+        except Exception as exc:
+            raise APIConnectionError(
+                str(exc), timed_out=isinstance(exc, httpx.TimeoutException)
+            ) from exc
+        remaining_timeout(spec.deadline, None)
+        return data
 
     def stream(
         self,
@@ -116,47 +114,30 @@ class ContreeClient(base.ContreeSyncClient):
         auto_decompress: bool = True,
     ) -> Iterator[bytes]:
         url = self.build_url(spec)
-        try:
-            with self._client.stream(
+        timeout = remaining_timeout(spec.deadline, self.timeout)
+        read_timeout = remaining_timeout(
+            spec.deadline,
+            spec.read_timeout if spec.accept == "text/event-stream" else self.timeout,
+        )
+        with self._client.stream(
+            spec.method,
+            url,
+            content=request_content(spec.body),
+            headers=list(self.build_headers(spec)),
+            timeout=httpx.Timeout(timeout, read=read_timeout),
+        ) as response:
+            self.log.debug(
+                "%s %s -> %d (stream)",
                 spec.method,
                 url,
-                content=request_content(spec.body),
-                # httpx wants a Sequence, materialize the iterable
-                headers=list(self.build_headers(spec)),
-                timeout=httpx.Timeout(
-                    self.timeout,
-                    # only SSE may idle (bounded by spec.read_timeout when
-                    # a deadline is set); downloads must time out
-                    read=spec.read_timeout
-                    if spec.accept == "text/event-stream"
-                    else self.timeout,
-                ),
-            ) as response:
-                self.log.debug(
-                    "%s %s -> %d (stream)",
-                    spec.method,
-                    url,
-                    response.status_code,
-                )
-                if not 200 <= response.status_code < 300:
-                    response.read()
-                    raise error_for_response(
-                        ResponseData(
-                            status=response.status_code,
-                            headers={k.lower(): v for k, v in response.headers.items()},
-                            body=response.content,
-                        )
-                    )
-                # no chunk_size: httpx's chunker would buffer small
-                # SSE frames until it collects chunk_size bytes
-                if auto_decompress:
-                    yield from response.iter_bytes()
-                else:
-                    yield from response.iter_raw()
-        except self.nonretryable_errors as exc:
-            raise ContreeHttpxTimeoutError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeHttpxConnectionError.wrap(exc) from exc
+                response.status_code,
+            )
+            if response.status_code >= 400:
+                response.raise_for_status()
+            chunks = response.iter_bytes() if auto_decompress else response.iter_raw()
+            for chunk in chunks:
+                remaining_timeout(spec.deadline, None)
+                yield chunk
 
     def close(self) -> None:
         if self.__owns_client:
@@ -168,8 +149,6 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     log = logger.getChild("httpx")
     UA_TRANSPORT_LIBRARY = library_version(httpx)
-    retryable_errors = (httpx.TransportError,)
-    nonretryable_errors = (httpx.TimeoutException,)
 
     def __init__(
         self,
@@ -205,25 +184,52 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     async def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
+        content = async_request_content(spec.body)
+        headers = list(self.build_headers(spec))
+        timeout = (
+            httpx.USE_CLIENT_DEFAULT
+            if spec.deadline is None
+            else remaining_timeout(spec.deadline, self.timeout)
+        )
         try:
             response = await self._client.request(
                 spec.method,
                 url,
                 # a file-like body must become an ASYNC iterator: httpx
                 # refuses sync iterables on an AsyncClient
-                content=async_request_content(spec.body),
-                # httpx wants a Sequence, materialize the iterable
-                headers=list(self.build_headers(spec)),
+                content=content,
+                headers=headers,
+                timeout=timeout,
             )
-        except self.nonretryable_errors as exc:
-            raise ContreeHttpxTimeoutError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeHttpxConnectionError.wrap(exc) from exc
-        return ResponseData(
-            status=response.status_code,
-            headers={k.lower(): v for k, v in response.headers.items()},
-            body=response.content,
-        )
+            data = ResponseData(
+                status=response.status_code,
+                headers={k.lower(): v for k, v in response.headers.items()},
+                body=response.content,
+            )
+            if response.status_code >= 400:
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            native_response = exc.response
+            try:
+                data = ResponseData(
+                    status=native_response.status_code,
+                    headers={k.lower(): v for k, v in native_response.headers.items()},
+                    body=native_response.content,
+                )
+            except Exception as body_exc:
+                raise APIConnectionError(
+                    str(body_exc),
+                    timed_out=isinstance(body_exc, httpx.TimeoutException),
+                ) from body_exc
+            if native_response.status_code >= 400:
+                raise error_for_response(data.status, data.headers, data.body) from exc
+            raise APIConnectionError(str(exc)) from exc
+        except Exception as exc:
+            raise APIConnectionError(
+                str(exc), timed_out=isinstance(exc, httpx.TimeoutException)
+            ) from exc
+        remaining_timeout(spec.deadline, None)
+        return data
 
     async def stream(
         self,
@@ -231,50 +237,30 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         auto_decompress: bool = True,
     ) -> AsyncGenerator[bytes, None]:
         url = self.build_url(spec)
-        try:
-            async with self._client.stream(
+        timeout = remaining_timeout(spec.deadline, self.timeout)
+        read_timeout = remaining_timeout(
+            spec.deadline,
+            spec.read_timeout if spec.accept == "text/event-stream" else self.timeout,
+        )
+        async with self._client.stream(
+            spec.method,
+            url,
+            content=async_request_content(spec.body),
+            headers=list(self.build_headers(spec)),
+            timeout=httpx.Timeout(timeout, read=read_timeout),
+        ) as response:
+            self.log.debug(
+                "%s %s -> %d (stream)",
                 spec.method,
                 url,
-                # a file-like body must become an ASYNC iterator: httpx
-                # refuses sync iterables on an AsyncClient
-                content=async_request_content(spec.body),
-                # httpx wants a Sequence, materialize the iterable
-                headers=list(self.build_headers(spec)),
-                timeout=httpx.Timeout(
-                    self.timeout,
-                    # only SSE may idle (bounded by spec.read_timeout when
-                    # a deadline is set); downloads must time out
-                    read=spec.read_timeout
-                    if spec.accept == "text/event-stream"
-                    else self.timeout,
-                ),
-            ) as response:
-                self.log.debug(
-                    "%s %s -> %d (stream)",
-                    spec.method,
-                    url,
-                    response.status_code,
-                )
-                if not 200 <= response.status_code < 300:
-                    await response.aread()
-                    raise error_for_response(
-                        ResponseData(
-                            status=response.status_code,
-                            headers={k.lower(): v for k, v in response.headers.items()},
-                            body=response.content,
-                        )
-                    )
-                # no chunk_size: httpx's chunker would buffer small
-                # SSE frames until it collects chunk_size bytes
-                source = (
-                    response.aiter_bytes() if auto_decompress else response.aiter_raw()
-                )
-                async for chunk in source:
-                    yield chunk
-        except self.nonretryable_errors as exc:
-            raise ContreeHttpxTimeoutError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeHttpxConnectionError.wrap(exc) from exc
+                response.status_code,
+            )
+            if response.status_code >= 400:
+                response.raise_for_status()
+            source = response.aiter_bytes() if auto_decompress else response.aiter_raw()
+            async for chunk in source:
+                remaining_timeout(spec.deadline, None)
+                yield chunk
 
     async def close(self) -> None:
         if self.__owns_client:

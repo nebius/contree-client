@@ -63,44 +63,42 @@ def test_build_paths_are_quoted(operations: ModuleType) -> None:
 def test_parse_error_responses(
     operations: ModuleType,
     runtime: ModuleType,
-    exceptions: ModuleType,
 ) -> None:
     cases = [
-        ("parse_list_images", 500, exceptions.ServerError),
-        ("parse_whoami", 401, exceptions.UnauthorizedError),
-        ("parse_import_image", 403, exceptions.ForbiddenError),
-        ("parse_spawn_instance", 400, exceptions.BadRequestError),
-        ("parse_update_image_tag", 404, exceptions.NotFoundError),
-        ("parse_delete_image_tag", 409, exceptions.ConflictError),
-        ("parse_cancel_operation", 409, exceptions.ConflictError),
-        ("parse_get_operation_status", 404, exceptions.NotFoundError),
-        ("parse_list_operations", 400, exceptions.BadRequestError),
-        ("parse_inspect_find_image_by_tag", 404, exceptions.NotFoundError),
-        ("parse_inspect_image", 404, exceptions.NotFoundError),
-        ("parse_inspect_image_download", 422, exceptions.UnprocessableEntityError),
+        ("parse_list_images", 500),
+        ("parse_whoami", 401),
+        ("parse_import_image", 403),
+        ("parse_spawn_instance", 400),
+        ("parse_update_image_tag", 404),
+        ("parse_delete_image_tag", 409),
+        ("parse_cancel_operation", 409),
+        ("parse_get_operation_status", 404),
+        ("parse_list_operations", 400),
+        ("parse_inspect_find_image_by_tag", 404),
+        ("parse_inspect_image", 404),
+        ("parse_inspect_image_download", 422),
         # inspect_image_archive is stream-only: errors surface from the
         # transport stream, there is no parse function
-        ("parse_inspect_image_list", 422, exceptions.UnprocessableEntityError),
-        ("parse_list_files", 403, exceptions.ForbiddenError),
-        ("parse_get_file", 404, exceptions.NotFoundError),
-        ("parse_upload_file", 400, exceptions.BadRequestError),
+        ("parse_inspect_image_list", 422),
+        ("parse_list_files", 403),
+        ("parse_get_file", 404),
+        ("parse_upload_file", 400),
     ]
-    for parser_name, status, expected in cases:
+    for parser_name, status in cases:
         parser = getattr(operations, parser_name)
-        with pytest.raises(expected):
+        with pytest.raises(ValueError, match=f"unexpected HTTP status {status}"):
             parser(response(runtime, status, {"error": "boom", "status": status}))
 
 
 def test_parse_check_raises_on_unexpected_status(
     operations: ModuleType,
     runtime: ModuleType,
-    exceptions: ModuleType,
 ) -> None:
-    with pytest.raises(exceptions.UnprocessableEntityError):
+    with pytest.raises(ValueError, match="unexpected HTTP status 422"):
         operations.parse_check_image_file(response(runtime, 422))
-    with pytest.raises(exceptions.UnprocessableEntityError):
+    with pytest.raises(ValueError, match="unexpected HTTP status 422"):
         operations.parse_check_image_archive(response(runtime, 422))
-    with pytest.raises(exceptions.UnauthorizedError):
+    with pytest.raises(ValueError, match="unexpected HTTP status 401"):
         operations.parse_check_file_exists(response(runtime, 401))
 
 
