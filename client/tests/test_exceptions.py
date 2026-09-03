@@ -181,3 +181,37 @@ def test_requests_marks_wrapped_read_timeout(
 
     assert caught.value.timed_out is True
     assert caught.value.__cause__ is native
+
+
+def test_urllib3_new_connection_error_is_not_a_deadline_timeout(
+    generated_package: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("contree_client.urllib3")
+    base = importlib.import_module("contree_client.base")
+    runtime = importlib.import_module("contree_client.runtime")
+    exceptions = importlib.import_module("contree_client.exceptions")
+    clock = MagicMock()
+    clock.monotonic.return_value = 100.0
+    monkeypatch.setattr(base, "time", clock)
+    monkeypatch.setattr(runtime, "monotonic", clock.monotonic)
+
+    native = urllib3.exceptions.NewConnectionError(
+        MagicMock(),
+        "connection refused",
+    )
+    pool = MagicMock()
+    pool.request.side_effect = native
+    client = module.ContreeClient(
+        TOKEN,
+        base_url="http://127.0.0.1",
+        timeout=300.0,
+        urllib3_pool_manager=pool,
+    )
+    spec = runtime.RequestSpec(method="GET", path="/x", deadline=130.0)
+
+    with pytest.raises(exceptions.APIConnectionError) as caught:
+        client.call(spec)
+
+    assert caught.value.timed_out is False
+    assert caught.value.__cause__ is native
