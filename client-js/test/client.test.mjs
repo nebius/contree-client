@@ -52,7 +52,7 @@ after(async () => {
 
 test("whoami returns the token introspection", async () => {
   const response = await client.whoami();
-  assert.equal(response.token_uuid, "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+  assert.equal(response.tokenUuid, "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
   assert.equal(response.permissions.spawn, true);
 });
 
@@ -179,7 +179,7 @@ test("iterImages paginates transparently and honors limit", async () => {
   const items = [];
   for await (const image of client.iterImages({
     tag: "paginated",
-    page_size: 2,
+    pageSize: 2,
   })) {
     items.push(image);
   }
@@ -189,14 +189,14 @@ test("iterImages paginates transparently and honors limit", async () => {
   const bounded = [];
   for await (const image of client.iterImages({
     tag: "paginated",
-    page_size: 2,
+    pageSize: 2,
     limit: 3,
   })) {
     bounded.push(image);
   }
   assert.equal(bounded.length, 3);
   await assert.rejects(async () => {
-    for await (const unused of client.iterImages({ page_size: 0 })) {
+    for await (const unused of client.iterImages({ pageSize: 0 })) {
       void unused;
     }
   }, RangeError);

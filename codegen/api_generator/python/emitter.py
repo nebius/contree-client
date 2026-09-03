@@ -128,9 +128,11 @@ def parse_datetime(value: str) -> datetime:
 def wire_value(value: Any) -> Any:
     """Recursively encode a value to its JSON-compatible wire form.
 
-    datetime/Enum are converted wherever they sit - directly in a
-    field or nested inside lists and mappings.
+    Models, datetime and Enum are converted wherever they sit -
+    directly in a field or nested inside lists and mappings.
     """
+    if isinstance(value, ContreeModel):
+        return value.to_dict()
     if isinstance(value, datetime):
         return value.isoformat()
     if isinstance(value, Enum):
@@ -159,8 +161,8 @@ TModel = TypeVar("TModel", bound="ContreeModel")
 class ContreeModel:
     """Base model with the default wire (de)serialization.
 
-    `to_dict` serializes via `dataclasses.asdict`, omitting unset
-    (`...`) fields while keeping explicit None as JSON null.
+    `to_dict` uses each field's wire name and omits unset (`...`)
+    fields while keeping explicit None as JSON null.
     `from_dict` builds the model from `parse_fields`; models whose
     fields need conversion (nested models, datetimes, discriminated
     unions) override `parse_fields` only.
@@ -168,15 +170,26 @@ class ContreeModel:
 
     @classmethod
     def parse_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
-        names = {item.name for item in fields(cls)}
-        return {key: value for key, value in data.items() if key in names}
+        return {
+            item.name: data[wire_name]
+            for item in fields(cls)
+            if (wire_name := item.metadata.get("wire_name", item.name)) in data
+        }
 
     @classmethod
     def from_dict(cls: type[TModel], data: dict[str, Any]) -> TModel:
         return cls(**cls.parse_fields(data))
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self, dict_factory=omitted_dict)
+        return omitted_dict(
+            [
+                (
+                    item.metadata.get("wire_name", item.name),
+                    getattr(self, item.name),
+                )
+                for item in fields(self)
+            ]
+        )
 '''
 
 
@@ -284,6 +297,11 @@ def render_field_metadata(field_def: FieldDef) -> str:
     documentation = field_def.documentation
     items: list[str] = []
     for key, value, present in (
+        (
+            "wire_name",
+            field_def.wire_name,
+            field_def.wire_name != field_def.name,
+        ),
         (
             "description",
             documentation.description,
@@ -524,7 +542,7 @@ def render_models(ir: SpecIR) -> str:
             "import re",
             "from collections.abc import Callable",
             "from contextlib import suppress",
-            "from dataclasses import asdict, dataclass, field, fields",
+            "from dataclasses import dataclass, field, fields",
             "from datetime import datetime, timezone",
             "from enum import Enum",
             "from types import EllipsisType",

@@ -6,9 +6,8 @@ Pure ESM, zero runtime dependencies, TypeScript types included. Works
 in Node ≥ 18.17 and in browsers — the only transport is the platform
 `fetch`, which pools keepalive connections and decodes gzip on its own.
 
-Naming convention: methods are camelCase (`spawnInstance`,
-`waitOperation`); model fields and option-object keys stay snake_case —
-exactly the names that travel on the wire (`preserve_env`, `page_size`).
+Public JavaScript names use camelCase (`spawnInstance`, `preserveEnv`,
+`pageSize`). The client maps them to the exact API wire names.
 
 ## Quick start
 
@@ -47,7 +46,7 @@ for await (const chunk of client.inspectImageArchive(imageUuid, "/etc")) {
 }
 
 // lazy pagination
-for await (const image of client.iterImages({ page_size: 100 })) {
+for await (const image of client.iterImages({ pageSize: 100 })) {
   console.log(image.uuid, image.tag);
 }
 ```

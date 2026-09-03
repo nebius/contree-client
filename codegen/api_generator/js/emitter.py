@@ -3,9 +3,8 @@
 
 Emits ESM modules plus TypeScript declaration files into
 ``client-js/lib``, next to the hand-written runtime (runtime.js,
-errors.js, profiles.js, testing.js). Method names are camelCase;
-model fields and option-object keys stay snake_case - exactly the
-names that travel on the wire.
+errors.js, profiles.js, testing.js). Public names use camelCase.
+Wire names remain unchanged.
 """
 
 from __future__ import annotations
@@ -201,7 +200,7 @@ def field_parse(fld: FieldDef) -> str:
 
 
 def field_dump(fld: FieldDef) -> list[str]:
-    src = f"this.{fld.name}"
+    src = f"this.{camel(fld.name)}"
     dump = (
         discriminator_dump(fld.discriminator, src)
         if fld.discriminator is not None
@@ -220,7 +219,7 @@ def field_ts(fld: FieldDef) -> str:
     if fld.nullable and not base.endswith("| null"):
         base = f"{base} | null"
     optional = "?" if not fld.required else ""
-    return f"{fld.name}{optional}: {base};"
+    return f"{camel(fld.name)}{optional}: {base};"
 
 
 STREAM_VALUE_METHODS_JS = """
@@ -355,14 +354,16 @@ def render_class_js(cls: ModelDef) -> str:
         lines.append(f"/** {cls.description.splitlines()[0]} */")
     lines.append(f"export class {cls.name} {{")
     lines.append("  constructor(fields = {}) {")
-    lines.extend(f"    this.{fld.name} = fields.{fld.name};" for fld in fields)
+    lines.extend(
+        f"    this.{camel(fld.name)} = fields.{camel(fld.name)};" for fld in fields
+    )
     if ModelTrait.FILE_MODE in cls.traits:
         lines.append(FILESPEC_MODE_JS.rstrip())
     lines.append("  }")
     lines.append("")
     lines.append("  static fromWire(data) {")
     lines.append(f"    return new {cls.name}({{")
-    lines.extend(f"      {fld.name}: {field_parse(fld)}," for fld in fields)
+    lines.extend(f"      {camel(fld.name)}: {field_parse(fld)}," for fld in fields)
     lines.append("    });")
     lines.append("  }")
     lines.append("")
@@ -382,7 +383,7 @@ def render_class_dts(cls: ModelDef) -> str:
     model_fields = ordered_fields(cls)
     fields = [f"  {field_ts(fld)}" for fld in model_fields]
     ctor_fields = " ".join(
-        f"{fld.name}?: {ts_type(fld.type)}"
+        f"{camel(fld.name)}?: {ts_type(fld.type)}"
         + (" | null;" if fld.nullable or not fld.required else ";")
         for fld in model_fields
     )
@@ -474,8 +475,7 @@ def render_models_dts(ir: SpecIR) -> str:
 
 
 # ECMAScript reserved words cannot be bare locals, but stay legal as
-# object keys: the options property keeps the wire name (`case`) while
-# destructuring aliases it (`{ case: case_ }`) for use in the body
+# object keys: destructuring aliases `{ case: case_ }` for local use.
 JS_RESERVED = frozenset({
     "arguments", "await", "break", "case", "catch", "class", "const",
     "continue", "debugger", "default", "delete", "do", "else", "enum",
@@ -530,12 +530,13 @@ def js_params(op: OperationDef, destructure: bool) -> str:
     optionals = optional_args(op)
     if optionals:
         if destructure:
-            entries = ", ".join(
-                (name if js_local(name) == name else f"{name}: {js_local(name)}")
-                + ("" if default is None else f" = {default}")
-                for name, default in optionals
-            )
-            parts.append(f"{{ {entries} }} = {{}}")
+            entries = []
+            for name, default in optionals:
+                public = camel(name)
+                local = js_local(public)
+                entry = public if local == public else f"{public}: {local}"
+                entries.append(entry + ("" if default is None else f" = {default}"))
+            parts.append(f"{{ {', '.join(entries)} }} = {{}}")
         else:
             parts.append("options = {}")
     return ", ".join(parts)
@@ -545,7 +546,7 @@ def js_reference(op: OperationDef, name: str) -> str:
     """How a builder body refers to the argument *name*."""
     if name in required_args(op):
         return js_arg(name)
-    return js_local(name)
+    return js_local(camel(name))
 
 
 def operation_argument(op: OperationDef, name: str) -> ArgumentDef:
@@ -636,13 +637,16 @@ def render_build_fn(op: OperationDef) -> str:
             body.append("}")
     request_body = op.request.body
     if request_body is not None and request_body.kind is BodyKind.JSON_MODEL:
-        ctor = ", ".join(
-            name
-            if js_reference(op, name) == name
-            else f"{name}: {js_reference(op, name)}"
-            for name in [argument.name for argument in op.arguments]
-            if name != "content"
-        )
+        ctor_fields = []
+        for argument_name in [argument.name for argument in op.arguments]:
+            if argument_name == "content":
+                continue
+            public = camel(argument_name)
+            reference = js_reference(op, argument_name)
+            ctor_fields.append(
+                public if reference == public else f"{public}: {reference}"
+            )
+        ctor = ", ".join(ctor_fields)
         assert request_body.model is not None
         assert request_body.model.name is not None
         body.append(
@@ -791,7 +795,7 @@ def option_ts_entries(op: OperationDef) -> str:
     for argument in op.arguments:
         if argument.required:
             continue
-        entries.append(f"{argument.name}?: {argument_ts_type(argument)};")
+        entries.append(f"{camel(argument.name)}?: {argument_ts_type(argument)};")
     return " ".join(entries)
 
 
@@ -1380,9 +1384,9 @@ export class ContreeClient {{
    * reconnect from the last event id. */
   async *followOperationEvents(
     operationId,
-    {{ last_event_id = null, spid = null, since = null, timeout = null }} = {{}},
+    {{ lastEventId = null, spid = null, since = null, timeout = null }} = {{}},
   ) {{
-    let lastId = last_event_id;
+    let lastId = lastEventId;
     const deadline = timeout === null ? null : monotonic() + timeout;
     const checkDeadline = () => {{
       if (deadline !== null && monotonic() >= deadline) {{
@@ -1400,7 +1404,7 @@ export class ContreeClient {{
           follow: true,
           spid,
           since,
-          last_event_id: lastId,
+          lastEventId: lastId,
           deadline,
         }})) {{
           lastId = event.id;
@@ -1468,9 +1472,9 @@ ITER_METHOD_JS = """
   /** Iterate over {list_method}() results across pages; offset
    * pagination is transparent, breaking out stops fetching. */
   async *{name}(options = {{}}) {{
-    const {{ page_size = {page_max}, limit = null, ...filters }} = options;
-    if (!Number.isInteger(page_size) || page_size < 1 || page_size > {page_max}) {{
-      throw new RangeError("page_size must be an integer between 1 and {page_max}");
+    const {{ pageSize = {page_max}, limit = null, ...filters }} = options;
+    if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > {page_max}) {{
+      throw new RangeError("pageSize must be an integer between 1 and {page_max}");
     }}
     if (limit !== null && (!Number.isInteger(limit) || limit < 0)) {{
       throw new RangeError("limit must be null or a non-negative integer");
@@ -1478,7 +1482,7 @@ ITER_METHOD_JS = """
     let fetched = 0;
     let offset = 0;
     for (;;) {{
-      const size = limit === null ? page_size : Math.min(page_size, limit - fetched);
+      const size = limit === null ? pageSize : Math.min(pageSize, limit - fetched);
       if (size <= 0) {{
         return;
       }}
@@ -1573,7 +1577,7 @@ def render_client_method(op: OperationDef) -> list[str]:
             f"      spec.deadline = options.deadline;\n"
             f"    }}}}\n"
             f"    const parser = new SSEParser();\n"
-            f"    let lastSeen = options.{resume_argument} ?? null;\n"
+            f"    let lastSeen = options.{camel(resume_argument)} ?? null;\n"
             f"    for await (const chunk of this.stream(spec)) {{\n"
             f"      for (const frame of parser.feed(chunk)) {{\n"
             f"        if (frame.id !== null) {{\n"
@@ -1599,7 +1603,7 @@ def render_client_js(ir: SpecIR) -> str:
         pagination = op.pagination
         if pagination is not None:
             page_expr = "response" + "".join(
-                f".{part}" for part in pagination.items_path
+                f".{camel(part)}" for part in pagination.items_path
             )
             methods.append(
                 ITER_METHOD_JS.strip("\n").format(
@@ -1651,10 +1655,10 @@ def pagination_method_dts(op: OperationDef) -> list[str]:
             value_type = "string" + (" | null" if argument.nullable else "")
         else:
             value_type = argument_ts_type(argument)
-        lines.append(f"    {argument.name}?: {value_type};")
+        lines.append(f"    {camel(argument.name)}?: {value_type};")
     lines.extend(
         [
-            "    page_size?: number;",
+            "    pageSize?: number;",
             "    limit?: number | null;",
             f"  }}): AsyncGenerator<{ts_type(pagination.item_type)}>;",
         ]
@@ -1700,7 +1704,7 @@ export declare class ContreeClient {
   followOperationEvents(
     operationId: string,
     options?: {
-      last_event_id?: number | null;
+      lastEventId?: number | null;
       spid?: number | null;
       since?: number | null;
       timeout?: number | null;
@@ -1796,6 +1800,33 @@ def indented(lines: list[str], pad: str = "   ") -> list[str]:
     return [f"{pad}{line}".rstrip() for line in lines]
 
 
+def public_doc_names(text: str, names: set[str]) -> str:
+    """Translate declared names in inline code, but keep wire query names."""
+    replacements = {name: camel(name) for name in names if camel(name) != name}
+
+    def replace_names(value: str) -> str:
+        for name, public in replacements.items():
+            value = re.sub(
+                rf"(?<![?{{\[\"'\w]){re.escape(name)}(?!\w)",
+                public,
+                value,
+            )
+        return value
+
+    def replace_code(match: re.Match[str]) -> str:
+        value = replace_names(match.group("code"))
+        ticks = match.group("ticks")
+        return f"{ticks}{value}{ticks}"
+
+    return replace_names(
+        re.sub(
+            r"(?P<ticks>`{1,2})(?P<code>[^`\n]*)(?P=ticks)",
+            replace_code,
+            text,
+        )
+    )
+
+
 def op_signature(op: OperationDef) -> str:
     parts = [js_arg(name) for name in required_args(op)]
     if optional_args(op):
@@ -1812,10 +1843,11 @@ def op_returns(op: OperationDef) -> str:
     return f"Promise<{response_ts_type(op)}>"
 
 
-def render_op_reference(op: OperationDef) -> str:
+def render_op_reference(op: OperationDef, public_names: set[str] | None = None) -> str:
     """A js-domain method definition: Sphinx and the Mintlify writer
     render these with the same machinery as the Python autodoc pages
     (signatures, ParamField/ResponseField, anchors)."""
+    names = (public_names or set()) | {argument.name for argument in op.arguments}
     lines = [f".. js:method:: ContreeClient.{camel(op.name)}({op_signature(op)})", ""]
     body: list[str] = [
         f"``{op.http_method} {op.path}`` — "
@@ -1823,18 +1855,21 @@ def render_op_reference(op: OperationDef) -> str:
     ]
     if op.description:
         body.append("")
-        body.extend(doc_block_lines(op.description, escape=False))
+        body.extend(
+            doc_block_lines(public_doc_names(op.description, names), escape=False)
+        )
     body.append("")
     for argument in op.arguments:
         if argument.required:
             name = f"param {js_arg(argument.name)}"
         else:
-            name = f"param options.{argument.name}"
+            name = f"param options.{camel(argument.name)}"
         raw_doc = documentation_text(
             argument.documentation.description,
             argument.documentation.example,
             argument.documentation.has_example,
         )
+        raw_doc = public_doc_names(raw_doc, names)
         doc = " ".join(sanitize_doc(raw_doc, escape=False).split())
         text = f"``{argument_ts_type(argument)}``" + (f" — {doc}" if doc else "")
         body.extend(rst_field(name, text))
@@ -1858,17 +1893,20 @@ def render_op_reference(op: OperationDef) -> str:
     return "\n".join(lines)
 
 
-def render_model_reference(cls: ModelDef) -> str:
+def render_model_reference(cls: ModelDef, public_names: set[str] | None = None) -> str:
     lines = [f".. js:class:: {cls.name}(fields?)", ""]
     body: list[str] = []
+    names = (public_names or set()) | {field.name for field in cls.fields}
     if cls.description:
-        body.extend(doc_block_lines(cls.description, escape=False))
+        body.extend(
+            doc_block_lines(public_doc_names(cls.description, names), escape=False)
+        )
         body.append("")
     for fld in ordered_fields(cls):
         base = ts_type(fld.type)
         if fld.nullable and not base.endswith("| null"):
             base = f"{base} | null"
-        body.append(f".. js:attribute:: {cls.name}.{fld.name}")
+        body.append(f".. js:attribute:: {cls.name}.{camel(fld.name)}")
         body.append("")
         marker = "required" if fld.required else "optional"
         raw_doc = documentation_text(
@@ -1876,6 +1914,7 @@ def render_model_reference(cls: ModelDef) -> str:
             fld.documentation.example,
             fld.documentation.has_example,
         )
+        raw_doc = public_doc_names(raw_doc, names)
         doc = " ".join(sanitize_doc(raw_doc, escape=False).split())
         field_line = f"``{base}`` ({marker})" + (f" — {doc}" if doc else "")
         body.extend(
@@ -1922,7 +1961,7 @@ REFERENCE_HELPERS_RST = """\
    Ends after the ``completion`` frame.
 
    :param operationId: ``string``
-   :param options.last_event_id: ``number | null``
+   :param options.lastEventId: ``number | null``
    :param options.spid: ``number | null``
    :param options.since: ``number | null``
    :param options.timeout: ``number | null`` — overall deadline in
@@ -1952,7 +1991,7 @@ REFERENCE_HELPERS_RST = """\
 
    Lazy offset pagination over
    :js:meth:`ContreeClient.listImages`: the listing filters plus
-   ``page_size`` (server-capped) and ``limit`` (total records;
+   ``pageSize`` (server-capped) and ``limit`` (total records;
    ``null`` iterates everything). Breaking out of the loop stops
    fetching. ``iterOperations()`` and ``iterFiles()`` mirror it for
    their listings.
@@ -1963,19 +2002,22 @@ REFERENCE_HELPERS_RST = """\
 
 def render_reference(ir: SpecIR) -> str:
     heading = "API reference"
+    public_names = {
+        argument.name for operation in ir.operations for argument in operation.arguments
+    } | {field.name for model in ir.models for field in model.fields}
     parts = [
         f"{heading}\n{'=' * len(heading)}",
         f".. {GENERATED_NOTE}",
         (
             "Generated from the OpenAPI specification"
-            f" (SHA-256 ``{ir.spec_sha256[:12]}...``). Methods are camelCase;"
-            " model fields and option keys keep their snake_case wire"
-            " spelling. Required arguments are positional, optional ones"
+            f" (SHA-256 ``{ir.spec_sha256[:12]}...``). Public names use"
+            " camelCase; serialized keys keep their wire spelling."
+            " Required arguments are positional, optional ones"
             " ride in a trailing ``options`` object."
         ),
         "Client methods\n--------------",
     ]
-    parts.extend(render_op_reference(op) for op in ir.operations)
+    parts.extend(render_op_reference(op, public_names) for op in ir.operations)
     parts.append("Helpers\n-------")
     parts.append(REFERENCE_HELPERS_RST.rstrip())
     statuses = ", ".join(f"``{value}``" for value in ir.status_values)
@@ -1991,7 +2033,7 @@ def render_reference(ir: SpecIR) -> str:
         " (``parseEventData``)."
     )
     parts.append("Models\n------")
-    parts.extend(render_model_reference(cls) for cls in ir.models)
+    parts.extend(render_model_reference(cls, public_names) for cls in ir.models)
     return "\n\n".join(parts) + "\n"
 
 

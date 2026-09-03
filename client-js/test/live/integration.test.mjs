@@ -42,14 +42,14 @@ after(async () => {
   await client?.close();
 });
 
-/** Poll a subprocess's folded result until exit_code/signal leave the
+/** Poll a subprocess's folded result until exitCode/signal leave the
  * -1 (still running) sentinel. */
 async function waitSubprocessTerminal(operationId, spid, deadlineSeconds = 30) {
   const deadline = performance.now() / 1000 + deadlineSeconds;
   for (;;) {
     const result = await client.operationSubprocess(operationId, spid);
     const state = result.state;
-    if (state && (state.exit_code !== -1 || state.signal !== -1)) {
+    if (state && (state.exitCode !== -1 || state.signal !== -1)) {
       return result;
     }
     if (performance.now() / 1000 > deadline) {
@@ -106,7 +106,7 @@ async function pickSampleImage() {
 
 test("whoami reports permissions and limits", { skip }, async () => {
   const me = await client.whoami();
-  assert.ok(me.token_uuid);
+  assert.ok(me.tokenUuid);
   assert.ok(Object.keys(me.permissions).length > 0);
 });
 
@@ -114,7 +114,7 @@ test("read-only listings work end to end", { skip }, async () => {
   const images = (await client.listImages({ tagged: true, limit: 100 })).images;
   assert.ok(Array.isArray(images) && images.length > 0);
   for await (const summary of client.iterOperations({
-    page_size: 20,
+    pageSize: 20,
     limit: 20,
   })) {
     assert.ok(summary.uuid);
@@ -202,7 +202,7 @@ test(
       );
       assert.ok(spid >= 2);
       const result = await waitSubprocessTerminal(operationId, spid);
-      assert.equal(result.state.exit_code, 0);
+      assert.equal(result.state.exitCode, 0);
       assert.match(result.stdout.asText(), new RegExp(marker));
 
       // -- write to a subprocess's stdin out-of-band, then close it --
@@ -232,7 +232,7 @@ test(
         signal: "TERM",
       });
       const killed = await waitSubprocessTerminal(operationId, killSpid);
-      // a killed process reports its signal (exit_code stays -1)
+      // a killed process reports its signal (exitCode stays -1)
       assert.ok(killed.state.signal && killed.state.signal !== 0);
     } finally {
       // best-effort cleanup: the parent may already be terminal by
