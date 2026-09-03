@@ -394,10 +394,14 @@ same retry policy. The configured `timeout` applies to each attempt, so
 the complete call can take longer. An explicit `wait_operation` or
 `follow_operation_events` timeout covers event connections, status probes,
 reconnect delays, and the final status fetch. Sync buffered reads can report
-expiry after the response completes. Status probes use one transport attempt
-because the event follower controls reconnection. `RetryPolicy` never retries
-streaming requests. `follow_operation_events` handles native stream failures
-and reconnects with `Last-Event-Id`. A terminal operation stops reconnection.
+expiry after the response completes. This timeout is an absolute deadline.
+The client checks it whenever iteration resumes, but it does not interrupt
+caller code between yielded events. A synchronous native read started before
+expiry can delay `TimeoutError` until it returns. Status probes use one
+transport attempt because the event follower controls reconnection.
+`RetryPolicy` never retries streaming requests. `follow_operation_events`
+handles native stream failures and reconnects with `Last-Event-Id`. A terminal
+operation stops reconnection.
 
 ::::{tab-set}
 

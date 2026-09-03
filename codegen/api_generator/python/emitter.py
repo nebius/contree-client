@@ -1399,6 +1399,10 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         Native stream failures trigger a terminal-status probe and a
         reconnect from the last event id. Iteration ends at the
         ``completion`` event, a terminal status, or the timeout.
+        The timeout is an absolute deadline checked whenever iteration
+        resumes. Caller code between events is not interrupted. A
+        synchronous native read can delay ``TimeoutError`` until it
+        returns.
         """
         last_id = last_event_id
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -1734,6 +1738,8 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         Native stream failures trigger a terminal-status probe and a
         reconnect from the last event id. Iteration ends at the
         ``completion`` event, a terminal status, or the timeout.
+        The timeout is an absolute deadline checked whenever iteration
+        resumes. Caller code between events is not interrupted.
         """
         last_id = last_event_id
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -1919,6 +1925,11 @@ COMPRESSED_ARG_DOC = (
     " response, a plain tar otherwise."
 )
 
+SSE_DEADLINE_ARG_DOC = (
+    "absolute monotonic deadline. Checked whenever iteration resumes;"
+    " caller code between events is not interrupted."
+)
+
 
 def emit_stream_only_method(operation: OperationDef, async_mode: bool) -> list[str]:
     prefix = "async " if async_mode else ""
@@ -1976,15 +1987,20 @@ def emit_sse_method(operation: OperationDef, async_mode: bool) -> list[str]:
         f"{method_signature(operation)}, deadline: float | None = None"
         f") -> {iterator}:",
     ]
-    lines.extend(op_docstring(operation))
+    lines.extend(
+        op_docstring(
+            operation,
+            extra_entries=[("deadline", SSE_DEADLINE_ARG_DOC)],
+        )
+    )
     lines.append(
         f"{INDENT}spec = operations.build_{operation.name}("
         f"{render_passthrough(operation)})"
     )
     lines.append(f"{INDENT}spec.deadline = deadline")
-    # a deadline (monotonic seconds) bounds the whole subscription:
-    # the socket read timeout covers silent gaps, while the per-chunk
-    # check below covers streams kept alive by keepalive comments
+    # The absolute monotonic deadline limits client-controlled work.
+    # The read timeout covers silent gaps; explicit checks cover
+    # keepalive streams and resumed iteration.
     lines.append(f"{INDENT}if deadline is not None:")
     lines.append(
         f"{INDENT * 2}spec.read_timeout = max(0.0, deadline - time.monotonic())"
@@ -2016,6 +2032,13 @@ def emit_sse_method(operation: OperationDef, async_mode: bool) -> list[str]:
     lines.append(f"{base + INDENT * 2}continue")
     lines.append(f'{base + INDENT}self.log.debug("sse event: %r", event)')
     lines.append(f"{base + INDENT}yield event")
+    lines.append(
+        f"{base + INDENT}if deadline is not None and time.monotonic() >= deadline:"
+    )
+    lines.append(
+        f"{base + INDENT * 2}raise TimeoutError("
+        f'"{operation.name} exceeded its deadline")'
+    )
     return lines
 
 

@@ -367,8 +367,11 @@ await client.spawnInstance("/bin/sh", "tag:ubuntu:latest", {
 A spawn returns immediately with an operation id. `wait_operation()` /
 `waitOperation()` follows the event stream and probes status between
 reconnects. It then fetches the terminal
-{class}`~contree_client.OperationResponse`. *timeout* bounds the whole wait.
-An idle JavaScript stream past the deadline rejects with `TimeoutError`.
+{class}`~contree_client.OperationResponse`. *timeout* sets an absolute deadline
+for stream reads, reconnects, and status probes. The client checks it whenever
+iteration resumes. It does not interrupt caller code between events. A
+synchronous native read started before expiry can delay `TimeoutError` until it
+returns. An idle JavaScript stream past the deadline rejects with `TimeoutError`.
 
 ::::{tab-set}
 
