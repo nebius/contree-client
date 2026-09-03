@@ -9,11 +9,10 @@ package is generated from the same OpenAPI specification and speaks the
 same wire protocol; its one transport is the platform `fetch` (Node ≥
 18.17, browsers).
 
-Naming translates mechanically across languages: verbs are camelCase in
-JavaScript; everything that travels on the wire — model fields and
-option keys — keeps its snake_case wire spelling regardless. Required
-arguments are positional, every optional knob rides in a trailing
-options object (kwargs in Python):
+Naming translates mechanically across languages. Python uses snake_case;
+JavaScript uses camelCase. Both clients map public names to exact wire
+names. Required arguments are positional. Optional arguments use kwargs
+in Python and a trailing options object in JavaScript:
 
 ```text
 client.spawn_instance(cmd, image, shell=True)      # Python
@@ -351,10 +350,10 @@ await client.spawnInstance("/bin/sh", "tag:ubuntu:latest", {
   args: ["-c", "cat - >> /work/data.txt"],
   stdin: StreamRepr.fromText("appended line\n"),
   files: { "/work/data.txt": new FileSpec({ uuid: fileUuid, mode: 0o644 }) },
-  resources_limits: new InstanceResourcesLimits({
-    max_layer_bytes: 1 << 30,
+  resourcesLimits: new InstanceResourcesLimits({
+    maxLayerBytes: 1 << 30,
   }),
-  truncate_output_at: 1 << 20, // cap captured stdout/stderr
+  truncateOutputAt: 1 << 20, // cap captured stdout/stderr
   uid: 1000,
   gid: 1000,
 });
@@ -368,8 +367,11 @@ await client.spawnInstance("/bin/sh", "tag:ubuntu:latest", {
 A spawn returns immediately with an operation id. `wait_operation()` /
 `waitOperation()` follows the event stream and probes status between
 reconnects. It then fetches the terminal
-{class}`~contree_client.OperationResponse`. *timeout* bounds the whole wait.
-An idle JavaScript stream past the deadline rejects with `TimeoutError`.
+{class}`~contree_client.OperationResponse`. *timeout* sets an absolute deadline
+for stream reads, reconnects, and status probes. The client checks it whenever
+iteration resumes. It does not interrupt caller code between events. A
+synchronous native read started before expiry can delay `TimeoutError` until it
+returns. An idle JavaScript stream past the deadline rejects with `TimeoutError`.
 
 ::::{tab-set}
 
@@ -421,8 +423,8 @@ console.assert(operation.status === OperationStatus.SUCCESS);
 
 const result = operation.metadata.result;
 console.log(result.stdout.asText()); // decoded, whatever the encoding
-console.log("exit code:", result.state.exit_code);
-console.log("result image:", operation.result_image_uuid);
+console.log("exit code:", result.state.exitCode);
+console.log("result image:", operation.resultImageUuid);
 ```
 :::
 
@@ -667,7 +669,7 @@ for await (const event of client.followOperationEvents(operationId)) {
   } else if (data instanceof EventDataExit && event.spid === 1) {
     exitCode = data.code; // the main process finished
   } else if (data instanceof EventDataTruncated) {
-    console.warn(`${data.stream}: ${data.bytes_dropped} bytes dropped`);
+    console.warn(`${data.stream}: ${data.bytesDropped} bytes dropped`);
   } else if (data instanceof EventDataCompletion) {
     console.log("operation:", data.status);
   } else {
@@ -731,7 +733,7 @@ const page = await client.listOperations({ limit: 50, status: "SUCCESS" });
 // lazy pagination across pages
 for await (const summary of client.iterOperations({
   kind: "instance",
-  page_size: 100,
+  pageSize: 100,
   limit: 500, // stop after 500 records in total
 })) {
   console.log(summary.uuid, summary.status);
@@ -801,7 +803,7 @@ const uploaded = await client.uploadFile(payload);
 const exists = await client.checkFileExists(uploaded.sha256); // HEAD
 const info = await client.getFile(uploaded.sha256);
 
-for await (const file of client.iterFiles({ page_size: 100 })) {
+for await (const file of client.iterFiles({ pageSize: 100 })) {
   console.log(file.sha256, file.size);
 }
 ```

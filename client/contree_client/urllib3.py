@@ -106,6 +106,8 @@ class ContreeClient(base.ContreeSyncClient):
                 headers={k.lower(): v for k, v in response.headers.items()},
                 body=response.data,
             )
+        except urllib3.exceptions.NewConnectionError as exc:
+            raise APIConnectionError(str(exc), timed_out=False) from exc
         except Exception as exc:
             raise APIConnectionError(
                 str(exc),

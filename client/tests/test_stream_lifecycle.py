@@ -11,9 +11,10 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
-from collections.abc import AsyncIterator
-from types import ModuleType
+from collections.abc import AsyncIterator, Awaitable
+from types import ModuleType, SimpleNamespace
 
+import httpx
 import pytest
 
 from tests.stub_server import OPERATION_RESPONSE, OPERATION_UUID
@@ -43,6 +44,111 @@ def make_tracking_client(generated_package: ModuleType) -> object:
 
 
 UUID = "12345678-9abc-baba-deda-0123456789ab"
+
+
+class FakeClock:
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+@pytest.mark.parametrize(
+    ("method_name", "options"),
+    (
+        ("iter_operation_events", {"deadline": 110.0}),
+        ("follow_operation_events", {"timeout": 10.0}),
+    ),
+)
+def test_event_deadline_is_checked_when_consumer_resumes(
+    generated_package: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+    options: dict[str, float],
+) -> None:
+    base = importlib.import_module("contree_client.base")
+    runtime = importlib.import_module("contree_client.runtime")
+    clock = FakeClock(100.0)
+    monkeypatch.setattr(base, "time", SimpleNamespace(monotonic=clock.monotonic))
+
+    class DeadlineClient(base.ContreeSyncClient):
+        stream_resumed = False
+
+        def request(self, spec: runtime.RequestSpec) -> runtime.ResponseData:
+            raise NotImplementedError
+
+        def stream(self, spec: object, auto_decompress: bool = True):
+            yield (
+                b"id: 1\nevent: stdout\n"
+                b'data: {"id":1,"ts":"2026-06-08T20:00:00Z",'
+                b'"spid":1,"type":"stdout","data":{"value":"x"}}\n\n'
+            )
+            self.stream_resumed = True
+            yield b""
+
+        def close(self) -> None:
+            pass
+
+    client = DeadlineClient("token")
+    events = getattr(client, method_name)(UUID, **options)
+    assert next(events).id == 1
+
+    clock.now = 110.0
+    with pytest.raises(TimeoutError):
+        next(events)
+    assert client.stream_resumed is False
+
+
+def test_httpx_async_stream_recomputes_deadline_before_each_read(
+    generated_package: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("contree_client.httpx")
+    runtime = importlib.import_module("contree_client.runtime")
+    clock = FakeClock(100.0)
+    monkeypatch.setattr(runtime, "monotonic", clock.monotonic)
+    timeouts: list[float | None] = []
+
+    async def capture_wait(
+        awaitable: Awaitable[bytes],
+        timeout: float | None,
+    ) -> bytes:
+        timeouts.append(timeout)
+        return await awaitable
+
+    monkeypatch.setattr(
+        module,
+        "asyncio",
+        SimpleNamespace(wait_for=capture_wait, TimeoutError=asyncio.TimeoutError),
+    )
+
+    class FakeStream(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            yield b"first"
+            yield b"second"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=FakeStream())
+
+    async def scenario() -> None:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as httpx_client:
+            client = module.ContreeAsyncClient(
+                "token",
+                base_url="http://example.test",
+                httpx_client=httpx_client,
+            )
+            source = client.stream(
+                runtime.RequestSpec(method="GET", path="/x", deadline=110.0)
+            )
+            assert await anext(source) == b"first"
+            clock.now = 104.0
+            assert await anext(source) == b"second"
+            await source.aclose()
+
+    asyncio.run(scenario())
+    assert timeouts == [10.0, 6.0]
 
 
 def test_archive_early_aclose_closes_transport_stream(

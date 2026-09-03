@@ -11,14 +11,14 @@ npm install contree-client
 
 ## Naming convention
 
-Everything that travels on the wire keeps its wire spelling; only the
-verbs are JavaScript-flavoured:
+Public JavaScript names use camelCase. Serialization keeps the exact API
+wire spelling:
 
 | Surface | Style | Example |
 |---|---|---|
 | methods and functions | camelCase | `spawnInstance`, `waitOperation`, `ensureFile` |
-| model fields | snake_case (wire) | `operation.result_image_uuid` |
-| option-object keys | snake_case (wire) | `{ preserve_env: true, page_size: 100 }` |
+| model fields | camelCase | `operation.resultImageUuid` |
+| option-object keys | camelCase | `{ preserveEnv: true, pageSize: 100 }` |
 
 Required arguments are positional, every optional knob rides in a
 trailing options object.
@@ -79,7 +79,7 @@ The mapping from the Python client is one-to-one:
   in-band `sse_error` handling match the Python
   `follow_operation_events`;
 - `iterImages()` / `iterOperations()` / `iterFiles()` paginate lazily
-  with the same `page_size` / `limit` knobs.
+  with the same `pageSize` / `limit` knobs.
 
 Helpers carry over unchanged: `waitOperation(id, { timeout })`,
 `resolveImage(ref)`, `ensureFile(content)` (sha256 dedup; Blobs hash

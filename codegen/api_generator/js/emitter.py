@@ -3,9 +3,8 @@
 
 Emits ESM modules plus TypeScript declaration files into
 ``client-js/lib``, next to the hand-written runtime (runtime.js,
-errors.js, profiles.js, testing.js). Method names are camelCase;
-model fields and option-object keys stay snake_case - exactly the
-names that travel on the wire.
+errors.js, profiles.js, testing.js). Public names use camelCase.
+Wire names remain unchanged.
 """
 
 from __future__ import annotations
@@ -17,16 +16,30 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-from api_generator.emitter import GENERATED_NOTE, Emitter
-from api_generator.ir import (
-    ClassDef,
-    FieldDef,
-    OpDef,
-    SpecIR,
+from api_generator.documentation import (
     doc_block_lines,
+    documentation_text,
     protect_literals,
     restore_literals,
     sanitize_doc,
+)
+from api_generator.emitter import GENERATED_NOTE, Emitter
+from api_generator.ir import (
+    ArgumentDef,
+    ArgumentPresence,
+    BodyKind,
+    DiscriminatorDef,
+    FieldDef,
+    ModelDef,
+    ModelTrait,
+    OperationDef,
+    ParameterEncoding,
+    ParameterLocation,
+    ResponseMode,
+    SpecIR,
+    SuccessPolicy,
+    TypeKind,
+    TypeRef,
 )
 
 GENERATED_FILES = (
@@ -44,26 +57,6 @@ GENERATED_FILES = (
 
 HEADER = f"// {GENERATED_NOTE}\n"
 
-EVENT_DATA_CLASSES = {
-    "init": "EventDataInit",
-    "spawn": "EventDataSpawn",
-    "stdin": "EventDataStream",
-    "stdout": "EventDataStream",
-    "stderr": "EventDataStream",
-    "exit": "EventDataExit",
-    "truncated": "EventDataTruncated",
-    "size_cap": "EventDataSizeCap",
-    "network": "EventDataNetwork",
-    "shutdown": "EventDataShutdown",
-    "completion": "EventDataCompletion",
-}
-
-ITER_LIST_OPERATIONS = {
-    "list_images": ("iter_images", "images", "Image"),
-    "list_operations": ("iter_operations", None, "OperationSummary"),
-    "list_files": ("iter_files", "files", "File"),
-}
-
 
 def camel(name: str) -> str:
     head, *tail = name.split("_")
@@ -79,135 +72,125 @@ def used_names(source: str, names: list[str]) -> list[str]:
     ]
 
 
-def split_union(annotation: str) -> list[str]:
-    """Split a python annotation union at the top level only."""
-    parts: list[str] = []
-    depth = 0
-    current = ""
-    for char in annotation:
-        if char in "[(":
-            depth += 1
-        elif char in "])":
-            depth -= 1
-        if char == "|" and depth == 0:
-            parts.append(current.strip())
-            current = ""
-            continue
-        current += char
-    parts.append(current.strip())
-    return [part for part in parts if part]
+def ts_type(type_ref: TypeRef) -> str:
+    """Render a semantic type as TypeScript."""
+    atoms = {
+        TypeKind.ANY: "unknown",
+        TypeKind.STRING: "string",
+        TypeKind.INTEGER: "number",
+        TypeKind.NUMBER: "number",
+        TypeKind.BOOLEAN: "boolean",
+        TypeKind.DATETIME: "Date",
+        TypeKind.BYTES: "Uint8Array",
+        TypeKind.BINARY_STREAM: "Blob | ReadableStream<Uint8Array>",
+    }
+    atom = atoms.get(type_ref.kind)
+    if atom is not None:
+        return atom
+    if type_ref.kind in (TypeKind.MODEL, TypeKind.ENUM, TypeKind.ALIAS):
+        assert type_ref.name is not None
+        return type_ref.name
+    if type_ref.kind is TypeKind.LITERAL:
+        return " | ".join(f'"{value}"' for value in type_ref.values)
+    if type_ref.kind is TypeKind.LIST:
+        return f"{ts_type(type_ref.arguments[0])}[]"
+    if type_ref.kind is TypeKind.SEQUENCE:
+        return f"readonly {ts_type(type_ref.arguments[0])}[]"
+    if type_ref.kind is TypeKind.MAP:
+        return f"Record<string, {ts_type(type_ref.arguments[0])}>"
+    if type_ref.kind is TypeKind.UNION:
+        rendered: list[str] = []
+        for item in type_ref.arguments:
+            value = ts_type(item)
+            if value not in rendered:
+                rendered.append(value)
+        return " | ".join(rendered)
+    raise ValueError(type_ref.kind)
 
 
-TS_ATOMS = {
-    "str": "string",
-    "int": "number",
-    "float": "number",
-    "bool": "boolean",
-    "Any": "unknown",
-    "None": "null",
-    "EllipsisType": "undefined",
-    "datetime": "Date",
-    "bytes": "Uint8Array",
-    "IO[bytes]": "Blob | ReadableStream<Uint8Array>",
-    "OperationStatus": "OperationStatus",
-    "OperationEventType": "OperationEventType",
-    "EventData": "EventData",
-    "dict[str, Any]": "Record<string, unknown>",
-}
+def ordered_fields(model: ModelDef) -> list[FieldDef]:
+    required = [field for field in model.fields if field.required]
+    optional = [field for field in model.fields if not field.required]
+    return required + optional
 
 
-def ts_type(annotation: str) -> str:
-    """Translate a python annotation into a TypeScript type."""
-    parts = split_union(annotation)
-    if len(parts) > 1:
-        rendered = [ts_type(part) for part in parts]
-        seen: list[str] = []
-        for part in rendered:
-            if part not in seen:
-                seen.append(part)
-        return " | ".join(seen)
-    atom = parts[0]
-    if atom in TS_ATOMS:
-        return TS_ATOMS[atom]
-    if atom.startswith("list["):
-        return f"{ts_type(atom[5:-1])}[]"
-    if atom.startswith("Sequence["):
-        return f"readonly {ts_type(atom[9:-1])}[]"
-    if atom.startswith("dict[str, "):
-        return f"Record<string, {ts_type(atom[10:-1])}>"
-    if atom.startswith("Literal["):
-        values = atom[8:-1].replace("'", '"')
-        return values.replace(", ", " | ")
-    return atom  # a model class name
-
-
-def parse_expr(annotation: str, expr: str) -> str | None:
-    """A JS expression decoding a wire value, or None for identity."""
-    if annotation == "OperationInstanceMetadata | ImageImportMetadata":
-        return (
-            f'data["kind"] === "instance"'
-            f" ? OperationInstanceMetadata.fromWire({expr})"
-            f" : ImageImportMetadata.fromWire({expr})"
-        )
-    if annotation == "EventData | dict[str, Any]":
-        return f'parseEventData(data["type"], {expr})'
-    parts = split_union(annotation)
-    if len(parts) > 1:
-        return None  # untyped unions (str | int, ...) pass through
-    atom = parts[0]
-    if atom == "datetime":
+def parse_type(type_ref: TypeRef, expr: str) -> str | None:
+    """Return a wire decoder expression, or None for identity."""
+    if type_ref.kind is TypeKind.DATETIME:
         return f"parseDatetime({expr})"
-    if atom.startswith("list["):
-        inner = parse_expr(atom[5:-1], "item")
+    if type_ref.kind is TypeKind.MODEL:
+        return f"{type_ref.name}.fromWire({expr})"
+    if type_ref.kind is TypeKind.LIST:
+        inner = parse_type(type_ref.arguments[0], "item")
         if inner is None:
             return None
         return f"{expr}.map((item) => {inner})"
-    if atom.startswith("dict[str, "):
-        inner = parse_expr(atom[10:-1], "value")
+    if type_ref.kind is TypeKind.MAP:
+        inner = parse_type(type_ref.arguments[0], "value")
         if inner is None:
             return None
         return (
             f"Object.fromEntries(Object.entries({expr})"
             f".map(([key, value]) => [key, {inner}]))"
         )
-    if atom in TS_ATOMS or atom.startswith("Literal["):
-        return None
-    return f"{atom}.fromWire({expr})"  # a model class name
+    return None
 
 
-def dump_expr(annotation: str, expr: str) -> str | None:
-    """A JS expression encoding a value for the wire, or None."""
-    if annotation == "OperationInstanceMetadata | ImageImportMetadata":
-        return f"{expr}.toWire()"
-    if annotation == "EventData | dict[str, Any]":
-        return f'(typeof {expr}.toWire === "function" ? {expr}.toWire() : {expr})'
-    parts = split_union(annotation)
-    if len(parts) > 1:
-        return None
-    atom = parts[0]
-    if atom == "datetime":
+def dump_type(type_ref: TypeRef, expr: str) -> str | None:
+    """Return a wire encoder expression, or None for identity."""
+    if type_ref.kind is TypeKind.DATETIME:
         return f"{expr}.toISOString()"
-    if atom.startswith("list["):
-        inner = dump_expr(atom[5:-1], "item")
+    if type_ref.kind is TypeKind.MODEL:
+        return f"{expr}.toWire()"
+    if type_ref.kind is TypeKind.LIST:
+        inner = dump_type(type_ref.arguments[0], "item")
         if inner is None:
             return None
         return f"{expr}.map((item) => {inner})"
-    if atom.startswith("dict[str, "):
-        inner = dump_expr(atom[10:-1], "value")
+    if type_ref.kind is TypeKind.MAP:
+        inner = dump_type(type_ref.arguments[0], "value")
         if inner is None:
             return None
         return (
             f"Object.fromEntries(Object.entries({expr})"
             f".map(([key, value]) => [key, {inner}]))"
         )
-    if atom in TS_ATOMS or atom.startswith("Literal["):
-        return None
-    return f"{expr}.toWire()"
+    return None
+
+
+def discriminator_parse(discriminator: DiscriminatorDef, expr: str) -> str:
+    if discriminator.name is not None:
+        return (
+            f'parse{discriminator.name}(data["{discriminator.parent_field}"], {expr})'
+        )
+    rendered = parse_type(discriminator.fallback, expr) or expr
+    for value, type_ref in reversed(discriminator.cases):
+        parsed = parse_type(type_ref, expr) or expr
+        rendered = (
+            f'data["{discriminator.parent_field}"] === "{value}"'
+            f" ? {parsed} : {rendered}"
+        )
+    return rendered
+
+
+def discriminator_dump(discriminator: DiscriminatorDef, expr: str) -> str | None:
+    variants = [type_ref for _, type_ref in discriminator.cases]
+    variants.append(discriminator.fallback)
+    rendered = [dump_type(type_ref, expr) for type_ref in variants]
+    if rendered and all(value == rendered[0] for value in rendered):
+        return rendered[0]
+    if any(value is not None for value in rendered):
+        return f'(typeof {expr}.toWire === "function" ? {expr}.toWire() : {expr})'
+    return None
 
 
 def field_parse(fld: FieldDef) -> str:
-    src = f'data["{fld.json_name}"]'
-    parse = parse_expr(fld.type.annotation, src)
+    src = f'data["{fld.wire_name}"]'
+    parse = (
+        discriminator_parse(fld.discriminator, src)
+        if fld.discriminator is not None
+        else parse_type(fld.type, src)
+    )
     if parse is None:
         return src
     if fld.required and not fld.nullable:
@@ -217,22 +200,26 @@ def field_parse(fld: FieldDef) -> str:
 
 
 def field_dump(fld: FieldDef) -> list[str]:
-    src = f"this.{fld.py_name}"
-    dump = dump_expr(fld.type.annotation, src)
+    src = f"this.{camel(fld.name)}"
+    dump = (
+        discriminator_dump(fld.discriminator, src)
+        if fld.discriminator is not None
+        else dump_type(fld.type, src)
+    )
     value = src if dump is None else f"{src} === null ? null : {dump}"
     return [
         f"if ({src} !== undefined) {{",
-        f'  data["{fld.json_name}"] = {value};',
+        f'  data["{fld.wire_name}"] = {value};',
         "}",
     ]
 
 
 def field_ts(fld: FieldDef) -> str:
-    base = ts_type(fld.type.annotation)
+    base = ts_type(fld.type)
     if fld.nullable and not base.endswith("| null"):
         base = f"{base} | null"
     optional = "?" if not fld.required else ""
-    return f"{fld.py_name}{optional}: {base};"
+    return f"{camel(fld.name)}{optional}: {base};"
 
 
 STREAM_VALUE_METHODS_JS = """
@@ -360,52 +347,52 @@ export function decodeStream(stream) {{
 """
 
 
-def render_class_js(cls: ClassDef) -> str:
+def render_class_js(cls: ModelDef) -> str:
+    fields = ordered_fields(cls)
     lines: list[str] = []
     if cls.description:
         lines.append(f"/** {cls.description.splitlines()[0]} */")
     lines.append(f"export class {cls.name} {{")
     lines.append("  constructor(fields = {}) {")
     lines.extend(
-        f"    this.{fld.py_name} = fields.{fld.py_name};" for fld in cls.ordered_fields
+        f"    this.{camel(fld.name)} = fields.{camel(fld.name)};" for fld in fields
     )
-    if cls.name == "FileSpec":
+    if ModelTrait.FILE_MODE in cls.traits:
         lines.append(FILESPEC_MODE_JS.rstrip())
     lines.append("  }")
     lines.append("")
     lines.append("  static fromWire(data) {")
     lines.append(f"    return new {cls.name}({{")
-    lines.extend(
-        f"      {fld.py_name}: {field_parse(fld)}," for fld in cls.ordered_fields
-    )
+    lines.extend(f"      {camel(fld.name)}: {field_parse(fld)}," for fld in fields)
     lines.append("    });")
     lines.append("  }")
     lines.append("")
     lines.append("  toWire() {")
     lines.append("    const data = {};")
-    for fld in cls.ordered_fields:
+    for fld in fields:
         lines.extend(f"    {line}" for line in field_dump(fld))
     lines.append("    return data;")
     lines.append("  }")
-    if cls.name in ("StreamRepr", "EventDataStream"):
+    if ModelTrait.STREAM_VALUE in cls.traits:
         lines.append(STREAM_VALUE_METHODS_JS.rstrip())
     lines.append("}")
     return "\n".join(lines)
 
 
-def render_class_dts(cls: ClassDef) -> str:
-    fields = [f"  {field_ts(fld)}" for fld in cls.ordered_fields]
+def render_class_dts(cls: ModelDef) -> str:
+    model_fields = ordered_fields(cls)
+    fields = [f"  {field_ts(fld)}" for fld in model_fields]
     ctor_fields = " ".join(
-        f"{fld.py_name}?: {ts_type(fld.type.annotation)}"
+        f"{camel(fld.name)}?: {ts_type(fld.type)}"
         + (" | null;" if fld.nullable or not fld.required else ";")
-        for fld in cls.ordered_fields
+        for fld in model_fields
     )
     lines = [f"export declare class {cls.name} {{"]
     lines.extend(fields)
     lines.append(f"  constructor(fields?: {{ {ctor_fields} }});")
     lines.append(f"  static fromWire(data: Record<string, unknown>): {cls.name};")
     lines.append("  toWire(): Record<string, unknown>;")
-    if cls.name in ("StreamRepr", "EventDataStream"):
+    if ModelTrait.STREAM_VALUE in cls.traits:
         lines.append(STREAM_VALUE_METHODS_DTS.format(name=cls.name).rstrip())
     lines.append("}")
     return "\n".join(lines)
@@ -421,7 +408,7 @@ def render_models_js(ir: SpecIR) -> str:
     )
     event_types = ", ".join(f'"{value}"' for value in ir.event_type_values)
     parsers = "\n".join(
-        f"  {event}: {name}," for event, name in EVENT_DATA_CLASSES.items()
+        f"  {event}: {type_ref.name}," for event, type_ref in ir.event_data_variants
     )
     parts = [
         HEADER,
@@ -440,7 +427,7 @@ def render_models_js(ir: SpecIR) -> str:
             "}"
         ),
     ]
-    parts.extend(render_class_js(cls) for cls in ir.classes)
+    parts.extend(render_class_js(cls) for cls in ir.models)
     parts.append(MODELS_TAIL_JS.format(parsers=parsers).strip())
     return "\n\n".join(parts) + "\n"
 
@@ -449,7 +436,13 @@ def render_models_dts(ir: SpecIR) -> str:
     statuses = " | ".join(f'"{value}"' for value in ir.status_values)
     event_types = " | ".join(f'"{value}"' for value in ir.event_type_values)
     status_consts = " ".join(f'{value}: "{value}";' for value in ir.status_values)
-    event_classes = sorted(set(EVENT_DATA_CLASSES.values()))
+    event_classes = sorted(
+        {
+            type_ref.name
+            for _, type_ref in ir.event_data_variants
+            if type_ref.name is not None
+        }
+    )
     parts = [
         HEADER,
         f"export type OperationEventType = {event_types};",
@@ -460,7 +453,7 @@ def render_models_dts(ir: SpecIR) -> str:
         "export declare const ACTIVE_STATUSES: Set<OperationStatus>;",
         "export declare function isTerminalStatus(status: string): boolean;",
     ]
-    parts.extend(render_class_dts(cls) for cls in ir.classes)
+    parts.extend(render_class_dts(cls) for cls in ir.models)
     union = " | ".join(event_classes)
     parts.append(f"export type EventData = {union};")
     parts.append(
@@ -482,8 +475,7 @@ def render_models_dts(ir: SpecIR) -> str:
 
 
 # ECMAScript reserved words cannot be bare locals, but stay legal as
-# object keys: the options property keeps the wire name (`case`) while
-# destructuring aliases it (`{ case: case_ }`) for use in the body
+# object keys: destructuring aliases `{ case: case_ }` for local use.
 JS_RESERVED = frozenset({
     "arguments", "await", "break", "case", "catch", "class", "const",
     "continue", "debugger", "default", "delete", "do", "else", "enum",
@@ -509,21 +501,25 @@ def js_arg(name: str) -> str:
     return js_local(camel(name))
 
 
-def required_args(op: OpDef) -> list[str]:
-    return [arg.py_name for arg in op.args if arg.default is None]
+def required_args(op: OperationDef) -> list[str]:
+    return [argument.name for argument in op.arguments if argument.required]
 
 
-def optional_args(op: OpDef) -> list[tuple[str, str | None]]:
+def optional_args(op: OperationDef) -> list[tuple[str, str | None]]:
     """(name, js_default) pairs; None means plain destructure (unset)."""
-    defaults = {"None": "null", "False": "false", "...": None}
+    defaults = {
+        ArgumentPresence.OMIT_IF_NULL: "null",
+        ArgumentPresence.OMIT_IF_FALSE: "false",
+        ArgumentPresence.OMIT_IF_UNSET: None,
+    }
     return [
-        (arg.py_name, defaults.get(arg.default or "", "null"))
-        for arg in op.args
-        if arg.default is not None
+        (argument.name, defaults[argument.presence])
+        for argument in op.arguments
+        if not argument.required
     ]
 
 
-def js_params(op: OpDef, destructure: bool) -> str:
+def js_params(op: OperationDef, destructure: bool) -> str:
     """The parameter list of a builder/method.
 
     Required args are positional (camelCase locals); optional args
@@ -534,46 +530,99 @@ def js_params(op: OpDef, destructure: bool) -> str:
     optionals = optional_args(op)
     if optionals:
         if destructure:
-            entries = ", ".join(
-                (name if js_local(name) == name else f"{name}: {js_local(name)}")
-                + ("" if default is None else f" = {default}")
-                for name, default in optionals
-            )
-            parts.append(f"{{ {entries} }} = {{}}")
+            entries = []
+            for name, default in optionals:
+                public = camel(name)
+                local = js_local(public)
+                entry = public if local == public else f"{public}: {local}"
+                entries.append(entry + ("" if default is None else f" = {default}"))
+            parts.append(f"{{ {', '.join(entries)} }} = {{}}")
         else:
             parts.append("options = {}")
     return ", ".join(parts)
 
 
-def js_reference(op: OpDef, py_name: str) -> str:
-    """How a builder body refers to the argument *py_name*."""
-    if py_name in required_args(op):
-        return js_arg(py_name)
-    return js_local(py_name)
+def js_reference(op: OperationDef, name: str) -> str:
+    """How a builder body refers to the argument *name*."""
+    if name in required_args(op):
+        return js_arg(name)
+    return js_local(camel(name))
 
 
-def render_build_fn(op: OpDef) -> str:
+def operation_argument(op: OperationDef, name: str) -> ArgumentDef:
+    for argument in op.arguments:
+        if argument.name == name:
+            return argument
+    raise KeyError(name)
+
+
+def argument_ts_type(argument: ArgumentDef) -> str:
+    rendered = ts_type(argument.type)
+    if argument.nullable:
+        rendered += " | null"
+    if argument.presence is ArgumentPresence.OMIT_IF_UNSET:
+        rendered += " | undefined"
+    return rendered
+
+
+def response_ts_type(op: OperationDef) -> str:
+    if op.response.type is None:
+        return "null"
+    return ts_type(op.response.type)
+
+
+def response_success_condition(op: OperationDef) -> str:
+    if op.response.success is SuccessPolicy.ANY_2XX:
+        return "response.status >= 200 && response.status < 300"
+    statuses = [
+        f"response.status === {status}" for status in op.response.success_statuses
+    ]
+    if len(statuses) == 1:
+        return statuses[0]
+    return "(" + " || ".join(statuses) + ")"
+
+
+def model_names_in_type(type_ref: TypeRef) -> set[str]:
+    if type_ref.kind is TypeKind.MODEL:
+        assert type_ref.name is not None
+        return {type_ref.name}
+    names: set[str] = set()
+    for argument in type_ref.arguments:
+        names.update(model_names_in_type(argument))
+    return names
+
+
+def render_build_fn(op: OperationDef) -> str:
     name = camel(f"build_{op.name}")
     body: list[str] = []
-    query = [p for p in op.params if p.where == "query"]
-    headers = [p for p in op.params if p.where == "header"]
+    query = [
+        parameter
+        for parameter in op.request.parameters
+        if parameter.location is ParameterLocation.QUERY
+    ]
+    headers = [
+        parameter
+        for parameter in op.request.parameters
+        if parameter.location is ParameterLocation.HEADER
+    ]
     if query:
         body.append("const query = {};")
         for param in query:
-            ref = js_reference(op, param.py_name)
-            target = f'query["{param.json_name}"]'
-            if param.style == "flag":
+            argument = operation_argument(op, param.argument)
+            ref = js_reference(op, param.argument)
+            target = f'query["{param.wire_name}"]'
+            if param.encoding is ParameterEncoding.ONE_IF_TRUE:
                 body.append(f"if ({ref}) {{")
                 body.append(f'  {target} = "1";')
                 body.append("}")
                 continue
-            if param.style == "time":
+            if param.encoding is ParameterEncoding.TIME:
                 value = f"formatTimeParam({ref})"
-            elif param.style in ("int", "status"):
+            elif param.encoding is ParameterEncoding.STRING:
                 value = f"String({ref})"
             else:
                 value = ref
-            if param.required:
+            if argument.required:
                 body.append(f"{target} = {value};")
             else:
                 body.append(f"if ({ref} != null) {{")
@@ -582,54 +631,69 @@ def render_build_fn(op: OpDef) -> str:
     if headers:
         body.append("const headers = {};")
         for param in headers:
-            ref = js_reference(op, param.py_name)
+            ref = js_reference(op, param.argument)
             body.append(f"if ({ref} != null) {{")
-            body.append(f'  headers["{param.json_name}"] = String({ref});')
+            body.append(f'  headers["{param.wire_name}"] = String({ref});')
             body.append("}")
-    if op.body_kind == "json_model":
-        ctor = ", ".join(
-            name
-            if js_reference(op, name) == name
-            else f"{name}: {js_reference(op, name)}"
-            for name in [arg.py_name for arg in op.args]
-            if name != "content"
+    request_body = op.request.body
+    if request_body is not None and request_body.kind is BodyKind.JSON_MODEL:
+        ctor_fields = []
+        for argument_name in [argument.name for argument in op.arguments]:
+            if argument_name == "content":
+                continue
+            public = camel(argument_name)
+            reference = js_reference(op, argument_name)
+            ctor_fields.append(
+                public if reference == public else f"{public}: {reference}"
+            )
+        ctor = ", ".join(ctor_fields)
+        assert request_body.model is not None
+        assert request_body.model.name is not None
+        body.append(
+            f"const payload = new {request_body.model.name}({{ {ctor} }}).toWire();"
         )
-        body.append(f"const payload = new {op.body_model}({{ {ctor} }}).toWire();")
-    elif op.body_kind == "json_inline":
+    elif request_body is not None and request_body.kind is BodyKind.JSON_INLINE:
         body.append("const payload = {};")
-        for fld in op.body_fields:
-            ref = js_reference(op, fld.py_name)
-            if fld.required:
-                body.append(f'payload["{fld.json_name}"] = {ref};')
+        for binding in request_body.bindings:
+            argument = operation_argument(op, binding.argument)
+            ref = js_reference(op, binding.argument)
+            dumped = dump_type(argument.type, ref)
+            value = ref if dumped is None else dumped
+            if argument.required:
+                body.append(f'payload["{binding.wire_name}"] = {value};')
             else:
                 body.append(f"if ({ref} !== undefined) {{")
-                body.append(f'  payload["{fld.json_name}"] = {ref};')
+                body.append(f'  payload["{binding.wire_name}"] = {value};')
                 body.append("}")
     path = op.path
-    for param in op.params:
-        if param.where == "path":
+    for param in op.request.parameters:
+        if param.location is ParameterLocation.PATH:
             path = path.replace(
-                "{" + param.json_name + "}",
-                "${quotePath(" + js_reference(op, param.py_name) + ")}",
+                "{" + param.wire_name + "}",
+                "${quotePath(" + js_reference(op, param.argument) + ")}",
             )
     spec_fields = [
         f'method: "{op.http_method}"',
         f"path: `{path}`",
-        f"idempotent: {'true' if op.http_method in ('GET', 'HEAD', 'PUT', 'DELETE') else 'false'}",
+        f"idempotent: {'true' if op.request.idempotent else 'false'}",
     ]
     if query:
         spec_fields.append("query")
     if headers:
         spec_fields.append("headers")
-    if op.body_kind in ("json_model", "json_inline"):
+    if request_body is not None and request_body.kind in (
+        BodyKind.JSON_MODEL,
+        BodyKind.JSON_INLINE,
+    ):
         spec_fields.append("body: JSON.stringify(payload)")
         spec_fields.append('contentType: "application/json"')
-    elif op.body_kind == "binary":
-        spec_fields.append("body: content")
+    elif request_body is not None and request_body.kind is BodyKind.BINARY:
+        content = js_reference(op, request_body.bindings[0].argument)
+        spec_fields.append(f"body: {content}")
         spec_fields.append('contentType: "application/octet-stream"')
-    if op.kind == "sse":
-        spec_fields.append('accept: "text/event-stream"')
-    if op.response_kind == "location":
+    if op.request.accept is not None:
+        spec_fields.append(f'accept: "{op.request.accept}"')
+    if op.response.mode is ResponseMode.LOCATION:
         # fetch cannot expose a Location header in browsers (an opaque
         # redirect); follow it and read the final URL instead
         spec_fields.append('redirect: "follow"')
@@ -643,54 +707,56 @@ def render_build_fn(op: OpDef) -> str:
     return "\n".join(lines)
 
 
-def render_parse_fn(op: OpDef) -> str | None:
-    if op.kind in ("sse", "stream"):
+def render_parse_fn(op: OperationDef) -> str | None:
+    if op.response.mode in (ResponseMode.SSE, ResponseMode.BYTE_STREAM):
         return None
     name = camel(f"parse_{op.name}")
-    success = "response.status >= 200 && response.status < 300"
+    success = response_success_condition(op)
     body: list[str] = []
-    kind = op.response_kind
-    if kind == "model":
-        body += [
-            f"if ({success}) {{",
-            f"  return {op.response_model}.fromWire(jsonObject(response));",
-            "}",
-        ]
-    elif kind == "list_model":
-        body += [
-            f"if ({success}) {{",
-            f"  return jsonArray(response).map((item) => {op.response_model}.fromWire(item));",
-            "}",
-        ]
-    elif kind in ("str_field", "int_field"):
-        cast = "String" if kind == "str_field" else "Number"
-        body += [
-            f"if ({success}) {{",
-            f'  return {cast}(jsonObject(response)["{op.response_model}"]);',
-            "}",
-        ]
-    elif kind == "location":
+    response = op.response
+    if response.mode is ResponseMode.JSON:
+        assert response.type is not None
+        if response.json_path:
+            value = "jsonObject(response)" + "".join(
+                f'["{part}"]' for part in response.json_path
+            )
+            cast = {
+                TypeKind.STRING: "String",
+                TypeKind.INTEGER: "Number",
+                TypeKind.NUMBER: "Number",
+                TypeKind.BOOLEAN: "Boolean",
+            }.get(response.type.kind)
+            parsed = value if cast is None else f"{cast}({value})"
+        elif response.type.kind is TypeKind.MODEL:
+            parsed = f"{response.type.name}.fromWire(jsonObject(response))"
+        elif response.type.kind is TypeKind.LIST:
+            item_type = response.type.arguments[0]
+            parsed_item = parse_type(item_type, "item") or "item"
+            parsed = f"jsonArray(response).map((item) => {parsed_item})"
+        else:
+            parsed = "jsonObject(response)"
+        body += [f"if ({success}) {{", f"  return {parsed};", "}"]
+    elif response.mode is ResponseMode.LOCATION:
+        assert response.header_name is not None
+        exact = response.success_statuses[0]
         body += [
             "// Node exposes the 302 Location; browsers only expose the",
             "// followed response, whose final URL ends with the UUID",
-            f'if (response.status === {op.success_status} && response.headers["location"]) {{',
-            '  const location = response.headers["location"];',
+            f'if (response.status === {exact} && response.headers["{response.header_name}"]) {{',
+            f'  const location = response.headers["{response.header_name}"];',
             '  return location.replace(/\\/+$/, "").split("/").pop();',
             "}",
-            f"if (({success}) && response.url) {{",
+            "if ((response.status >= 200 && response.status < 300) && response.url) {",
             "  const path = new URL(response.url).pathname;",
             '  return path.replace(/\\/+$/, "").split("/").pop();',
             "}",
         ]
-    elif kind == "bool":
-        body += [
-            f"if ({success}) {{",
-            "  return true;",
-            "}",
-        ]
-    elif kind == "bytes":
+    elif response.mode is ResponseMode.STATUS_BOOL:
+        body += [f"if ({success}) {{", "  return true;", "}"]
+    elif response.mode is ResponseMode.BYTES:
         body += [f"if ({success}) {{", "  return response.body;", "}"]
-    else:  # none
+    else:
+        assert response.mode is ResponseMode.EMPTY
         body += [f"if ({success}) {{", "  return null;", "}"]
     body.append("throw new RangeError(`unexpected HTTP status ${response.status}`);")
     lines = [
@@ -704,18 +770,18 @@ def render_parse_fn(op: OpDef) -> str | None:
 
 def render_operations_js(ir: SpecIR) -> str:
     parts = [HEADER]
-    models = sorted(
-        {op.body_model for op in ir.operations if op.body_model}
-        | {
-            op.response_model
-            for op in ir.operations
-            if op.response_model and op.response_kind in ("model", "list_model")
-        }
-    )
+    models: set[str] = set()
+    for op in ir.operations:
+        request_body = op.request.body
+        if request_body is not None and request_body.model is not None:
+            assert request_body.model.name is not None
+            models.add(request_body.model.name)
+        if op.response.mode is ResponseMode.JSON and op.response.type is not None:
+            models.update(model_names_in_type(op.response.type))
     imports = ["formatTimeParam", "jsonArray", "jsonObject", "quotePath"]
     parts.append(f'import {{ {", ".join(imports)} }} from "./runtime.js";')
     if models:
-        parts.append(f'import {{ {", ".join(models)} }} from "./models.js";')
+        parts.append(f'import {{ {", ".join(sorted(models))} }} from "./models.js";')
     for op in ir.operations:
         parts.append(render_build_fn(op))
         parse = render_parse_fn(op)
@@ -724,21 +790,20 @@ def render_operations_js(ir: SpecIR) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-def option_ts_entries(op: OpDef) -> str:
+def option_ts_entries(op: OperationDef) -> str:
     entries = []
-    for arg in op.args:
-        if arg.default is None:
+    for argument in op.arguments:
+        if argument.required:
             continue
-        base = ts_type(arg.annotation)
-        entries.append(f"{arg.py_name}?: {base};")
+        entries.append(f"{camel(argument.name)}?: {argument_ts_type(argument)};")
     return " ".join(entries)
 
 
-def ts_params(op: OpDef) -> str:
+def ts_params(op: OperationDef) -> str:
     parts = [
-        f"{js_arg(arg.py_name)}: {ts_type(arg.annotation)}"
-        for arg in op.args
-        if arg.default is None
+        f"{js_arg(argument.name)}: {argument_ts_type(argument)}"
+        for argument in op.arguments
+        if argument.required
     ]
     entries = option_ts_entries(op)
     if entries:
@@ -749,7 +814,7 @@ def ts_params(op: OpDef) -> str:
 def model_type_names(ir: SpecIR) -> list[str]:
     """Every name models.d.ts exports that other declarations may use."""
     return [
-        *ir.class_names,
+        *ir.model_names,
         "OperationStatus",
         "OperationEventType",
         "EventData",
@@ -761,11 +826,11 @@ def render_operations_dts(ir: SpecIR) -> str:
     for op in ir.operations:
         build = camel(f"build_{op.name}")
         decls.append(f"export declare function {build}({ts_params(op)}): RequestSpec;")
-        if op.kind in ("sse", "stream"):
+        if op.response.mode in (ResponseMode.SSE, ResponseMode.BYTE_STREAM):
             continue
         parse = camel(f"parse_{op.name}")
         decls.append(
-            f"export declare function {parse}(response: ResponseData): {ts_type(op.return_annotation)};"
+            f"export declare function {parse}(response: ResponseData): {response_ts_type(op)};"
         )
     body = "\n\n".join(decls)
     # the import set is computed from the rendered declarations: a
@@ -1319,9 +1384,9 @@ export class ContreeClient {{
    * reconnect from the last event id. */
   async *followOperationEvents(
     operationId,
-    {{ last_event_id = null, spid = null, since = null, timeout = null }} = {{}},
+    {{ lastEventId = null, spid = null, since = null, timeout = null }} = {{}},
   ) {{
-    let lastId = last_event_id;
+    let lastId = lastEventId;
     const deadline = timeout === null ? null : monotonic() + timeout;
     const checkDeadline = () => {{
       if (deadline !== null && monotonic() >= deadline) {{
@@ -1339,7 +1404,7 @@ export class ContreeClient {{
           follow: true,
           spid,
           since,
-          last_event_id: lastId,
+          lastEventId: lastId,
           deadline,
         }})) {{
           lastId = event.id;
@@ -1407,9 +1472,9 @@ ITER_METHOD_JS = """
   /** Iterate over {list_method}() results across pages; offset
    * pagination is transparent, breaking out stops fetching. */
   async *{name}(options = {{}}) {{
-    const {{ page_size = {page_max}, limit = null, ...filters }} = options;
-    if (!Number.isInteger(page_size) || page_size < 1 || page_size > {page_max}) {{
-      throw new RangeError("page_size must be an integer between 1 and {page_max}");
+    const {{ pageSize = {page_max}, limit = null, ...filters }} = options;
+    if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > {page_max}) {{
+      throw new RangeError("pageSize must be an integer between 1 and {page_max}");
     }}
     if (limit !== null && (!Number.isInteger(limit) || limit < 0)) {{
       throw new RangeError("limit must be null or a non-negative integer");
@@ -1417,7 +1482,7 @@ ITER_METHOD_JS = """
     let fetched = 0;
     let offset = 0;
     for (;;) {{
-      const size = limit === null ? page_size : Math.min(page_size, limit - fetched);
+      const size = limit === null ? pageSize : Math.min(pageSize, limit - fetched);
       if (size <= 0) {{
         return;
       }}
@@ -1442,14 +1507,14 @@ ITER_METHOD_JS = """
 """
 
 
-def method_call_args(op: OpDef) -> str:
+def method_call_args(op: OperationDef) -> str:
     parts = [js_arg(name) for name in required_args(op)]
     if optional_args(op):
         parts.append("options")
     return ", ".join(parts)
 
 
-def render_client_method(op: OpDef) -> list[str]:
+def render_client_method(op: OperationDef) -> list[str]:
     name = camel(op.name)
     build = camel(f"build_{op.name}")
     parse = camel(f"parse_{op.name}")
@@ -1457,8 +1522,9 @@ def render_client_method(op: OpDef) -> list[str]:
     call_args = method_call_args(op)
     doc = f"  /** {op.summary or op.name} ({op.http_method} {op.path}) */"
     blocks: list[str] = []
-    if op.kind in ("call", "bytes"):
-        if op.response_kind == "bool":
+    mode = op.response.mode
+    if mode not in (ResponseMode.SSE, ResponseMode.BYTE_STREAM):
+        if mode is ResponseMode.STATUS_BOOL:
             blocks.append(
                 f"{doc}\n"
                 f"  async {name}({params}) {{\n"
@@ -1481,7 +1547,7 @@ def render_client_method(op: OpDef) -> list[str]:
                 f"    return operations.{parse}(await this.call(spec));\n"
                 f"  }}"
             )
-        if op.stream_variant:
+        if mode is ResponseMode.BYTES:
             stream_name = camel(f"{op.name}_stream")
             blocks.append(
                 f"  /** Streaming variant of {name}(). */\n"
@@ -1490,7 +1556,7 @@ def render_client_method(op: OpDef) -> list[str]:
                 f"    yield* this.stream(spec);\n"
                 f"  }}"
             )
-    elif op.kind == "stream":
+    elif mode is ResponseMode.BYTE_STREAM:
         blocks.append(
             f"{doc}\n"
             f"  async *{name}({params}) {{\n"
@@ -1498,7 +1564,11 @@ def render_client_method(op: OpDef) -> list[str]:
             f"    yield* this.stream(spec);\n"
             f"  }}"
         )
-    elif op.kind == "sse":
+    elif mode is ResponseMode.SSE:
+        resume_argument = op.response.resume_argument
+        assert resume_argument is not None
+        event_type = op.response.type
+        assert event_type is not None and event_type.name is not None
         blocks.append(
             f"{doc}\n"
             f"  async *{name}({params}) {{\n"
@@ -1507,7 +1577,7 @@ def render_client_method(op: OpDef) -> list[str]:
             f"      spec.deadline = options.deadline;\n"
             f"    }}}}\n"
             f"    const parser = new SSEParser();\n"
-            f"    let lastSeen = options.last_event_id ?? null;\n"
+            f"    let lastSeen = options.{camel(resume_argument)} ?? null;\n"
             f"    for await (const chunk of this.stream(spec)) {{\n"
             f"      for (const frame of parser.feed(chunk)) {{\n"
             f"        if (frame.id !== null) {{\n"
@@ -1517,7 +1587,7 @@ def render_client_method(op: OpDef) -> list[str]:
             f"        if (payload === null) {{\n"
             f"          continue;\n"
             f"        }}\n"
-            f"        yield OperationEvent.fromWire(payload);\n"
+            f"        yield {event_type.name}.fromWire(payload);\n"
             f"      }}\n"
             f"    }}\n"
             f"  }}"
@@ -1530,36 +1600,69 @@ def render_client_js(ir: SpecIR) -> str:
     methods: list[str] = []
     for op in ir.operations:
         methods.extend(render_client_method(op))
-        iter_spec = ITER_LIST_OPERATIONS.get(op.name)
-        if iter_spec is not None:
-            iter_name, attr, _item = iter_spec
-            page_expr = "response" if attr is None else f"response.{attr}"
+        pagination = op.pagination
+        if pagination is not None:
+            page_expr = "response" + "".join(
+                f".{camel(part)}" for part in pagination.items_path
+            )
             methods.append(
                 ITER_METHOD_JS.strip("\n").format(
-                    name=camel(iter_name),
+                    name=camel(pagination.iterator_name),
                     list_method=camel(op.name),
                     page_expr=page_expr,
-                    page_max=op.page_limit_max or 1000,
+                    page_max=pagination.max_page_size,
                 )
             )
     body = "\n\n".join(methods)
     return f"{parts[0]}\n{parts[1]}\n\n{body}\n}}\n"
 
 
-def client_method_dts(op: OpDef) -> list[str]:
+def client_method_dts(op: OperationDef) -> list[str]:
     name = camel(op.name)
     params = ts_params(op)
     lines: list[str] = []
-    if op.kind in ("call", "bytes"):
-        lines.append(f"  {name}({params}): Promise<{ts_type(op.return_annotation)}>;")
-        if op.stream_variant:
+    mode = op.response.mode
+    if mode not in (ResponseMode.SSE, ResponseMode.BYTE_STREAM):
+        lines.append(f"  {name}({params}): Promise<{response_ts_type(op)}>;")
+        if mode is ResponseMode.BYTES:
             lines.append(
                 f"  {camel(op.name + '_stream')}({params}): AsyncGenerator<Uint8Array>;"
             )
-    elif op.kind == "stream":
+    elif mode is ResponseMode.BYTE_STREAM:
         lines.append(f"  {name}({params}): AsyncGenerator<Uint8Array>;")
-    elif op.kind == "sse":
-        lines.append(f"  {name}({params}): AsyncGenerator<OperationEvent>;")
+    elif mode is ResponseMode.SSE:
+        assert op.response.type is not None
+        lines.append(
+            f"  {name}({params}): AsyncGenerator<{ts_type(op.response.type)}>;"
+        )
+    return lines
+
+
+def type_contains(type_ref: TypeRef, kinds: set[TypeKind]) -> bool:
+    return type_ref.kind in kinds or any(
+        type_contains(argument, kinds) for argument in type_ref.arguments
+    )
+
+
+def pagination_method_dts(op: OperationDef) -> list[str]:
+    pagination = op.pagination
+    assert pagination is not None
+    excluded = {pagination.limit_argument, pagination.offset_argument}
+    filters = [argument for argument in op.arguments if argument.name not in excluded]
+    lines = [f"  {camel(pagination.iterator_name)}(options?: {{"]
+    for argument in filters:
+        if type_contains(argument.type, {TypeKind.ENUM, TypeKind.LITERAL}):
+            value_type = "string" + (" | null" if argument.nullable else "")
+        else:
+            value_type = argument_ts_type(argument)
+        lines.append(f"    {camel(argument.name)}?: {value_type};")
+    lines.extend(
+        [
+            "    pageSize?: number;",
+            "    limit?: number | null;",
+            f"  }}): AsyncGenerator<{ts_type(pagination.item_type)}>;",
+        ]
+    )
     return lines
 
 
@@ -1601,7 +1704,7 @@ export declare class ContreeClient {
   followOperationEvents(
     operationId: string,
     options?: {
-      last_event_id?: number | null;
+      lastEventId?: number | null;
       spid?: number | null;
       since?: number | null;
       timeout?: number | null;
@@ -1612,34 +1715,22 @@ export declare class ContreeClient {
     content: Uint8Array | string | Blob | ReadableStream<Uint8Array>,
     options?: { sha256?: string | null },
   ): Promise<FileResponse | File>;
-  iterImages(options?: {
-    tagged?: boolean;
-    tag?: string | null;
-    uuid?: string | null;
-    since?: string | number | Date | null;
-    until?: string | number | Date | null;
-    page_size?: number;
-    limit?: number | null;
-  }): AsyncGenerator<Image>;
-  iterOperations(options?: {
-    status?: string | null;
-    kind?: string | null;
-    since?: string | number | Date | null;
-    until?: string | number | Date | null;
-    page_size?: number;
-    limit?: number | null;
-  }): AsyncGenerator<OperationSummary>;
-  iterFiles(options?: {
-    since?: string | number | Date | null;
-    until?: string | number | Date | null;
-    page_size?: number;
-    limit?: number | null;
-  }): AsyncGenerator<File>;
 """
 
 
 def render_client_dts(ir: SpecIR) -> str:
     lines = [CLIENT_DTS_HEADER.strip("\n")]
+    model_order = {name: index for index, name in enumerate(ir.model_names)}
+    paginated = [op for op in ir.operations if op.pagination is not None]
+    paginated.sort(
+        key=lambda op: (
+            model_order.get(op.pagination.item_type.name or "", len(model_order))
+            if op.pagination is not None
+            else len(model_order)
+        )
+    )
+    for op in paginated:
+        lines.extend(pagination_method_dts(op))
     for op in ir.operations:
         lines.extend(client_method_dts(op))
     lines.append("}")
@@ -1709,25 +1800,54 @@ def indented(lines: list[str], pad: str = "   ") -> list[str]:
     return [f"{pad}{line}".rstrip() for line in lines]
 
 
-def op_signature(op: OpDef) -> str:
+def public_doc_names(text: str, names: set[str]) -> str:
+    """Translate declared names in inline code, but keep wire query names."""
+    replacements = {name: camel(name) for name in names if camel(name) != name}
+
+    def replace_names(value: str) -> str:
+        for name, public in replacements.items():
+            value = re.sub(
+                rf"(?<![?{{\[\"'\w]){re.escape(name)}(?!\w)",
+                public,
+                value,
+            )
+        return value
+
+    def replace_code(match: re.Match[str]) -> str:
+        value = replace_names(match.group("code"))
+        ticks = match.group("ticks")
+        return f"{ticks}{value}{ticks}"
+
+    return replace_names(
+        re.sub(
+            r"(?P<ticks>`{1,2})(?P<code>[^`\n]*)(?P=ticks)",
+            replace_code,
+            text,
+        )
+    )
+
+
+def op_signature(op: OperationDef) -> str:
     parts = [js_arg(name) for name in required_args(op)]
     if optional_args(op):
         parts.append("options?")
     return ", ".join(parts)
 
 
-def op_returns(op: OpDef) -> str:
-    if op.kind == "sse":
-        return "AsyncGenerator<OperationEvent>"
-    if op.kind == "stream":
+def op_returns(op: OperationDef) -> str:
+    if op.response.mode is ResponseMode.SSE:
+        assert op.response.type is not None
+        return f"AsyncGenerator<{ts_type(op.response.type)}>"
+    if op.response.mode is ResponseMode.BYTE_STREAM:
         return "AsyncGenerator<Uint8Array>"
-    return f"Promise<{ts_type(op.return_annotation)}>"
+    return f"Promise<{response_ts_type(op)}>"
 
 
-def render_op_reference(op: OpDef) -> str:
+def render_op_reference(op: OperationDef, public_names: set[str] | None = None) -> str:
     """A js-domain method definition: Sphinx and the Mintlify writer
     render these with the same machinery as the Python autodoc pages
     (signatures, ParamField/ResponseField, anchors)."""
+    names = (public_names or set()) | {argument.name for argument in op.arguments}
     lines = [f".. js:method:: ContreeClient.{camel(op.name)}({op_signature(op)})", ""]
     body: list[str] = [
         f"``{op.http_method} {op.path}`` — "
@@ -1735,19 +1855,27 @@ def render_op_reference(op: OpDef) -> str:
     ]
     if op.description:
         body.append("")
-        body.extend(doc_block_lines(op.description, escape=False))
+        body.extend(
+            doc_block_lines(public_doc_names(op.description, names), escape=False)
+        )
     body.append("")
-    for arg in op.args:
-        if arg.default is None:
-            name = f"param {js_arg(arg.py_name)}"
+    for argument in op.arguments:
+        if argument.required:
+            name = f"param {js_arg(argument.name)}"
         else:
-            name = f"param options.{arg.py_name}"
-        doc = " ".join(sanitize_doc(arg.doc, escape=False).split())
-        text = f"``{ts_type(arg.annotation)}``" + (f" — {doc}" if doc else "")
+            name = f"param options.{camel(argument.name)}"
+        raw_doc = documentation_text(
+            argument.documentation.description,
+            argument.documentation.example,
+            argument.documentation.has_example,
+        )
+        raw_doc = public_doc_names(raw_doc, names)
+        doc = " ".join(sanitize_doc(raw_doc, escape=False).split())
+        text = f"``{argument_ts_type(argument)}``" + (f" — {doc}" if doc else "")
         body.extend(rst_field(name, text))
     body.extend(rst_field("returns", f"``{op_returns(op)}``"))
     lines.extend(indented(body))
-    if op.stream_variant:
+    if op.response.mode is ResponseMode.BYTES:
         stream_sig = ", ".join(js_arg(name) for name in required_args(op))
         stream_name = camel(f"{op.name}_stream")
         lines.append("")
@@ -1765,20 +1893,29 @@ def render_op_reference(op: OpDef) -> str:
     return "\n".join(lines)
 
 
-def render_model_reference(cls: ClassDef) -> str:
+def render_model_reference(cls: ModelDef, public_names: set[str] | None = None) -> str:
     lines = [f".. js:class:: {cls.name}(fields?)", ""]
     body: list[str] = []
+    names = (public_names or set()) | {field.name for field in cls.fields}
     if cls.description:
-        body.extend(doc_block_lines(cls.description, escape=False))
+        body.extend(
+            doc_block_lines(public_doc_names(cls.description, names), escape=False)
+        )
         body.append("")
-    for fld in cls.ordered_fields:
-        base = ts_type(fld.type.annotation)
+    for fld in ordered_fields(cls):
+        base = ts_type(fld.type)
         if fld.nullable and not base.endswith("| null"):
             base = f"{base} | null"
-        body.append(f".. js:attribute:: {cls.name}.{fld.py_name}")
+        body.append(f".. js:attribute:: {cls.name}.{camel(fld.name)}")
         body.append("")
         marker = "required" if fld.required else "optional"
-        doc = " ".join(sanitize_doc(fld.doc, escape=False).split())
+        raw_doc = documentation_text(
+            fld.documentation.description,
+            fld.documentation.example,
+            fld.documentation.has_example,
+        )
+        raw_doc = public_doc_names(raw_doc, names)
+        doc = " ".join(sanitize_doc(raw_doc, escape=False).split())
         field_line = f"``{base}`` ({marker})" + (f" — {doc}" if doc else "")
         body.extend(
             indented(
@@ -1793,7 +1930,7 @@ def render_model_reference(cls: ClassDef) -> str:
             )
         )
         body.append("")
-    if cls.name in ("StreamRepr", "EventDataStream"):
+    if ModelTrait.STREAM_VALUE in cls.traits:
         body.append(
             f"Codec helpers: ``asBytes()``, ``asText()``,"
             f" ``{cls.name}.fromBytes(bytes)``, ``{cls.name}.fromText(text)``."
@@ -1824,7 +1961,7 @@ REFERENCE_HELPERS_RST = """\
    Ends after the ``completion`` frame.
 
    :param operationId: ``string``
-   :param options.last_event_id: ``number | null``
+   :param options.lastEventId: ``number | null``
    :param options.spid: ``number | null``
    :param options.since: ``number | null``
    :param options.timeout: ``number | null`` — overall deadline in
@@ -1854,7 +1991,7 @@ REFERENCE_HELPERS_RST = """\
 
    Lazy offset pagination over
    :js:meth:`ContreeClient.listImages`: the listing filters plus
-   ``page_size`` (server-capped) and ``limit`` (total records;
+   ``pageSize`` (server-capped) and ``limit`` (total records;
    ``null`` iterates everything). Breaking out of the loop stops
    fetching. ``iterOperations()`` and ``iterFiles()`` mirror it for
    their listings.
@@ -1865,19 +2002,22 @@ REFERENCE_HELPERS_RST = """\
 
 def render_reference(ir: SpecIR) -> str:
     heading = "API reference"
+    public_names = {
+        argument.name for operation in ir.operations for argument in operation.arguments
+    } | {field.name for model in ir.models for field in model.fields}
     parts = [
         f"{heading}\n{'=' * len(heading)}",
         f".. {GENERATED_NOTE}",
         (
             "Generated from the OpenAPI specification"
-            f" (SHA-256 ``{ir.spec_sha256[:12]}...``). Methods are camelCase;"
-            " model fields and option keys keep their snake_case wire"
-            " spelling. Required arguments are positional, optional ones"
+            f" (SHA-256 ``{ir.spec_sha256[:12]}...``). Public names use"
+            " camelCase; serialized keys keep their wire spelling."
+            " Required arguments are positional, optional ones"
             " ride in a trailing ``options`` object."
         ),
         "Client methods\n--------------",
     ]
-    parts.extend(render_op_reference(op) for op in ir.operations)
+    parts.extend(render_op_reference(op, public_names) for op in ir.operations)
     parts.append("Helpers\n-------")
     parts.append(REFERENCE_HELPERS_RST.rstrip())
     statuses = ", ".join(f"``{value}``" for value in ir.status_values)
@@ -1893,7 +2033,7 @@ def render_reference(ir: SpecIR) -> str:
         " (``parseEventData``)."
     )
     parts.append("Models\n------")
-    parts.extend(render_model_reference(cls) for cls in ir.classes)
+    parts.extend(render_model_reference(cls, public_names) for cls in ir.models)
     return "\n\n".join(parts) + "\n"
 
 

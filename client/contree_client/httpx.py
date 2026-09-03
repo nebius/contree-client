@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ssl
 from collections.abc import AsyncGenerator, Iterator
 
@@ -138,6 +139,7 @@ class ContreeClient(base.ContreeSyncClient):
             for chunk in chunks:
                 remaining_timeout(spec.deadline, None)
                 yield chunk
+                remaining_timeout(spec.deadline, None)
 
     def close(self) -> None:
         if self.__owns_client:
@@ -258,7 +260,18 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
             if response.status_code >= 400:
                 response.raise_for_status()
             source = response.aiter_bytes() if auto_decompress else response.aiter_raw()
-            async for chunk in source:
+            while True:
+                timeout = remaining_timeout(spec.deadline, None)
+                try:
+                    if timeout is None:
+                        chunk = await anext(source)
+                    else:
+                        chunk = await asyncio.wait_for(anext(source), timeout=timeout)
+                except StopAsyncIteration:
+                    return
+                except asyncio.TimeoutError:
+                    remaining_timeout(spec.deadline, None)
+                    raise
                 remaining_timeout(spec.deadline, None)
                 yield chunk
 

@@ -95,7 +95,7 @@ def inject_field_docs(
     import importlib
     import textwrap
 
-    from api_generator.ir import (
+    from api_generator.documentation import (
         format_example,
         protect_literals,
         restore_literals,
