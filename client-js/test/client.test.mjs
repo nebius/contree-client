@@ -2,7 +2,20 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import { ContreeClient } from "../lib/client.js";
-import { BadRequestError, NotFoundError } from "../lib/errors.js";
+import {
+  APIConnectionError,
+  APIStatusError,
+  AuthenticationError,
+  BadRequestError,
+  ConflictError,
+  GoneError,
+  ServerError,
+  NotFoundError,
+  PermissionDeniedError,
+  RateLimitError,
+  TooEarlyError,
+  UnprocessableEntityError,
+} from "../lib/errors.js";
 import {
   File,
   FileResponse,
@@ -48,6 +61,94 @@ test("rejects an invalid baseUrl scheme", () => {
     () => new ContreeClient("tok", { baseUrl: "ftp://example.com" }),
     RangeError,
   );
+});
+
+test("request maps connection errors and keeps the cause", async () => {
+  const cause = new TypeError("network failure");
+  const failing = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    fetch: async () => {
+      throw cause;
+    },
+  });
+  await assert.rejects(
+    failing.request({ method: "GET", path: "/x" }),
+    (error) =>
+      error instanceof APIConnectionError &&
+      error.cause === cause &&
+      error.timedOut === false &&
+      !("original" in error),
+  );
+
+  const bodyCause = new TypeError("body interrupted");
+  const interrupted = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    fetch: async () => ({
+      status: 200,
+      headers: new Headers(),
+      url: "http://localhost:1/v1/x",
+      arrayBuffer: async () => {
+        throw bodyCause;
+      },
+    }),
+  });
+  await assert.rejects(
+    interrupted.request({ method: "GET", path: "/x" }),
+    (error) =>
+      error instanceof APIConnectionError &&
+      error.cause === bodyCause &&
+      error.timedOut === false,
+  );
+});
+
+test("request maps API status errors", async () => {
+  const cases = [
+    [400, BadRequestError],
+    [401, AuthenticationError],
+    [403, PermissionDeniedError],
+    [404, NotFoundError],
+    [409, ConflictError],
+    [410, GoneError],
+    [418, APIStatusError],
+    [422, UnprocessableEntityError],
+    [425, TooEarlyError],
+    [429, RateLimitError],
+    [500, ServerError],
+    [599, ServerError],
+  ];
+  for (const [status, ErrorClass] of cases) {
+    const failing = new ContreeClient("tok", {
+      baseUrl: "http://localhost:1",
+      fetch: async () =>
+        new Response(JSON.stringify({ error: "failed", traceback: ["line"] }), {
+          status,
+          headers: { "Retry-After": "7" },
+        }),
+    });
+    await assert.rejects(
+      failing.request({ method: "GET", path: "/x" }),
+      (error) =>
+        error.constructor === ErrorClass &&
+        error.status === status &&
+        error.error === "failed" &&
+        error.retryAfter === 7 &&
+        error.traceback[0] === "line",
+    );
+  }
+});
+
+test("response parsers use native errors", async () => {
+  const redirecting = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    fetch: async () => new Response(null, { status: 302 }),
+  });
+  await assert.rejects(redirecting.whoami(), RangeError);
+
+  const malformed = new ContreeClient("tok", {
+    baseUrl: "http://localhost:1",
+    fetch: async () => new Response("[]", { status: 200 }),
+  });
+  await assert.rejects(malformed.whoami(), TypeError);
 });
 
 test("operation status is a typed model", async () => {

@@ -11,6 +11,7 @@ import {
   ProfileError,
   resolveProfile,
 } from "../lib/profiles.js";
+import { ContreeError } from "../lib/errors.js";
 
 test("parseIni treats [DEFAULT] as the defaults section", () => {
   const sections = parseIni(
@@ -73,7 +74,8 @@ test("a missing profile raises ProfileError", async () => {
   const authPath = await writeConfig({ "auth.ini": "" });
   await assert.rejects(
     resolveProfile("nonexistent", { path: authPath }),
-    ProfileError,
+    (error) =>
+      error instanceof ProfileError && !(error instanceof ContreeError),
   );
 });
 

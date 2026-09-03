@@ -15,15 +15,14 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, distribution
+from time import monotonic
 from typing import IO, Any, cast
 from urllib.parse import quote, urlencode
 
 from .exceptions import (
     ERROR_CLASSES,
-    ContreeAPIError,
-    DecompressionError,
+    APIStatusError,
     ServerError,
-    SSEStreamError,
 )
 from .models import OperationEvent
 
@@ -56,6 +55,27 @@ SENSITIVE_KEY_SUFFIXES = (
     "credentials",
     "authorization",
 )
+
+REQUEST_DEADLINE_MESSAGE = "request deadline exceeded"
+
+
+def remaining_timeout(
+    deadline: float | None,
+    maximum: float | None,
+) -> float | None:
+    """Return the smaller of the remaining deadline and *maximum*.
+
+    Raise ``TimeoutError`` before transport I/O when the absolute
+    monotonic deadline has elapsed.
+    """
+    if deadline is None:
+        return maximum
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise TimeoutError(REQUEST_DEADLINE_MESSAGE)
+    if maximum is None:
+        return remaining
+    return min(remaining, maximum)
 
 
 def redact_json(value: Any) -> Any:
@@ -154,6 +174,10 @@ class RequestSpec:
     # retry safety: only idempotent requests may be replayed after a
     # lost response (a re-sent POST could spawn a second sandbox)
     idempotent: bool = False
+    # Monotonic deadline passed to transport waits and retries. Sync buffered
+    # reads can report expiry after the response completes.
+    # None uses only the client's configured timeout.
+    deadline: float | None = None
     # SSE only: bound the idle gap between reads. None keeps the
     # stream open indefinitely (the server sends keepalives); a
     # deadline-driven follower sets its remaining budget here so a
@@ -247,15 +271,6 @@ RETRY_DELAYS = (0.1, 0.2, 0.5, 1.0, 2.0, 5.0)
 # returning immediate empty streams does not spin the client
 TIGHT_LOOP_FLOOR = 0.5
 
-# the events route itself doesn't exist for this operation/server
-# (malformed request an older backend rejects, or a reverse proxy
-# that never forwards it) rather than merely being down: reconnecting
-# will never succeed, but the operation itself may still complete -
-# degrade to polling instead of failing the whole wait. 401/403 are
-# deliberately excluded: an auth/permission failure here likely means
-# the whole client is broken, not just this route, so it still raises
-EVENTS_UNAVAILABLE_STATUSES = frozenset({400, 404, 405, 406})
-
 
 def retry_generator(delays: tuple[float, ...] = RETRY_DELAYS) -> Iterator[float]:
     """An endless ladder of backoff delays.
@@ -276,13 +291,11 @@ def retry_generator(delays: tuple[float, ...] = RETRY_DELAYS) -> Iterator[float]
 
 @dataclass(frozen=True)
 class RetryPolicy:
-    """Opt-in retries for transient failures of buffered requests.
+    """Opt-in retries for buffered request failures.
 
-    Passed to a client constructor as ``retry=RetryPolicy()``. Covers
-    the backend's transient network errors plus the listed HTTP
-    statuses; ``server_errors`` extends that to every 5xx. Streaming
-    requests are never retried here - SSE consumers reconnect with
-    ``Last-Event-Id`` (see ``follow_operation_events``).
+    Retries ``APIConnectionError`` and the configured HTTP statuses.
+    ``server_errors`` extends this to every 5xx status. SSE consumers
+    handle stream reconnection separately.
     """
 
     # 425 (Too Early) and 429 (Too Many Requests) are a backend
@@ -342,7 +355,7 @@ def rewind_body(spec: RequestSpec, start: int | None) -> None:
         return
     stream = cast("IO[bytes]", body)
     if start is None or not stream.seekable():
-        raise ContreeAPIError(0, "cannot retry: streaming body is not seekable")
+        raise ValueError("cannot retry: streaming body is not seekable")
     stream.seek(start)
 
 
@@ -396,29 +409,27 @@ def json_body(response: ResponseData) -> Any:
 def json_object(response: ResponseData) -> dict[str, Any]:
     data = json_body(response)
     if not isinstance(data, dict):
-        raise ContreeAPIError(
-            response.status,
-            f"expected a JSON object, got {type(data).__name__}",
-        )
+        raise TypeError(f"expected a JSON object, got {type(data).__name__}")
     return data
 
 
 def json_array(response: ResponseData) -> list[Any]:
     data = json_body(response)
     if not isinstance(data, list):
-        raise ContreeAPIError(
-            response.status,
-            f"expected a JSON array, got {type(data).__name__}",
-        )
+        raise TypeError(f"expected a JSON array, got {type(data).__name__}")
     return data
 
 
-def error_for_response(response: ResponseData) -> ContreeAPIError:
+def error_for_response(
+    status_code: int,
+    headers: Mapping[str, str],
+    body: bytes,
+) -> APIStatusError:
     """Build the exception matching an error response."""
-    error: Any = response.body.decode("utf-8", "replace")
+    error: Any = body.decode("utf-8", "replace")
     traceback: list[str] | None = None
     try:
-        payload = json.loads(response.body.decode("utf-8"))
+        payload = json.loads(body.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         payload = None
     if isinstance(payload, dict):
@@ -426,13 +437,13 @@ def error_for_response(response: ResponseData) -> ContreeAPIError:
         raw_traceback = payload.get("traceback")
         if isinstance(raw_traceback, list):
             traceback = [str(item) for item in raw_traceback]
-    parsed_retry = parse_retry_after(response.headers.get("retry-after"))
+    parsed_retry = parse_retry_after(headers.get("retry-after"))
     retry_after = None if parsed_retry is None else int(parsed_retry)
-    cls = ERROR_CLASSES.get(response.status)
+    cls = ERROR_CLASSES.get(status_code)
     if cls is None:
-        cls = ServerError if response.status >= 500 else ContreeAPIError
+        cls = ServerError if status_code >= 500 else APIStatusError
     return cls(
-        response.status,
+        status_code,
         error,
         traceback=traceback,
         retry_after=retry_after,
@@ -458,7 +469,7 @@ class GzipStreamDecoder:
         # physical EOF must coincide with the gzip trailer: a stream
         # cut mid-flight would otherwise pass as a complete payload
         if not self.state.eof:
-            raise DecompressionError(
+            raise EOFError(
                 "compressed stream ended before the gzip trailer"
                 " - the payload is truncated"
             )
@@ -545,7 +556,7 @@ class SSEParser:
         # accumulated so far: many short data lines must not grow the
         # pending event unboundedly
         if len(self.buffer) + self.pending_size > self.MAX_BUFFER:
-            raise SSEStreamError(
+            raise ValueError(
                 f"SSE frame exceeds {self.MAX_BUFFER} bytes before completion"
             )
         frames: list[SSEFrame] = []
@@ -601,33 +612,15 @@ def decode_event_frame(
 ) -> OperationEvent | None:
     """Decode an SSE frame into an OperationEvent.
 
-    Raises SSEStreamError for in-band `sse_error` frames, carrying
-    *last_event_id* so the caller can reconnect from that point;
-    returns None for frames that carry no event payload.
+    Return None for frames that carry no event payload.
     """
     if frame.event == "sse_error":
-        raise SSEStreamError(frame.data, last_event_id=last_event_id)
+        error = ConnectionError(frame.data)
+        error.__dict__["last_event_id"] = last_event_id
+        raise error
     if not frame.data:
         return None
-    try:
-        payload = json.loads(frame.data)
-    except ValueError as exc:
-        # surface protocol corruption through the SSE error channel so
-        # follow_operation_events reconnects instead of crashing with
-        # a bare JSONDecodeError
-        raise SSEStreamError(
-            f"malformed SSE event payload: {exc}",
-            last_event_id=last_event_id,
-        ) from exc
+    payload = json.loads(frame.data)
     if not isinstance(payload, dict):
         return None
-    try:
-        return OperationEvent.from_dict(payload)
-    except (KeyError, TypeError, ValueError) as exc:
-        # a structurally invalid event is protocol corruption too:
-        # surface it through the SSE error channel so the follower
-        # reconnects instead of crashing with a raw KeyError
-        raise SSEStreamError(
-            f"malformed SSE event structure: {exc!r}",
-            last_event_id=last_event_id,
-        ) from exc
+    return OperationEvent.from_dict(payload)

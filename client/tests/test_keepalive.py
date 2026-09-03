@@ -181,6 +181,23 @@ def test_connection_pool_caps_idle_connections(
     assert fresh.closed
 
 
+def test_connection_pool_acquire_respects_deadline(
+    generated_package: ModuleType,
+) -> None:
+    http_module = importlib.import_module("contree_client.http")
+    pool = http_module.ConnectionPool(
+        lambda: http.client.HTTPConnection("localhost"), maxsize=1
+    )
+    held, _ = pool.acquire()
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="deadline"):
+        pool.acquire(time.monotonic() + 0.03)
+    assert time.monotonic() - started < 0.3
+
+    pool.discard(held)
+
+
 def test_connection_pool_discard_wakes_blocked_borrower(
     generated_package: ModuleType,
 ) -> None:
@@ -386,6 +403,7 @@ def test_stdlib_pool_resends_once_on_stale_keepalive(
 def test_stdlib_pool_never_resends_non_idempotent_requests(
     generated_package: ModuleType,
     stub_server: StubServer,
+    exceptions: ModuleType,
 ) -> None:
     """A stale keepalive during a POST must surface the error instead
     of transparently re-sending: after a lost response the server may
@@ -403,13 +421,10 @@ def test_stdlib_pool_never_resends_non_idempotent_requests(
                 raise BrokenPipeError("stale keepalive")
             return original(connection, spec)
 
-        http = importlib.import_module("contree_client.http")
         client._send_on = flaky_send
-        with pytest.raises(http.ContreeHttpConnectionError) as excinfo:
+        with pytest.raises(exceptions.APIConnectionError) as excinfo:
             client.upload_file(io.BytesIO(payload))
-        # still catchable as the original stdlib error a caller may
-        # already handle: only the type is retagged, the ancestry isn't
-        assert isinstance(excinfo.value, OSError)
+        assert isinstance(excinfo.value.__cause__, BrokenPipeError)
         assert len(failed) == 1  # exactly one attempt, no replay
         assert client._pool.created == 0  # the broken slot was freed
 

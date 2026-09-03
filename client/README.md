@@ -208,7 +208,7 @@ for event in client.follow_operation_events(response.uuid):
         sys.stdout.buffer.write(decode_chunk(event.data))
 ```
 
-Retry transient failures (network errors, 410/425/5xx) automatically:
+Retry connection errors and 410/425/429/5xx responses automatically:
 
 <!-- name: test_readme_use_cases -->
 ```python

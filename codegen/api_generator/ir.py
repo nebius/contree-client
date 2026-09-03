@@ -1233,7 +1233,7 @@ class OperationBuilder:
         # operation, but the server legitimately answers with siblings
         # (e.g. 200-with-body where 204 is documented)
         success_line = "if 200 <= response.status < 300:"
-        raise_line = "raise error_for_response(response)"
+        raise_line = 'raise ValueError(f"unexpected HTTP status {response.status}")'
         if kind in ("sse", "stream"):
             return []
         if kind == "model":

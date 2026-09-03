@@ -201,12 +201,10 @@ exit_event = stdout_event
 ```
 -->
 ```python
-from contree_client.exceptions import SSEStreamError
-
 client.mock(
     "iter_operation_events",
     [stdout_event, exit_event],
-    error=SSEStreamError("broken", last_event_id=2),
+    error=ConnectionError("broken"),
 )
 ```
 :::
@@ -234,12 +232,10 @@ exit_event = stdout_event
 ```
 -->
 ```python
-from contree_client.exceptions import SSEStreamError
-
 client.mock(
     "iter_operation_events",
     [stdout_event, exit_event],
-    error=SSEStreamError("broken", last_event_id=2),
+    error=ConnectionError("broken"),
 )
 ```
 :::

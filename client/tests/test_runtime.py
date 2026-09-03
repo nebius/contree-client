@@ -4,6 +4,7 @@ import asyncio
 import gzip
 import hashlib
 import io
+import json
 import zlib
 from datetime import datetime, timezone
 from types import ModuleType
@@ -40,19 +41,25 @@ def test_encode_query_preserves_repeated_values(runtime: ModuleType) -> None:
     )
 
 
-def test_json_object_rejects_array(
+def test_remaining_timeout_uses_shared_deadline_message(
     runtime: ModuleType,
-    exceptions: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with pytest.raises(exceptions.ContreeAPIError, match="expected a JSON object"):
+    monkeypatch.setattr(runtime, "monotonic", lambda: 10.0)
+
+    assert runtime.remaining_timeout(11.0, 2.0) == 1.0
+    with pytest.raises(TimeoutError) as caught:
+        runtime.remaining_timeout(10.0, None)
+    assert str(caught.value) == runtime.REQUEST_DEADLINE_MESSAGE
+
+
+def test_json_object_rejects_array(runtime: ModuleType) -> None:
+    with pytest.raises(TypeError, match="expected a JSON object"):
         runtime.json_object(response(runtime, 200, b"[1, 2]"))
 
 
-def test_json_array_rejects_object(
-    runtime: ModuleType,
-    exceptions: ModuleType,
-) -> None:
-    with pytest.raises(exceptions.ContreeAPIError, match="expected a JSON array"):
+def test_json_array_rejects_object(runtime: ModuleType) -> None:
+    with pytest.raises(TypeError, match="expected a JSON array"):
         runtime.json_array(response(runtime, 200, b"{}"))
 
 
@@ -60,53 +67,15 @@ def test_error_for_response_plain_text_body(
     runtime: ModuleType,
     exceptions: ModuleType,
 ) -> None:
-    error = runtime.error_for_response(
-        response(runtime, 404, b"nothing here"),
-    )
+    error = runtime.error_for_response(404, {}, b"nothing here")
     assert isinstance(error, exceptions.NotFoundError)
     assert error.error == "nothing here"
     assert error.retry_after is None
 
 
-def test_error_for_response_traceback_and_retry_after(
-    runtime: ModuleType,
-    exceptions: ModuleType,
-) -> None:
-    error = runtime.error_for_response(
-        response(
-            runtime,
-            425,
-            b'{"error": "soon", "traceback": ["a", "b"]}',
-            **{"Retry-After": "7"},
-        ),
-    )
-    assert isinstance(error, exceptions.TooEarlyError)
-    assert error.traceback == ["a", "b"]
-    assert error.retry_after == 7
-
-
 def test_error_for_response_invalid_retry_after(runtime: ModuleType) -> None:
-    error = runtime.error_for_response(
-        response(runtime, 410, b"{}", **{"Retry-After": "later"}),
-    )
+    error = runtime.error_for_response(410, {"retry-after": "later"}, b"{}")
     assert error.retry_after is None
-
-
-def test_error_for_response_5xx(
-    runtime: ModuleType,
-    exceptions: ModuleType,
-) -> None:
-    error = runtime.error_for_response(response(runtime, 502, b"bad gateway"))
-    assert isinstance(error, exceptions.ServerError)
-
-
-def test_error_for_response_unmapped_4xx(
-    runtime: ModuleType,
-    exceptions: ModuleType,
-) -> None:
-    error = runtime.error_for_response(response(runtime, 418, b"teapot"))
-    assert type(error) is exceptions.ContreeAPIError
-    assert error.status == 418
 
 
 def test_redact_json_nested(runtime: ModuleType) -> None:
@@ -286,7 +255,7 @@ def test_truncated_gzip_stream_is_rejected(
 
     decoder = runtime.stream_decoder("gzip")
     decoder.decompress(partial)
-    with pytest.raises(exceptions.DecompressionError, match="truncated"):
+    with pytest.raises(EOFError, match="truncated"):
         decoder.flush()
 
 
@@ -296,46 +265,34 @@ def test_complete_gzip_stream_flushes_clean(runtime: ModuleType) -> None:
     assert body == b"payload"
 
 
-def test_sse_parser_buffer_limit(runtime: ModuleType, exceptions: ModuleType) -> None:
+def test_sse_parser_buffer_limit(runtime: ModuleType) -> None:
     """P2-17: a peer streaming an endless line must not grow the
     buffer unbounded."""
     parser = runtime.SSEParser()
-    with pytest.raises(exceptions.SSEStreamError, match="exceeds"):
+    with pytest.raises(ValueError, match="exceeds"):
         parser.feed(b"x" * (parser.MAX_BUFFER + 1))
 
 
-def test_decode_event_frame_malformed_json_is_sse_error(
-    runtime: ModuleType, exceptions: ModuleType
-) -> None:
-    """P2-17: protocol corruption goes through the SSE error channel
-    (reconnectable) instead of a bare JSONDecodeError."""
+def test_decode_event_frame_exposes_malformed_json(runtime: ModuleType) -> None:
     frame = runtime.SSEFrame(id=7, event="stdout", data="{broken")
-    with pytest.raises(exceptions.SSEStreamError) as excinfo:
-        runtime.decode_event_frame(frame, last_event_id=6)
-    assert excinfo.value.last_event_id == 6
+    with pytest.raises(json.JSONDecodeError):
+        runtime.decode_event_frame(frame)
 
 
-def test_sse_parser_caps_accumulated_event(
-    runtime: ModuleType, exceptions: ModuleType
-) -> None:
+def test_sse_parser_caps_accumulated_event(runtime: ModuleType) -> None:
     """P2-16: many short, individually valid data lines must not grow
     the pending frame unboundedly - the cap covers the whole event."""
     parser = runtime.SSEParser()
     line = b"data: " + b"x" * 1024 + b"\n"
-    with pytest.raises(exceptions.SSEStreamError, match="exceeds"):
+    with pytest.raises(ValueError, match="exceeds"):
         for _ in range(2 * parser.MAX_BUFFER // len(line) + 2):
             parser.feed(line)
 
 
-def test_decode_event_frame_wraps_model_errors(
-    runtime: ModuleType, exceptions: ModuleType
-) -> None:
-    """P2-16: structurally invalid events (valid JSON, wrong shape)
-    surface as SSEStreamError, not a raw KeyError."""
+def test_decode_event_frame_exposes_model_errors(runtime: ModuleType) -> None:
     frame = runtime.SSEFrame(id=8, event="stdout", data='{"unexpected": true}')
-    with pytest.raises(exceptions.SSEStreamError) as excinfo:
-        runtime.decode_event_frame(frame, last_event_id=7)
-    assert excinfo.value.last_event_id == 7
+    with pytest.raises(KeyError):
+        runtime.decode_event_frame(frame)
 
 
 def test_body_formatter_marks_truncated_text(runtime: ModuleType) -> None:

@@ -2,13 +2,29 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  decodeFramePayload,
   encodeQuery,
   parseRetryAfter,
   RETRY_DELAYS,
   RetryPolicy,
   SSEParser,
 } from "../lib/runtime.js";
-import { SSEStreamError } from "../lib/errors.js";
+import {
+  APIConnectionError,
+  APIStatusError,
+  ContreeError,
+} from "../lib/errors.js";
+
+test("public errors share the ContreeError root", () => {
+  const connection = new APIConnectionError("offline");
+  assert.ok(connection instanceof ContreeError);
+  assert.equal(connection.timedOut, false);
+  assert.equal(
+    new APIConnectionError("timeout", { timedOut: true }).timedOut,
+    true,
+  );
+  assert.ok(new APIStatusError(418, "teapot") instanceof ContreeError);
+});
 
 test("encodeQuery preserves repeated values", () => {
   assert.equal(
@@ -37,6 +53,22 @@ test("parseRetryAfter: delta seconds, dates, garbage and infinities", () => {
   assert.ok(delay !== null && delay > 25 && delay < 31);
   const past = new Date(Date.now() - 30_000).toUTCString();
   assert.equal(parseRetryAfter(past), 0);
+});
+
+test("an SSE error keeps the last event id", () => {
+  assert.throws(
+    () =>
+      decodeFramePayload(
+        { id: null, event: "sse_error", data: "stream failed" },
+        17,
+      ),
+    (error) => error.constructor === Error && error.lastEventId === 17,
+  );
+  assert.throws(
+    () =>
+      decodeFramePayload({ id: null, event: "stdout", data: "{broken" }, null),
+    SyntaxError,
+  );
 });
 
 test("RetryPolicy validates its configuration", () => {
@@ -72,5 +104,5 @@ test("SSEParser caps the accumulated pending event, not just a line", () => {
     for (let i = 0; i < 100; i += 1) {
       parser.feed(chunk);
     }
-  }, SSEStreamError);
+  }, RangeError);
 });

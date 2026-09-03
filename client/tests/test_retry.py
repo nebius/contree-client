@@ -149,11 +149,10 @@ def test_retry_replays_body_from_initial_offset(
 ) -> None:
     """P1-09: a retry must resend exactly the bytes of the first attempt."""
     base = importlib.import_module("contree_client.base")
+    exceptions = importlib.import_module("contree_client.exceptions")
     runtime = importlib.import_module("contree_client.runtime")
 
     class FlakyClient(base.ContreeSyncClient):
-        retryable_errors = (ConnectionError,)
-
         def __init__(self) -> None:
             super().__init__("token", retry=runtime.RetryPolicy(delays=(0.0,)))
             self.attempts: list[bytes] = []
@@ -161,7 +160,7 @@ def test_retry_replays_body_from_initial_offset(
         def request(self, spec: runtime.RequestSpec) -> runtime.ResponseData:
             self.attempts.append(spec.body.read())
             if len(self.attempts) == 1:
-                raise ConnectionError("dropped mid-flight")
+                raise exceptions.APIConnectionError("dropped mid-flight")
             return runtime.ResponseData(status=200, headers={}, body=b"{}")
 
         def stream(self, spec, auto_decompress=True):
@@ -180,6 +179,28 @@ def test_retry_replays_body_from_initial_offset(
 
     # both attempts transmitted the same bytes, from the initial offset
     assert client.attempts == [b"cdef", b"cdef"]
+
+
+def test_call_does_not_handle_native_connection_error(
+    generated_package: ModuleType,
+) -> None:
+    runtime = importlib.import_module("contree_client.runtime")
+    testing = importlib.import_module("contree_client.testing")
+    client = testing.ContreeClient(retry=runtime.RetryPolicy(delays=(0.0,)))
+    native = ConnectionError("not mapped by an adapter")
+    attempts = 0
+
+    def request(_spec: runtime.RequestSpec) -> runtime.ResponseData:
+        nonlocal attempts
+        attempts += 1
+        raise native
+
+    client.request = request
+    with pytest.raises(ConnectionError) as caught:
+        client.call(runtime.RequestSpec(method="GET", path="/x", idempotent=True))
+
+    assert caught.value is native
+    assert attempts == 1
 
 
 def test_retry_policy_validation(generated_package: ModuleType) -> None:

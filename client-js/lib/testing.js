@@ -7,7 +7,6 @@
  */
 
 import { ContreeClient as GeneratedClient } from "./client.js";
-import { ContreeError } from "./errors.js";
 
 export const RESERVED = new Set([
   "constructor",
@@ -31,7 +30,7 @@ function apiMethodNames() {
 }
 
 function unmocked(operation) {
-  return new ContreeError(
+  return new Error(
     `no mock configured for ${operation}(); arm it with` +
       ` client.mock(${JSON.stringify(operation)}, result)`,
   );
@@ -94,9 +93,7 @@ export class ContreeClient extends GeneratedClient {
   /** Queue an outcome for *operation*; the last one queued is sticky. */
   mock(operation, result = null, { error = null } = {}) {
     if (typeof this[operation] !== "function" || RESERVED.has(operation)) {
-      throw new ContreeError(
-        `unknown API operation ${JSON.stringify(operation)}`,
-      );
+      throw new TypeError(`unknown API operation ${JSON.stringify(operation)}`);
     }
     const queue = this.mocks.get(operation) ?? [];
     queue.push({ result, error });

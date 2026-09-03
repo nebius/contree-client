@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
-import gzip
 import ssl
 from collections.abc import AsyncGenerator
-from contextlib import suppress
+from functools import cached_property
 
 import aiohttp
 
 from . import base
-from .exceptions import ContreeConnectionError, ContreeStreamError, ContreeTimeoutError
+from .exceptions import APIConnectionError
 from .runtime import (
     CHUNK_SIZE,
     RequestSpec,
@@ -19,40 +17,20 @@ from .runtime import (
     RetryPolicy,
     error_for_response,
     library_version,
+    remaining_timeout,
 )
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
 
 
-class ContreeAiohttpConnectionError(
-    ContreeConnectionError, aiohttp.ClientConnectionError
-):
-    """A `ContreeConnectionError` that is also an `aiohttp.ClientConnectionError`."""
-
-
-class ContreeAiohttpTimeoutError(ContreeTimeoutError, TimeoutError):
-    """A `ContreeTimeoutError` that is also a stdlib `TimeoutError`."""
-
-
-class ContreeAiohttpStreamError(ContreeStreamError, aiohttp.ClientPayloadError):
-    """A `ContreeStreamError` that is also an `aiohttp.ClientPayloadError`."""
-
-
 class ContreeAsyncClient(base.ContreeAsyncClient):
     """Asynchronous Contree API client on top of `aiohttp.ClientSession`.
 
-    The session is created lazily on the first request so the client
-    may be constructed outside of a running event loop.
+    The owned session is created lazily inside a running event loop.
     """
 
     log = logger.getChild("aiohttp")
     UA_TRANSPORT_LIBRARY = library_version(aiohttp)
-    retryable_errors = (
-        aiohttp.ClientConnectionError,
-        aiohttp.ServerConnectionError,
-        aiohttp.ClientPayloadError,
-    )
-    nonretryable_errors = (TimeoutError, asyncio.TimeoutError)
 
     def __init__(
         self,
@@ -80,47 +58,68 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 "ssl_context cannot be combined with aiohttp_session;"
                 " configure TLS on the session connector itself"
             )
-        self.__owns_session = aiohttp_session is None
-        self._session = aiohttp_session
-        self._ssl_context = ssl_context
 
-    def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None:
-            connector = (
-                aiohttp.TCPConnector(ssl=self._ssl_context)
-                if self._ssl_context is not None
-                else None
-            )
-            self._session = aiohttp.ClientSession(connector=connector)
-        return self._session
+        self.__ssl_context = ssl_context
+        self.__session = aiohttp_session
+        self.__created_session: aiohttp.ClientSession | None = None
 
-    async def open(self) -> None:
-        """Create the session eagerly (`async with client:` path)."""
-        self._get_session()
+    @cached_property
+    def _session(self) -> aiohttp.ClientSession:
+        if self.__session is not None:
+            return self.__session
+
+        session = aiohttp.ClientSession(
+            connector=(
+                aiohttp.TCPConnector(ssl=self.__ssl_context)
+                if self.__ssl_context is not None
+                else aiohttp.TCPConnector()
+            ),
+            connector_owner=True,
+        )
+        self.__created_session = session
+        return session
 
     async def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
+        headers = list(self.build_headers(spec))
+        timeout = remaining_timeout(spec.deadline, self.timeout)
+        client_timeout = (
+            aiohttp.ClientTimeout(total=timeout)
+            if spec.deadline is None
+            else aiohttp.ClientTimeout(total=timeout, ceil_threshold=float("inf"))
+        )
+        data: ResponseData | None = None
         try:
-            async with self._get_session().request(
+            async with self._session.request(
                 spec.method,
                 url,
                 data=spec.body,
-                headers=self.build_headers(spec),
+                headers=headers,
                 allow_redirects=False,
-                timeout=aiohttp.ClientTimeout(total=self.timeout),
+                timeout=client_timeout,
+                raise_for_status=False,
             ) as response:
                 body = await response.read()
-                return ResponseData(
+                data = ResponseData(
                     status=response.status,
                     headers={k.lower(): v for k, v in response.headers.items()},
                     body=body,
                 )
-        except self.nonretryable_errors as exc:
-            raise ContreeAiohttpTimeoutError.wrap(exc) from exc
-        except aiohttp.ClientPayloadError as exc:
-            raise ContreeAiohttpStreamError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeAiohttpConnectionError.wrap(exc) from exc
+                response.raise_for_status()
+        except aiohttp.ClientResponseError as exc:
+            if data is None:
+                raise APIConnectionError(str(exc)) from exc
+            if data.status >= 400:
+                raise error_for_response(data.status, data.headers, data.body) from exc
+            raise APIConnectionError(str(exc)) from exc
+        except Exception as exc:
+            raise APIConnectionError(
+                str(exc), timed_out=isinstance(exc, TimeoutError)
+            ) from exc
+        remaining_timeout(spec.deadline, None)
+
+        assert data is not None
+        return data
 
     async def stream(
         self,
@@ -128,63 +127,43 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         auto_decompress: bool = True,
     ) -> AsyncGenerator[bytes, None]:
         url = self.build_url(spec)
-        try:
-            async with self._get_session().request(
-                spec.method,
-                url,
-                data=spec.body,
-                headers=self.build_headers(spec),
-                allow_redirects=False,
-                auto_decompress=auto_decompress,
-                timeout=aiohttp.ClientTimeout(
-                    total=None,
-                    sock_connect=self.timeout,
-                    # only SSE may idle (bounded by spec.read_timeout
-                    # when a deadline is set); downloads must time out
-                    sock_read=(
-                        spec.read_timeout
-                        if spec.accept == "text/event-stream"
-                        else self.timeout
-                    ),
-                ),
-            ) as response:
-                self.log.debug(
-                    "%s %s -> %d (stream)", spec.method, url, response.status
-                )
-                if not 200 <= response.status < 300:
-                    try:
-                        body = await response.read()
-                    except self.retryable_errors:
-                        # The status is authoritative even when its optional
-                        # diagnostic body is interrupted.
-                        body = b""
-                    # auto_decompress=False applies to the payload only:
-                    # the error body must still be decoded, or the parsed
-                    # server message is lost
-                    encoding = (response.headers.get("Content-Encoding") or "").lower()
-                    if not auto_decompress and encoding == "gzip":
-                        with suppress(gzip.BadGzipFile, OSError):
-                            body = gzip.decompress(body)
-                    raise error_for_response(
-                        ResponseData(
-                            status=response.status,
-                            headers={k.lower(): v for k, v in response.headers.items()},
-                            body=body,
-                        )
-                    )
-                async for chunk in response.content.iter_chunked(CHUNK_SIZE):
-                    yield chunk
-        except self.nonretryable_errors as exc:
-            raise ContreeAiohttpTimeoutError.wrap(exc) from exc
-        except aiohttp.ClientPayloadError as exc:
-            raise ContreeAiohttpStreamError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeAiohttpConnectionError.wrap(exc) from exc
+        headers = list(self.build_headers(spec))
+        connect_timeout = remaining_timeout(spec.deadline, self.timeout)
+        read_timeout = remaining_timeout(
+            spec.deadline,
+            spec.read_timeout if spec.accept == "text/event-stream" else self.timeout,
+        )
+        if spec.deadline is None:
+            client_timeout = aiohttp.ClientTimeout(
+                total=None,
+                sock_connect=connect_timeout,
+                sock_read=read_timeout,
+            )
+        else:
+            client_timeout = aiohttp.ClientTimeout(
+                total=remaining_timeout(spec.deadline, None),
+                sock_connect=connect_timeout,
+                sock_read=read_timeout,
+                ceil_threshold=float("inf"),
+            )
+        async with self._session.request(
+            spec.method,
+            url,
+            data=spec.body,
+            headers=headers,
+            allow_redirects=False,
+            auto_decompress=auto_decompress,
+            timeout=client_timeout,
+            raise_for_status=False,
+        ) as response:
+            self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status)
+            if response.status >= 400:
+                response.raise_for_status()
+            async for chunk in response.content.iter_chunked(CHUNK_SIZE):
+                remaining_timeout(spec.deadline, None)
+                yield chunk
 
     async def close(self) -> None:
-        if (
-            self.__owns_session
-            and self._session is not None
-            and not self._session.closed
-        ):
-            await self._session.close()
+        if self.__created_session is None or self.__created_session.closed:
+            return
+        await self.__created_session.close()

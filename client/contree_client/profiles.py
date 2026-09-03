@@ -14,7 +14,6 @@ from configparser import ConfigParser
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .exceptions import ContreeError
 from .spec_info import DEFAULT_BASE_URL
 
 AUTH_TYPE_IAM = "iam"
@@ -24,7 +23,7 @@ DEFAULT_PROFILE = "default"
 DEFAULT_IAM_URL = DEFAULT_BASE_URL
 
 
-class ProfileError(ContreeError):
+class ProfileError(ValueError):
     """The requested profile is missing or incomplete."""
 
 

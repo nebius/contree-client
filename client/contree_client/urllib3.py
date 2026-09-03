@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import ssl
 from collections.abc import Iterator
+from typing import Any
 
 import urllib3
 
 from . import base
-from .exceptions import ContreeConnectionError, ContreeTimeoutError
+from .exceptions import APIConnectionError
 from .runtime import (
     CHUNK_SIZE,
     RequestSpec,
@@ -16,19 +17,10 @@ from .runtime import (
     RetryPolicy,
     error_for_response,
     library_version,
+    remaining_timeout,
 )
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
-
-
-class ContreeUrllib3ConnectionError(
-    ContreeConnectionError, urllib3.exceptions.HTTPError
-):
-    """A `ContreeConnectionError` that is also a `urllib3.exceptions.HTTPError`."""
-
-
-class ContreeUrllib3TimeoutError(ContreeTimeoutError, urllib3.exceptions.TimeoutError):
-    """A `ContreeTimeoutError` that is also a `urllib3.exceptions.TimeoutError`."""
 
 
 class ContreeClient(base.ContreeSyncClient):
@@ -42,8 +34,6 @@ class ContreeClient(base.ContreeSyncClient):
 
     log = logger.getChild("urllib3")
     UA_TRANSPORT_LIBRARY = library_version(urllib3)
-    retryable_errors = (urllib3.exceptions.HTTPError,)
-    nonretryable_errors = (urllib3.exceptions.TimeoutError,)
 
     def __init__(
         self,
@@ -86,31 +76,45 @@ class ContreeClient(base.ContreeSyncClient):
 
     def request(self, spec: RequestSpec) -> ResponseData:
         url = self.build_url(spec)
+        headers = self._request_headers(spec)
+        pool_options: dict[str, Any] = {}
+        if spec.deadline is None:
+            timeout: float | urllib3.Timeout | None = self.timeout
+        else:
+            total_timeout = remaining_timeout(spec.deadline, None)
+            timeout = urllib3.Timeout(
+                total=total_timeout,
+                connect=remaining_timeout(spec.deadline, self.timeout),
+                read=remaining_timeout(spec.deadline, self.timeout),
+            )
+            pool_options["pool_timeout"] = remaining_timeout(spec.deadline, None)
         try:
             response = self._http.request(
                 spec.method,
                 url,
                 body=spec.body,
-                headers=self._request_headers(spec),
-                timeout=self.timeout,
+                headers=headers,
+                timeout=timeout,
                 redirect=False,
                 retries=False,
                 preload_content=True,
                 decode_content=True,
+                **pool_options,
             )
-        except urllib3.exceptions.NewConnectionError as exc:
-            # urllib3 subclasses this from ConnectTimeoutError; refused/
-            # unreachable is not a deadline elapsing
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
-        except self.nonretryable_errors as exc:
-            raise ContreeUrllib3TimeoutError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
-        return ResponseData(
-            status=response.status,
-            headers={k.lower(): v for k, v in response.headers.items()},
-            body=response.data,
-        )
+            data = ResponseData(
+                status=response.status,
+                headers={k.lower(): v for k, v in response.headers.items()},
+                body=response.data,
+            )
+        except Exception as exc:
+            raise APIConnectionError(
+                str(exc),
+                timed_out=isinstance(exc, urllib3.exceptions.TimeoutError),
+            ) from exc
+        if data.status >= 400:
+            raise error_for_response(data.status, data.headers, data.body)
+        remaining_timeout(spec.deadline, None)
+        return data
 
     def stream(
         self,
@@ -119,52 +123,44 @@ class ContreeClient(base.ContreeSyncClient):
     ) -> Iterator[bytes]:
         decode_content = auto_decompress
         url = self.build_url(spec)
-        try:
-            response = self._http.request(
-                spec.method,
-                url,
-                body=spec.body,
-                headers=self._request_headers(spec),
-                timeout=urllib3.Timeout(
-                    connect=self.timeout,
-                    # only SSE may idle (bounded by spec.read_timeout when
-                    # a deadline is set); downloads must time out
-                    read=spec.read_timeout
-                    if spec.accept == "text/event-stream"
-                    else self.timeout,
-                ),
-                redirect=False,
-                retries=False,
-                preload_content=False,
-                decode_content=decode_content,
+        headers = self._request_headers(spec)
+        connect_timeout = remaining_timeout(spec.deadline, self.timeout)
+        read_timeout = remaining_timeout(
+            spec.deadline,
+            spec.read_timeout if spec.accept == "text/event-stream" else self.timeout,
+        )
+        pool_options: dict[str, Any] = {}
+        if spec.deadline is None:
+            timeout = urllib3.Timeout(
+                connect=connect_timeout,
+                read=read_timeout,
             )
-        except urllib3.exceptions.NewConnectionError as exc:
-            # urllib3 subclasses this from ConnectTimeoutError; refused/
-            # unreachable is not a deadline elapsing
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
-        except self.nonretryable_errors as exc:
-            raise ContreeUrllib3TimeoutError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+        else:
+            timeout = urllib3.Timeout(
+                total=remaining_timeout(spec.deadline, None),
+                connect=connect_timeout,
+                read=read_timeout,
+            )
+            pool_options["pool_timeout"] = remaining_timeout(spec.deadline, None)
+        response = self._http.request(
+            spec.method,
+            url,
+            body=spec.body,
+            headers=headers,
+            timeout=timeout,
+            redirect=False,
+            retries=False,
+            preload_content=False,
+            decode_content=decode_content,
+            **pool_options,
+        )
         try:
             self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status)
-            if not 200 <= response.status < 300:
-                raise error_for_response(
-                    ResponseData(
-                        status=response.status,
-                        headers={k.lower(): v for k, v in response.headers.items()},
-                        body=response.read(decode_content=True),
-                    )
-                )
-            yield from response.stream(CHUNK_SIZE, decode_content=decode_content)
-        except urllib3.exceptions.NewConnectionError as exc:
-            # urllib3 subclasses this from ConnectTimeoutError; refused/
-            # unreachable is not a deadline elapsing
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
-        except self.nonretryable_errors as exc:
-            raise ContreeUrllib3TimeoutError.wrap(exc) from exc
-        except self.retryable_errors as exc:
-            raise ContreeUrllib3ConnectionError.wrap(exc) from exc
+            if response.status >= 400:
+                raise urllib3.exceptions.HTTPError(f"HTTP {response.status}")
+            for chunk in response.stream(CHUNK_SIZE, decode_content=decode_content):
+                remaining_timeout(spec.deadline, None)
+                yield chunk
         finally:
             # close before releasing: an aborted stream must not put a
             # half-read connection back into the pool

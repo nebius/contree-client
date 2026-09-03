@@ -2,16 +2,18 @@
 
 Python and JavaScript clients for the Contree API, generated from one
 OpenAPI specification at build time. Same wire protocol, same models,
-same helpers — pick the language, the concepts transfer one-to-one.
+same helpers — pick the language, the concepts transfer one-to-one. The
+[Tutorial](tutorial.md) walks through the whole API across languages,
+side by side.
 
-- **[Python](python/tutorial.md)** — sync and async flavours over
-  pluggable [transport adapters](python/adapters.md) (stdlib
-  http.client, urllib3, requests, httpx, aiohttp); the whole API
-  surface lives on the `ContreeSyncClient` / `ContreeAsyncClient`
-  base classes, so code written against them works with any backend.
-- **[JavaScript](js/tutorial.md)** — pure ESM with TypeScript
-  declarations over the platform `fetch` (Node ≥ 18.17 and browsers);
-  camelCase methods, wire-spelled fields.
+- **Python** — sync and async flavours over pluggable
+  [transport adapters](python/adapters.md) (stdlib http.client,
+  urllib3, requests, httpx, aiohttp); the whole API surface lives on
+  the `ContreeSyncClient` / `ContreeAsyncClient` base classes, so code
+  written against them works with any backend.
+- **JavaScript** — pure ESM with TypeScript declarations over the
+  platform `fetch` (Node ≥ 18.17 and browsers); camelCase methods,
+  wire-spelled fields.
 
 ## Install
 
@@ -79,10 +81,15 @@ await client.close();
 ## Documentation
 
 ```{toctree}
+:maxdepth: 1
+
+tutorial
+```
+
+```{toctree}
 :caption: Python client
 :maxdepth: 2
 
-python/tutorial
 python/adapters
 python/api
 python/testing
@@ -92,7 +99,6 @@ python/testing
 :caption: JavaScript client
 :maxdepth: 2
 
-js/tutorial
 js/api
 js/reference
 js/testing

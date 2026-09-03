@@ -21,34 +21,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "client"))
 
-# the generated client package is imported lazily via importlib: a
-# top-level import would blow up pytest startup on a fresh clone where
-# the package has not been generated yet
-
-
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
-    """Documentation examples need the generated client package.
-
-    When it is absent (fresh clone without `make generate` / no
-    CONTREE_SPEC exported) the md tests are skipped instead of
-    erroring out on import.
-    """
-    try:
-        importlib.import_module("contree_client.models")
-        return
-    except ImportError:
-        pass
-    skip = pytest.mark.skip(
-        reason="the generated contree_client package is not available;"
-        " export CONTREE_SPEC and run `make generate`"
-    )
-    for item in items:
-        if item.path is not None and item.path.suffix == ".md":
-            item.add_marker(skip)
-
-
 OPERATION_ID = "87654321-9abc-baba-deda-0123456789ab"
 IMAGE_UUID = "12345678-9abc-baba-deda-0123456789ab"
 FILE_UUID = "a9165a5d-5c86-4bd8-8ee4-ae46c19cf45d"

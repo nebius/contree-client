@@ -25,6 +25,7 @@ trailing options object.
 
 ## The client
 
+<!-- name: api_client; fixtures: token, customFetch -->
 ```js
 import { ContreeClient, RetryPolicy } from "contree-client";
 
@@ -107,34 +108,37 @@ wire, an explicit `null` is sent as JSON null. Timestamps become
 
 ## Errors
 
-The hierarchy is the Python one with camelCase fields:
-
 ```text
 ContreeError
-├── SSEStreamError          (lastEventId)
-└── ContreeAPIError         (status, error, traceback, retryAfter)
-    ├── BadRequestError     400
-    ├── UnauthorizedError   401
-    ├── ForbiddenError      403
-    ├── NotFoundError       404
-    ├── ConflictError       409
-    ├── GoneError           410
-    ├── UnprocessableEntityError 422
-    ├── TooEarlyError       425
-    └── ServerError         5xx
+├── APIConnectionError
+└── APIStatusError                    (status, error, traceback, retryAfter)
+    ├── BadRequestError               400
+    ├── AuthenticationError           401
+    ├── PermissionDeniedError         403
+    ├── NotFoundError                 404
+    ├── ConflictError                 409
+    ├── GoneError                     410
+    ├── UnprocessableEntityError      422
+    ├── TooEarlyError                 425
+    ├── RateLimitError                429
+    └── ServerError                   >=500
 ```
 
-Timeouts (connect, download idle, SSE deadline) reject with a platform
-`DOMException` whose `name` is `"TimeoutError"`.
+`ContreeClient.request()` maps fetch and buffered body-read failures to
+`APIConnectionError`. Its standard `cause` property keeps the original
+error for diagnostics. `timedOut` is true for timeout failures. HTTP responses
+with status 400 or higher map to `APIStatusError` or its matching subclass.
+
+Local validation and response parsing use native JavaScript errors.
+Stream status failures use `RangeError`. Other stream failures remain native.
 
 ## Platform notes
 
 - Browsers forbid the `User-Agent` header — it is only attached in
   Node; `client.userAgent()` reports the composed value everywhere.
 - `fromProfile()` and `ReadableStream` request bodies are Node-only.
-- A truncated compressed download ends the stream short instead of
-  raising (fetch hides the raw bytes); the Python client raises
-  `DecompressionError` there.
+- A truncated compressed download can end short because fetch hides
+  the raw compressed bytes.
 
 The complete generated surface — every method with its options and
 every model with its fields — lives on the [API reference](reference.rst)

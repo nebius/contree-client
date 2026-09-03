@@ -63,9 +63,11 @@ const client = new ContreeClient(token, { retry: new RetryPolicy() });
 const stored = await client.ensureFile(bytes);
 ```
 
-Only idempotent requests are retried (410/425/5xx and transient
-network errors, honoring `Retry-After`); pass
-`new RetryPolicy({ retryUnsafe: true })` to opt POSTs in.
+Idempotent requests retry after connection errors, request
+timeouts, and retryable responses (410/425/429/5xx). The client honors
+`Retry-After`. Pass `new RetryPolicy({ retryUnsafe: true })` to retry
+POSTs. Responses 425 and 429 are always safe to retry because they mean
+the backend did not process the request.
 
 ## Bring your own fetch
 
@@ -93,7 +95,7 @@ const client = new ContreeClient(token, {
   (`ReadableStream` uploads) are Node-only.
 - A truncated compressed download ends the stream short instead of
   throwing: `fetch` is lenient about a missing gzip trailer (the
-  Python client raises `DecompressionError` there).
+  Python client raises `EOFError` there).
 
 ## Testing
 
