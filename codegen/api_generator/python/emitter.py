@@ -1398,13 +1398,17 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
 
         Native stream failures trigger a terminal-status probe and a
         reconnect from the last event id. Iteration ends at the
-        ``completion`` event, a terminal status, or the timeout.
+        ``completion`` event or the timeout. After a terminal status,
+        drain the retained log without following before ending iteration.
+        This final read is best-effort: stream failures are logged, and
+        status-only waiting still works when the events endpoint is absent.
         The timeout is an absolute deadline checked whenever iteration
         resumes. Caller code between events is not interrupted. A
         synchronous native read can delay ``TimeoutError`` until it
         returns.
         """
         last_id = last_event_id
+        terminal = False
         deadline = None if timeout is None else time.monotonic() + timeout
 
         def check_deadline() -> None:
@@ -1420,7 +1424,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
             try:
                 for event in self.iter_operation_events(
                     operation_id,
-                    follow=True,
+                    follow=not terminal,
                     spid=spid,
                     since=since,
                     last_event_id=last_id,
@@ -1437,11 +1441,13 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                 if isinstance(resume_id, int):
                     last_id = resume_id
                 self.log.warning("stream broken (last_id=%s): %s", last_id, exc)
-            # the stream ended or broke without a completion frame:
-            # the retry must not outlive the operation itself
-            if self.operation_terminal(operation_id, deadline):
+            if terminal:
                 return
-            if last_id == events_before:
+            # A terminal status does not mean this subscriber received all
+            # events. Reconnect once to drain the retained tail, retaining
+            # the cursor, filters and original deadline.
+            terminal = self.operation_terminal(operation_id, deadline)
+            if not terminal and last_id == events_before:
                 delay = TIGHT_LOOP_FLOOR
                 if deadline is not None:
                     delay = min(delay, max(0.0, deadline - time.monotonic()))
@@ -1737,11 +1743,15 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
 
         Native stream failures trigger a terminal-status probe and a
         reconnect from the last event id. Iteration ends at the
-        ``completion`` event, a terminal status, or the timeout.
+        ``completion`` event or the timeout. After a terminal status,
+        drain the retained log without following before ending iteration.
+        This final read is best-effort: stream failures are logged, and
+        status-only waiting still works when the events endpoint is absent.
         The timeout is an absolute deadline checked whenever iteration
         resumes. Caller code between events is not interrupted.
         """
         last_id = last_event_id
+        terminal = False
         deadline = None if timeout is None else time.monotonic() + timeout
 
         def check_deadline() -> None:
@@ -1760,7 +1770,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 async with aclosing(
                     self.iter_operation_events(
                         operation_id,
-                        follow=True,
+                        follow=not terminal,
                         spid=spid,
                         since=since,
                         last_event_id=last_id,
@@ -1779,11 +1789,13 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 if isinstance(resume_id, int):
                     last_id = resume_id
                 self.log.warning("stream broken (last_id=%s): %s", last_id, exc)
-            # the stream ended or broke without a completion frame:
-            # the retry must not outlive the operation itself
-            if await self.operation_terminal(operation_id, deadline):
+            if terminal:
                 return
-            if last_id == events_before:
+            # A terminal status does not mean this subscriber received all
+            # events. Reconnect once to drain the retained tail, retaining
+            # the cursor, filters and original deadline.
+            terminal = await self.operation_terminal(operation_id, deadline)
+            if not terminal and last_id == events_before:
                 delay = TIGHT_LOOP_FLOOR
                 if deadline is not None:
                     delay = min(delay, max(0.0, deadline - time.monotonic()))

@@ -252,8 +252,10 @@ def test_follow_reconnects_after_truncated_stream(
 
     client = TruncatedStreamClient()
     events = list(client.follow_operation_events(OPERATION_UUID))
-    assert events == []  # the stream died; the terminal probe ended it
-    assert client.stream_attempts == 1
+    assert events == []
+    # The terminal probe triggers one final retained-log read; a broken
+    # events endpoint must not keep status-only waiting alive forever.
+    assert client.stream_attempts == 2
 
 
 def test_sse_id_only_frames_advance_the_resume_cursor(
