@@ -181,6 +181,20 @@ class ContreeClient(base.ContreeSyncClient):
     log = logger.getChild("http")
     UA_TRANSPORT_LIBRARY = "http.client"
 
+    def _stream_error_retryable(
+        self,
+        exc: Exception,
+        policy: RetryPolicy,
+    ) -> bool | None:
+        status = getattr(exc, "status", None)
+        if isinstance(exc, http.client.HTTPException) and isinstance(status, int):
+            return policy.retryable_status(status)
+        if isinstance(
+            exc, (OSError, http.client.IncompleteRead, http.client.BadStatusLine)
+        ):
+            return True
+        return super()._stream_error_retryable(exc, policy)
+
     def __init__(
         self,
         token: str,
@@ -333,9 +347,11 @@ class ContreeClient(base.ContreeSyncClient):
                 response.status,
             )
             if response.status >= 400:
-                raise http.client.HTTPException(
+                error = http.client.HTTPException(
                     f"HTTP {response.status}: {response.reason}"
                 )
+                error.__dict__["status"] = response.status
+                raise error
             # The connect timeout has done its job. SSE can otherwise
             # stay idle indefinitely, while downloads use the client
             # timeout. An absolute deadline bounds both cases.

@@ -77,34 +77,33 @@ def test_follow_operation_events_reconnects(
     assert stream_requests[1].headers["last-event-id"] == "1"
 
 
-def test_wait_operation_probes_status_when_events_are_missing(
-    invoke: Callable[..., Any], stub_server: StubServer
+def test_wait_operation_fails_when_events_are_missing(
+    invoke: Callable[..., Any], stub_server: StubServer, exceptions: ModuleType
 ) -> None:
-    operation = invoke("wait_operation", EVENTS_UNAVAILABLE_OPERATION_UUID)
-
-    assert str(operation.status) == "SUCCESS"
+    with pytest.raises(exceptions.APIConnectionError):
+        invoke("wait_operation", EVENTS_UNAVAILABLE_OPERATION_UUID)
     events_path = f"/v1/operations/{EVENTS_UNAVAILABLE_OPERATION_UUID}/events"
     events_requests = [c for c in stub_server.captured if c.path == events_path]
-    assert len(events_requests) >= 2
+    # No status polling or final status fetch may hide the stream failure.
+    assert len(events_requests) == 1
     status_path = f"/v1/operations/{EVENTS_UNAVAILABLE_OPERATION_UUID}"
     status_requests = [c for c in stub_server.captured if c.path == status_path]
-    assert len(status_requests) >= 3
+    assert status_requests == []
 
 
-def test_follow_operation_events_ends_after_terminal_probe(
-    invoke: Callable[..., Any], stub_server: StubServer
+def test_follow_operation_events_reports_unavailable_log(
+    invoke: Callable[..., Any], stub_server: StubServer, exceptions: ModuleType
 ) -> None:
-    events = invoke(
-        "follow_operation_events", EVENTS_UNAVAILABLE_OPERATION_UUID, collect=True
-    )
+    with pytest.raises(exceptions.APIConnectionError):
+        invoke(
+            "follow_operation_events", EVENTS_UNAVAILABLE_OPERATION_UUID, collect=True
+        )
 
-    assert events == []
 
-
-def test_wait_operation_reconnect_respects_timeout(
-    invoke: Callable[..., Any], stub_server: StubServer
+def test_wait_operation_missing_events_fails_even_with_deadline(
+    invoke: Callable[..., Any], stub_server: StubServer, exceptions: ModuleType
 ) -> None:
-    with pytest.raises(TimeoutError, match=EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID):
+    with pytest.raises(exceptions.APIConnectionError):
         invoke(
             "wait_operation",
             EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID,
@@ -112,17 +111,18 @@ def test_wait_operation_reconnect_respects_timeout(
         )
 
 
-def test_status_probe_propagates_api_status_error(
+def test_permanent_stream_failure_does_not_probe_status(
     invoke: Callable[..., Any],
     stub_server: StubServer,
     exceptions: ModuleType,
 ) -> None:
-    with pytest.raises(exceptions.NotFoundError):
+    with pytest.raises(exceptions.APIConnectionError):
         invoke(
             "follow_operation_events",
             PAYLOAD_FORBIDDEN_OPERATION_UUID,
             collect=True,
         )
+    assert all(request.path.endswith("/events") for request in stub_server.captured)
 
 
 def test_resolve_image_tag_prefix(

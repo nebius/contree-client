@@ -6,11 +6,11 @@ from typing import Any
 
 
 class ContreeError(Exception):
-    """Base class for normalized buffered request errors."""
+    """Base class for normalized API client errors."""
 
 
 class APIConnectionError(ContreeError):
-    """An adapter could not complete a buffered ``request()`` call.
+    """A buffered request failed or an operation event log could not be read.
 
     ``timed_out`` identifies a timeout without exposing a backend type.
     """

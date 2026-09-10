@@ -399,9 +399,25 @@ The client checks it whenever iteration resumes, but it does not interrupt
 caller code between yielded events. A synchronous native read started before
 expiry can delay `TimeoutError` until it returns. Status probes use one
 transport attempt because the event follower controls reconnection.
-`RetryPolicy` never retries streaming requests. `follow_operation_events`
-handles native stream failures and reconnects with `Last-Event-Id`. A terminal
-operation stops reconnection.
+Low-level streaming requests preserve native backend exceptions and are not
+retried by `call()`. `follow_operation_events` handles network interruptions
+and reconnects with `Last-Event-Id`; a transport timeout only ends the follower
+when its absolute deadline has elapsed. Unexpected errors, including malformed
+event data and corrupt compressed bodies, propagate without retry.
+
+After observing terminal status, the Python follower reads the retained log
+with `follow=False`, preserving the cursor, filters, and original deadline.
+An interrupted read resumes from the last received event id. These drain
+attempts use the configured `RetryPolicy` statuses, delays, and `max_attempts`,
+or three attempts with the default delays when no policy is configured.
+A clean EOF completes a filtered or explicitly resumed log even without a
+`completion` event. An unfiltered log must include `completion`; otherwise the
+follower raises `APIConnectionError`.
+A permanent HTTP failure or exhausted drain budget raises `APIConnectionError`
+with the original failure as its cause, rather than silently returning partial
+events. `wait_operation` also requires a successfully consumed event log and
+propagates stream failures. Its final status fetch occurs only after the
+follower completes successfully and shares the original deadline.
 
 ::::{tab-set}
 
@@ -457,6 +473,22 @@ to the matching `APIStatusError`. Transport failures become
 `APIConnectionError`, with the backend exception as `__cause__`.
 Streaming methods keep backend errors, including HTTP status failures.
 Task cancellation propagates unchanged.
+
+## Adding an adapter
+
+Keep native exceptions in the low-level `stream()` method. Extend the internal
+`_stream_error_retryable(exc, policy)` hook to return `True` for recognized
+network interruptions and retryable HTTP responses, `False` for permanent HTTP
+failures, and delegate unknown errors to the base hook. The base recognizes
+shared connection, timeout, and truncated-stream failures; returning `None`
+keeps programming and parsing errors visible. For native HTTP errors, consult
+`policy.retryable_status(status)`. The stdlib and urllib3 adapters attach the
+response status to their existing native exception without changing its type.
+
+The follower checks the actual absolute deadline; adapters must not infer its
+expiry from an exception class or a per-connection timeout. Add contract tests
+for native connect/read/reset/truncated/status failures and verify cursor
+resume and stream closure with the shared lifecycle tests.
 
 ## User-Agent
 
