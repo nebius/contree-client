@@ -20,18 +20,27 @@ def terminal_log(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
         completion: bool = True,
         replay_error: int | None = None,
         replay_hang: float = 0.0,
+        status_failures: int = 0,
     ) -> None:
+        status_attempts = 0
+
         def route(request: server.Captured, attempts: Counter[str]) -> server.Reply:
+            nonlocal status_attempts
             if request.path.endswith("/events"):
+                cursor = int(request.headers.get("last-event-id", "-1"))
                 if request.query.get("follow") == ["1"]:
-                    chunks = {
+                    prefix_events = {
                         "empty": [],
-                        "eof": [
-                            server.sse_frame(server.EVENT_INIT),
-                            server.sse_frame(server.EVENT_SPAWN),
-                        ],
-                        "error": server.BROKEN_SSE_FRAMES,
+                        "eof": [server.EVENT_INIT, server.EVENT_SPAWN],
+                        "error": [server.EVENT_INIT, server.EVENT_SPAWN],
                     }[prefix]
+                    chunks = [
+                        server.sse_frame(event)
+                        for event in prefix_events
+                        if event["id"] > cursor
+                    ]
+                    if prefix == "error":
+                        chunks += server.BROKEN_SSE_FRAMES[2:]
                 else:
                     if replay_error is not None:
                         return server.json_reply(
@@ -56,7 +65,6 @@ def terminal_log(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
                                 },
                             }
                         )
-                    cursor = int(request.headers.get("last-event-id", "-1"))
                     chunks = [
                         server.sse_frame(event)
                         for event in events
@@ -67,6 +75,11 @@ def terminal_log(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
                     content_type="text/event-stream",
                     stream_chunks=chunks,
                     hang=replay_hang if request.query.get("follow") != ["1"] else 0.0,
+                )
+            status_attempts += 1
+            if status_attempts <= status_failures:
+                return server.json_reply(
+                    500, {"error": "status temporarily unavailable", "status": 500}
                 )
             return server.json_reply(
                 200, {**server.OPERATION_RESPONSE, "status": status}
@@ -101,6 +114,23 @@ def test_terminal_probe_drains_retained_log(
     assert requests[-1].headers.get("last-event-id") == (
         None if prefix == "empty" else "1"
     )
+
+
+def test_transient_status_failure_resumes_without_duplicate_events(
+    invoke: Callable[..., Any],
+    stub_server: server.StubServer,
+    terminal_log: Callable[..., None],
+) -> None:
+    terminal_log(status_failures=1)
+    events = invoke(
+        "follow_operation_events", server.OPERATION_UUID, timeout=2.0, collect=True
+    )
+
+    assert [event.id for event in events] == [0, 1, 2, 3]
+    requests = [r for r in stub_server.captured if r.path.endswith("/events")]
+    assert len(requests) == 3
+    assert requests[1].query.get("follow") == ["1"]
+    assert requests[1].headers.get("last-event-id") == "1"
 
 
 def test_filtered_retained_log_can_end_without_completion(

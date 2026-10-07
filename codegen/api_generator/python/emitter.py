@@ -1421,6 +1421,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         while True:
             check_deadline()
             events_before = last_id
+            deadline_limited = deadline_limits_timeout(deadline, self.timeout)
             try:
                 for event in self.iter_operation_events(
                     operation_id,
@@ -1436,6 +1437,17 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                         return
                     check_deadline()
             except Exception as exc:
+                if deadline_limited and (
+                    isinstance(exc, TimeoutError)
+                    or (
+                        isinstance(exc, APIConnectionError)
+                        and exc.timed_out
+                    )
+                ):
+                    raise TimeoutError(
+                        f"operation {operation_id} events did not complete"
+                        f" within {timeout}s"
+                    ) from exc
                 check_deadline()
                 resume_id = getattr(exc, "last_event_id", None)
                 if isinstance(resume_id, int):
@@ -1764,6 +1776,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         while True:
             check_deadline()
             events_before = last_id
+            deadline_limited = deadline_limits_timeout(deadline, self.timeout)
             try:
                 # aclosing: leaving this scope must close the transport
                 # stream even when the caller aborts the iteration
@@ -1784,6 +1797,17 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                             return
                         check_deadline()
             except Exception as exc:
+                if deadline_limited and (
+                    isinstance(exc, TimeoutError)
+                    or (
+                        isinstance(exc, APIConnectionError)
+                        and exc.timed_out
+                    )
+                ):
+                    raise TimeoutError(
+                        f"operation {operation_id} events did not complete"
+                        f" within {timeout}s"
+                    ) from exc
                 check_deadline()
                 resume_id = getattr(exc, "last_event_id", None)
                 if isinstance(resume_id, int):

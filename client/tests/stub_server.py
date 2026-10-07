@@ -848,6 +848,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Encoding", "gzip")
         self.send_header("Transfer-Encoding", "chunked")
+        # Every streamed response below closes its socket. Advertise
+        # that fact before the terminating chunk so HTTP/1.1 clients
+        # do not briefly return the connection to a keep-alive pool
+        # and race the server-side close on their next request.
+        self.send_header("Connection", "close")
         self.end_headers()
         compressor = zlib.compressobj(6, zlib.DEFLATED, 16 + zlib.MAX_WBITS)
         try:
