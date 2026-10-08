@@ -30,6 +30,15 @@ class ContreeClient(base.ContreeSyncClient):
     log = logger.getChild("httpx")
     UA_TRANSPORT_LIBRARY = library_version(httpx)
 
+    def _stream_timeout_reached_deadline(
+        self,
+        exc: Exception,
+        deadline_limited: bool,
+    ) -> bool:
+        return isinstance(exc, httpx.ReadTimeout) or (
+            deadline_limited and isinstance(exc, httpx.TimeoutException)
+        )
+
     def __init__(
         self,
         token: str,
@@ -151,6 +160,15 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     log = logger.getChild("httpx")
     UA_TRANSPORT_LIBRARY = library_version(httpx)
+
+    def _stream_timeout_reached_deadline(
+        self,
+        exc: Exception,
+        deadline_limited: bool,
+    ) -> bool:
+        return isinstance(exc, httpx.ReadTimeout) or (
+            deadline_limited and isinstance(exc, httpx.TimeoutException)
+        )
 
     def __init__(
         self,

@@ -1078,6 +1078,17 @@ class ContreeClientBase:
         # e.g. identity="my-app/1.2.3" - the library tokens stay
         self.identity = identity
 
+    def _stream_timeout_reached_deadline(
+        self,
+        exc: Exception,
+        deadline_limited: bool,
+    ) -> bool:
+        """Whether a native stream timeout exhausted its request deadline."""
+        return deadline_limited and (
+            isinstance(exc, TimeoutError)
+            or isinstance(exc, APIConnectionError) and exc.timed_out
+        )
+
     @classmethod
     def from_profile(
         cls: type[TClient],
@@ -1437,13 +1448,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                         return
                     check_deadline()
             except Exception as exc:
-                if deadline_limited and (
-                    isinstance(exc, TimeoutError)
-                    or (
-                        isinstance(exc, APIConnectionError)
-                        and exc.timed_out
-                    )
-                ):
+                if self._stream_timeout_reached_deadline(exc, deadline_limited):
                     raise TimeoutError(
                         f"operation {operation_id} events did not complete"
                         f" within {timeout}s"
@@ -1797,13 +1802,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                             return
                         check_deadline()
             except Exception as exc:
-                if deadline_limited and (
-                    isinstance(exc, TimeoutError)
-                    or (
-                        isinstance(exc, APIConnectionError)
-                        and exc.timed_out
-                    )
-                ):
+                if self._stream_timeout_reached_deadline(exc, deadline_limited):
                     raise TimeoutError(
                         f"operation {operation_id} events did not complete"
                         f" within {timeout}s"

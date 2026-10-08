@@ -32,6 +32,15 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
     log = logger.getChild("aiohttp")
     UA_TRANSPORT_LIBRARY = library_version(aiohttp)
 
+    def _stream_timeout_reached_deadline(
+        self,
+        exc: Exception,
+        deadline_limited: bool,
+    ) -> bool:
+        return isinstance(exc, aiohttp.SocketTimeoutError) or (
+            deadline_limited and isinstance(exc, TimeoutError)
+        )
+
     def __init__(
         self,
         token: str,

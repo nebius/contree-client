@@ -181,6 +181,15 @@ class ContreeClient(base.ContreeSyncClient):
     log = logger.getChild("http")
     UA_TRANSPORT_LIBRARY = "http.client"
 
+    def _stream_timeout_reached_deadline(
+        self,
+        exc: Exception,
+        deadline_limited: bool,
+    ) -> bool:
+        return bool(
+            getattr(exc, "_contree_deadline_read", False)
+        ) or super()._stream_timeout_reached_deadline(exc, deadline_limited)
+
     def __init__(
         self,
         token: str,
@@ -356,7 +365,12 @@ class ContreeClient(base.ContreeSyncClient):
                 connection.timeout = timeout
                 if connection.sock is not None:
                     connection.sock.settimeout(timeout)
-                raw = response.read1(CHUNK_SIZE)
+                try:
+                    raw = response.read1(CHUNK_SIZE)
+                except TimeoutError as exc:
+                    if spec.deadline is not None:
+                        exc.__dict__["_contree_deadline_read"] = True
+                    raise
                 remaining_timeout(spec.deadline, None)
                 if not raw:
                     tail = decoder.flush()

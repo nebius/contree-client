@@ -35,6 +35,15 @@ class ContreeClient(base.ContreeSyncClient):
     log = logger.getChild("urllib3")
     UA_TRANSPORT_LIBRARY = library_version(urllib3)
 
+    def _stream_timeout_reached_deadline(
+        self,
+        exc: Exception,
+        deadline_limited: bool,
+    ) -> bool:
+        return isinstance(exc, urllib3.exceptions.ReadTimeoutError) or (
+            deadline_limited and isinstance(exc, urllib3.exceptions.TimeoutError)
+        )
+
     def __init__(
         self,
         token: str,

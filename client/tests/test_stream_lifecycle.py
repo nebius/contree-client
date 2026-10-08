@@ -13,9 +13,13 @@ import importlib
 import json
 from collections.abc import AsyncIterator, Awaitable
 from types import ModuleType, SimpleNamespace
+from typing import Any
 
+import aiohttp
 import httpx
 import pytest
+import requests
+import urllib3
 
 from tests.stub_server import OPERATION_RESPONSE, OPERATION_UUID
 
@@ -52,6 +56,97 @@ class FakeClock:
 
     def monotonic(self) -> float:
         return self.now
+
+
+def native_read_timeout(backend: str) -> Exception:
+    if backend == "http":
+        error = TimeoutError("read timed out")
+        error.__dict__["_contree_deadline_read"] = True
+        return error
+    if backend == "urllib3":
+        return urllib3.exceptions.ReadTimeoutError(None, "/events", "read timed out")
+    if backend == "requests":
+        cause = urllib3.exceptions.ReadTimeoutError(None, "/events", "read timed out")
+        return requests.exceptions.ConnectionError(cause)
+    if backend in ("httpx", "httpx_async"):
+        return httpx.ReadTimeout("read timed out")
+    if backend == "aiohttp":
+        return aiohttp.SocketTimeoutError("read timed out")
+    raise AssertionError(f"unknown backend {backend}")
+
+
+def native_connect_timeout(backend: str) -> Exception:
+    if backend == "http":
+        return TimeoutError("connect timed out")
+    if backend == "urllib3":
+        return urllib3.exceptions.ConnectTimeoutError(None, "connect timed out")
+    if backend == "requests":
+        return requests.exceptions.ConnectTimeout("connect timed out")
+    if backend in ("httpx", "httpx_async"):
+        return httpx.ConnectTimeout("connect timed out")
+    if backend == "aiohttp":
+        return aiohttp.ConnectionTimeoutError("connect timed out")
+    raise AssertionError(f"unknown backend {backend}")
+
+
+@pytest.mark.parametrize(
+    "backend", ("http", "urllib3", "requests", "httpx", "httpx_async", "aiohttp")
+)
+def test_follow_classifies_native_read_timeout_as_deadline(
+    generated_package: ModuleType,
+    backend: str,
+) -> None:
+    module_name = "httpx" if backend == "httpx_async" else backend
+    module = importlib.import_module(f"contree_client.{module_name}")
+    async_backend = backend in ("httpx_async", "aiohttp")
+    client_class = module.ContreeAsyncClient if async_backend else module.ContreeClient
+    client = client_class("token", timeout=0.01)
+    error = native_read_timeout(backend)
+    assert not client._stream_timeout_reached_deadline(
+        native_connect_timeout(backend), deadline_limited=False
+    )
+
+    if async_backend:
+
+        async def fail_events(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+            raise error
+            yield  # pragma: no cover
+
+        async def unexpected_probe(*args: Any, **kwargs: Any) -> bool:
+            raise AssertionError("deadline timeout must not trigger a status probe")
+
+        client.iter_operation_events = fail_events
+        client.operation_terminal = unexpected_probe
+
+        async def scenario() -> None:
+            try:
+                with pytest.raises(TimeoutError, match=UUID):
+                    _ = [
+                        event
+                        async for event in client.follow_operation_events(
+                            UUID, timeout=10.0
+                        )
+                    ]
+            finally:
+                await client.close()
+
+        asyncio.run(scenario())
+    else:
+
+        def fail_events(*args: Any, **kwargs: Any):
+            raise error
+            yield  # pragma: no cover
+
+        def unexpected_probe(*args: Any, **kwargs: Any) -> bool:
+            raise AssertionError("deadline timeout must not trigger a status probe")
+
+        client.iter_operation_events = fail_events
+        client.operation_terminal = unexpected_probe
+        try:
+            with pytest.raises(TimeoutError, match=UUID):
+                list(client.follow_operation_events(UUID, timeout=10.0))
+        finally:
+            client.close()
 
 
 @pytest.mark.parametrize(
