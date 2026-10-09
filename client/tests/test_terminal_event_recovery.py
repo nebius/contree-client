@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import zlib
 from collections import Counter
 from collections.abc import Callable
@@ -13,7 +14,7 @@ import pytest
 import requests
 import urllib3
 
-from contree_client import RetryPolicy
+from contree_client import RetryPolicy, testing
 from contree_client.exceptions import APIConnectionError
 from tests import stub_server as server
 from tests.conftest import BACKENDS, TOKEN, client_class, make_invoke
@@ -290,17 +291,24 @@ def test_retained_log_uses_configured_retry_budget(
     )
 
 
-def test_retry_delay_respects_original_deadline(
-    invoke: Callable[..., Any],
-    terminal_log: Callable[..., None],
-    stub_server: server.StubServer,
-) -> None:
-    terminal_log(replay_error=500)
+@pytest.mark.parametrize("async_mode", [False, True])
+def test_retry_delay_respects_original_deadline(async_mode: bool) -> None:
+    cls = testing.ContreeAsyncClient if async_mode else testing.ContreeClient
+    client = cls(retry=RetryPolicy(delays=(5.0,)))
+    client.mock("iter_operation_events", [])
+    client.mock("iter_operation_events", error=ConnectionError("interrupted drain"))
+    client.mock("operation_terminal", True)
+    invoke = make_invoke("httpx_async" if async_mode else "http", lambda: client)
+
+    started = time.monotonic()
     with pytest.raises(TimeoutError):
         invoke(
-            "follow_operation_events", server.OPERATION_UUID, timeout=0.05, collect=True
+            "follow_operation_events", server.OPERATION_UUID, timeout=0.25, collect=True
         )
-    assert len([r for r in stub_server.captured if r.path.endswith("/events")]) == 2
+    assert time.monotonic() - started < 2.0
+    assert any(
+        not call.kwargs["follow"] for call in client.calls_for("iter_operation_events")
+    )
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
