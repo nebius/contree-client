@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import requests
 import requests.adapters
-from urllib3.exceptions import ReadTimeoutError
+import urllib3
 from urllib3.util import Timeout as Urllib3Timeout
 
 from . import base
@@ -45,19 +45,27 @@ class ContreeClient(base.ContreeSyncClient):
     log = logger.getChild("requests")
     UA_TRANSPORT_LIBRARY = library_version(requests)
 
-    def _stream_timeout_reached_deadline(
+    def _stream_error_retryable(
         self,
         exc: Exception,
-        deadline_limited: bool,
-    ) -> bool:
-        read_timeout = isinstance(exc, requests.exceptions.ReadTimeout) or (
-            isinstance(exc, requests.exceptions.ConnectionError)
-            and bool(exc.args)
-            and isinstance(exc.args[0], ReadTimeoutError)
-        )
-        return read_timeout or (
-            deadline_limited and isinstance(exc, requests.exceptions.Timeout)
-        )
+        policy: RetryPolicy,
+    ) -> bool | None:
+        if isinstance(exc, requests.exceptions.HTTPError):
+            if exc.response is not None:
+                return policy.retryable_status(exc.response.status_code)
+            return False
+        if isinstance(
+            exc,
+            (
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError,
+                urllib3.exceptions.ProtocolError,
+                urllib3.exceptions.TimeoutError,
+            ),
+        ):
+            return True
+        return super()._stream_error_retryable(exc, policy)
 
     def __init__(
         self,
@@ -145,7 +153,7 @@ class ContreeClient(base.ContreeSyncClient):
             timed_out = isinstance(exc, requests.exceptions.Timeout) or (
                 isinstance(exc, requests.exceptions.ConnectionError)
                 and bool(exc.args)
-                and isinstance(exc.args[0], ReadTimeoutError)
+                and isinstance(exc.args[0], urllib3.exceptions.ReadTimeoutError)
             )
             raise APIConnectionError(
                 str(exc),

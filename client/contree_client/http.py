@@ -181,14 +181,19 @@ class ContreeClient(base.ContreeSyncClient):
     log = logger.getChild("http")
     UA_TRANSPORT_LIBRARY = "http.client"
 
-    def _stream_timeout_reached_deadline(
+    def _stream_error_retryable(
         self,
         exc: Exception,
-        deadline_limited: bool,
-    ) -> bool:
-        return bool(
-            getattr(exc, "_contree_deadline_read", False)
-        ) or super()._stream_timeout_reached_deadline(exc, deadline_limited)
+        policy: RetryPolicy,
+    ) -> bool | None:
+        status = getattr(exc, "status", None)
+        if isinstance(exc, http.client.HTTPException) and isinstance(status, int):
+            return policy.retryable_status(status)
+        if isinstance(
+            exc, (OSError, http.client.IncompleteRead, http.client.BadStatusLine)
+        ):
+            return True
+        return super()._stream_error_retryable(exc, policy)
 
     def __init__(
         self,
@@ -342,9 +347,11 @@ class ContreeClient(base.ContreeSyncClient):
                 response.status,
             )
             if response.status >= 400:
-                raise http.client.HTTPException(
+                error = http.client.HTTPException(
                     f"HTTP {response.status}: {response.reason}"
                 )
+                error.__dict__["status"] = response.status
+                raise error
             # The connect timeout has done its job. SSE can otherwise
             # stay idle indefinitely, while downloads use the client
             # timeout. An absolute deadline bounds both cases.
@@ -365,12 +372,7 @@ class ContreeClient(base.ContreeSyncClient):
                 connection.timeout = timeout
                 if connection.sock is not None:
                     connection.sock.settimeout(timeout)
-                try:
-                    raw = response.read1(CHUNK_SIZE)
-                except TimeoutError as exc:
-                    if spec.deadline is not None:
-                        exc.__dict__["_contree_deadline_read"] = True
-                    raise
+                raw = response.read1(CHUNK_SIZE)
                 remaining_timeout(spec.deadline, None)
                 if not raw:
                     tail = decoder.flush()

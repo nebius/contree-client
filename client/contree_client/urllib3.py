@@ -35,14 +35,29 @@ class ContreeClient(base.ContreeSyncClient):
     log = logger.getChild("urllib3")
     UA_TRANSPORT_LIBRARY = library_version(urllib3)
 
-    def _stream_timeout_reached_deadline(
+    def _stream_error_retryable(
         self,
         exc: Exception,
-        deadline_limited: bool,
-    ) -> bool:
-        return isinstance(exc, urllib3.exceptions.ReadTimeoutError) or (
-            deadline_limited and isinstance(exc, urllib3.exceptions.TimeoutError)
-        )
+        policy: RetryPolicy,
+    ) -> bool | None:
+        status = getattr(exc, "status", None)
+        if isinstance(exc, urllib3.exceptions.HTTPError) and isinstance(status, int):
+            return policy.retryable_status(status)
+        if isinstance(
+            exc,
+            (
+                urllib3.exceptions.ProtocolError,
+                urllib3.exceptions.ProxyError,
+                urllib3.exceptions.SSLError,
+                urllib3.exceptions.TimeoutError,
+                urllib3.exceptions.NewConnectionError,
+                urllib3.exceptions.MaxRetryError,
+                urllib3.exceptions.EmptyPoolError,
+                urllib3.exceptions.ClosedPoolError,
+            ),
+        ):
+            return True
+        return super()._stream_error_retryable(exc, policy)
 
     def __init__(
         self,
@@ -168,7 +183,9 @@ class ContreeClient(base.ContreeSyncClient):
         try:
             self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status)
             if response.status >= 400:
-                raise urllib3.exceptions.HTTPError(f"HTTP {response.status}")
+                error = urllib3.exceptions.HTTPError(f"HTTP {response.status}")
+                error.__dict__["status"] = response.status
+                raise error
             for chunk in response.stream(CHUNK_SIZE, decode_content=decode_content):
                 remaining_timeout(spec.deadline, None)
                 yield chunk

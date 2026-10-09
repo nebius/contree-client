@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 from functools import cached_property
 
 import aiohttp
+from aiohttp.http_exceptions import ContentLengthError, TransferEncodingError
 
 from . import base
 from .exceptions import APIConnectionError
@@ -32,14 +33,21 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
     log = logger.getChild("aiohttp")
     UA_TRANSPORT_LIBRARY = library_version(aiohttp)
 
-    def _stream_timeout_reached_deadline(
+    def _stream_error_retryable(
         self,
         exc: Exception,
-        deadline_limited: bool,
-    ) -> bool:
-        return isinstance(exc, aiohttp.SocketTimeoutError) or (
-            deadline_limited and isinstance(exc, TimeoutError)
-        )
+        policy: RetryPolicy,
+    ) -> bool | None:
+        if isinstance(exc, aiohttp.ClientResponseError):
+            return policy.retryable_status(exc.status)
+        if isinstance(exc, aiohttp.ClientPayloadError):
+            # Only incomplete HTTP bodies qualify for recovery.
+            if isinstance(exc.__cause__, (ContentLengthError, TransferEncodingError)):
+                return True
+            return None
+        if isinstance(exc, aiohttp.ClientConnectionError):
+            return True
+        return super()._stream_error_retryable(exc, policy)
 
     def __init__(
         self,

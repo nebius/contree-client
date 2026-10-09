@@ -30,14 +30,24 @@ class ContreeClient(base.ContreeSyncClient):
     log = logger.getChild("httpx")
     UA_TRANSPORT_LIBRARY = library_version(httpx)
 
-    def _stream_timeout_reached_deadline(
+    def _stream_error_retryable(
         self,
         exc: Exception,
-        deadline_limited: bool,
-    ) -> bool:
-        return isinstance(exc, httpx.ReadTimeout) or (
-            deadline_limited and isinstance(exc, httpx.TimeoutException)
-        )
+        policy: RetryPolicy,
+    ) -> bool | None:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return policy.retryable_status(exc.response.status_code)
+        if isinstance(
+            exc,
+            (
+                httpx.NetworkError,
+                httpx.TimeoutException,
+                httpx.RemoteProtocolError,
+                httpx.ProxyError,
+            ),
+        ):
+            return True
+        return super()._stream_error_retryable(exc, policy)
 
     def __init__(
         self,
@@ -161,14 +171,24 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
     log = logger.getChild("httpx")
     UA_TRANSPORT_LIBRARY = library_version(httpx)
 
-    def _stream_timeout_reached_deadline(
+    def _stream_error_retryable(
         self,
         exc: Exception,
-        deadline_limited: bool,
-    ) -> bool:
-        return isinstance(exc, httpx.ReadTimeout) or (
-            deadline_limited and isinstance(exc, httpx.TimeoutException)
-        )
+        policy: RetryPolicy,
+    ) -> bool | None:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return policy.retryable_status(exc.response.status_code)
+        if isinstance(
+            exc,
+            (
+                httpx.NetworkError,
+                httpx.TimeoutException,
+                httpx.RemoteProtocolError,
+                httpx.ProxyError,
+            ),
+        ):
+            return True
+        return super()._stream_error_retryable(exc, policy)
 
     def __init__(
         self,

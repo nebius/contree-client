@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import io
 import json
 from collections.abc import AsyncIterator, Awaitable
 from types import ModuleType, SimpleNamespace
@@ -21,6 +22,7 @@ import pytest
 import requests
 import urllib3
 
+from tests import stub_server as server
 from tests.stub_server import OPERATION_RESPONSE, OPERATION_UUID
 
 
@@ -60,9 +62,7 @@ class FakeClock:
 
 def native_read_timeout(backend: str) -> Exception:
     if backend == "http":
-        error = TimeoutError("read timed out")
-        error.__dict__["_contree_deadline_read"] = True
-        return error
+        return TimeoutError("read timed out")
     if backend == "urllib3":
         return urllib3.exceptions.ReadTimeoutError(None, "/events", "read timed out")
     if backend == "requests":
@@ -92,61 +92,88 @@ def native_connect_timeout(backend: str) -> Exception:
 @pytest.mark.parametrize(
     "backend", ("http", "urllib3", "requests", "httpx", "httpx_async", "aiohttp")
 )
-def test_follow_classifies_native_read_timeout_as_deadline(
+def test_follow_retries_native_read_timeout_before_deadline(
     generated_package: ModuleType,
     backend: str,
 ) -> None:
     module_name = "httpx" if backend == "httpx_async" else backend
     module = importlib.import_module(f"contree_client.{module_name}")
+    models = importlib.import_module("contree_client.models")
+    runtime = importlib.import_module("contree_client.runtime")
     async_backend = backend in ("httpx_async", "aiohttp")
     client_class = module.ContreeAsyncClient if async_backend else module.ContreeClient
     client = client_class("token", timeout=0.01)
-    error = native_read_timeout(backend)
-    assert not client._stream_timeout_reached_deadline(
-        native_connect_timeout(backend), deadline_limited=False
+    assert (
+        client._stream_error_retryable(
+            native_connect_timeout(backend), runtime.RetryPolicy()
+        )
+        is True
     )
-
+    completion = models.OperationEvent.from_dict(
+        {
+            "id": 7,
+            "ts": "2026-06-08T20:00:00Z",
+            "spid": 0,
+            "type": "completion",
+            "data": {"status": "SUCCESS"},
+        }
+    )
+    attempts = 0
+    probes = 0
     if async_backend:
 
-        async def fail_events(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
-            raise error
-            yield  # pragma: no cover
+        async def events(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise native_read_timeout(backend)
+            yield completion
 
-        async def unexpected_probe(*args: Any, **kwargs: Any) -> bool:
-            raise AssertionError("deadline timeout must not trigger a status probe")
+        async def status(*args: Any, **kwargs: Any) -> bool:
+            nonlocal probes
+            probes += 1
+            return True
 
-        client.iter_operation_events = fail_events
-        client.operation_terminal = unexpected_probe
+        client.iter_operation_events = events
+        client.operation_terminal = status
 
         async def scenario() -> None:
             try:
-                with pytest.raises(TimeoutError, match=UUID):
-                    _ = [
-                        event
-                        async for event in client.follow_operation_events(
-                            UUID, timeout=10.0
-                        )
-                    ]
+                result = [
+                    event
+                    async for event in client.follow_operation_events(
+                        UUID, timeout=10.0
+                    )
+                ]
+                assert result == [completion]
             finally:
                 await client.close()
 
         asyncio.run(scenario())
     else:
 
-        def fail_events(*args: Any, **kwargs: Any):
-            raise error
-            yield  # pragma: no cover
+        def events(*args: Any, **kwargs: Any):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise native_read_timeout(backend)
+            yield completion
 
-        def unexpected_probe(*args: Any, **kwargs: Any) -> bool:
-            raise AssertionError("deadline timeout must not trigger a status probe")
+        def status(*args: Any, **kwargs: Any) -> bool:
+            nonlocal probes
+            probes += 1
+            return True
 
-        client.iter_operation_events = fail_events
-        client.operation_terminal = unexpected_probe
+        client.iter_operation_events = events
+        client.operation_terminal = status
         try:
-            with pytest.raises(TimeoutError, match=UUID):
-                list(client.follow_operation_events(UUID, timeout=10.0))
+            assert list(client.follow_operation_events(UUID, timeout=10.0)) == [
+                completion
+            ]
         finally:
             client.close()
+    assert attempts == 2
+    assert probes == 1
 
 
 @pytest.mark.parametrize(
@@ -346,11 +373,12 @@ def test_follow_reconnects_after_truncated_stream(
             pass
 
     client = TruncatedStreamClient()
-    events = list(client.follow_operation_events(OPERATION_UUID))
-    assert events == []
-    # The terminal probe triggers one final retained-log read; a broken
-    # events endpoint must not keep status-only waiting alive forever.
-    assert client.stream_attempts == 2
+    exceptions = importlib.import_module("contree_client.exceptions")
+    with pytest.raises(exceptions.APIConnectionError) as caught:
+        list(client.follow_operation_events(OPERATION_UUID))
+    assert isinstance(caught.value.__cause__, EOFError)
+    # One live read, then three bounded attempts to drain the terminal log.
+    assert client.stream_attempts == 4
 
 
 def test_sse_id_only_frames_advance_the_resume_cursor(
@@ -379,3 +407,70 @@ def test_sse_id_only_frames_advance_the_resume_cursor(
     with pytest.raises(ConnectionError) as caught:
         list(client.iter_operation_events("00000000-0000-0000-0000-000000000000"))
     assert caught.value.__dict__["last_event_id"] == 5
+
+
+@pytest.mark.parametrize("failure_phase", ["follow", "drain"])
+def test_urllib3_proxy_failure_recovers(
+    generated_package: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_phase: str,
+) -> None:
+    module = importlib.import_module("contree_client.urllib3")
+    runtime = importlib.import_module("contree_client.runtime")
+    proxy = urllib3.ProxyManager("http://127.0.0.1:8080")
+    requests_seen: list[tuple[bool, str | None]] = []
+    failed = False
+    probes = 0
+
+    def request(method: str, url: str, **kwargs: Any) -> urllib3.HTTPResponse:
+        nonlocal failed, probes
+        if "/events" not in url:
+            probes += 1
+            return urllib3.HTTPResponse(
+                status=200, body=json.dumps(OPERATION_RESPONSE).encode()
+            )
+        following = "follow=1" in url
+        cursor = kwargs["headers"].get("Last-Event-Id")
+        requests_seen.append((following, cursor))
+        assert kwargs["retries"] is False
+        if not failed and following == (failure_phase == "follow"):
+            failed = True
+            raise urllib3.exceptions.ProxyError(
+                "proxy connection failed", ConnectionResetError("proxy reset")
+            )
+        events = (
+            [server.EVENT_INIT]
+            if following
+            else [
+                server.EVENT_INIT,
+                server.EVENT_SPAWN,
+                server.EVENT_EXIT,
+                server.EVENT_COMPLETION,
+            ]
+        )
+        body = b"".join(
+            server.sse_frame(event)
+            for event in events
+            if cursor is None or event["id"] > int(cursor)
+        )
+        return urllib3.HTTPResponse(
+            status=200, body=io.BytesIO(body), preload_content=False
+        )
+
+    monkeypatch.setattr(proxy, "request", request)
+    try:
+        with module.ContreeClient(
+            "token",
+            urllib3_pool_manager=proxy,
+            retry=runtime.RetryPolicy(max_attempts=2, delays=(0.0,)),
+        ) as client:
+            events = list(client.follow_operation_events(OPERATION_UUID, timeout=1.0))
+        assert [event.id for event in events] == [0, 1, 2, 3]
+        assert probes == 1
+        assert requests_seen == (
+            [(True, None), (False, None)]
+            if failure_phase == "follow"
+            else [(True, None), (False, "0"), (False, "0")]
+        )
+    finally:
+        proxy.clear()
