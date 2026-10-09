@@ -29,6 +29,7 @@ class ContreeClient(base.ContreeSyncClient):
 
     log = logger.getChild("httpx")
     UA_TRANSPORT_LIBRARY = library_version(httpx)
+    _STREAM_ERRORS = (*base.ContreeSyncClient._STREAM_ERRORS, httpx.HTTPError)
 
     def __init__(
         self,
@@ -134,7 +135,16 @@ class ContreeClient(base.ContreeSyncClient):
                 response.status_code,
             )
             if response.status_code >= 400:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    if spec.accept == "text/event-stream":
+                        exc.__dict__["_contree_status_error"] = error_for_response(
+                            response.status_code,
+                            {k.lower(): v for k, v in response.headers.items()},
+                            b"event stream request failed",
+                        )
+                    raise
             chunks = response.iter_bytes() if auto_decompress else response.iter_raw()
             for chunk in chunks:
                 remaining_timeout(spec.deadline, None)
@@ -151,6 +161,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     log = logger.getChild("httpx")
     UA_TRANSPORT_LIBRARY = library_version(httpx)
+    _STREAM_ERRORS = (*base.ContreeAsyncClient._STREAM_ERRORS, httpx.HTTPError)
 
     def __init__(
         self,
@@ -258,7 +269,16 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 response.status_code,
             )
             if response.status_code >= 400:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    if spec.accept == "text/event-stream":
+                        exc.__dict__["_contree_status_error"] = error_for_response(
+                            response.status_code,
+                            {k.lower(): v for k, v in response.headers.items()},
+                            b"event stream request failed",
+                        )
+                    raise
             source = response.aiter_bytes() if auto_decompress else response.aiter_raw()
             while True:
                 timeout = remaining_timeout(spec.deadline, None)

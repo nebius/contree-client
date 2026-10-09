@@ -20,6 +20,7 @@ import http.client
 import select
 import ssl
 import threading
+import zlib
 from collections.abc import Callable, Iterator
 from urllib.parse import urlsplit
 
@@ -181,6 +182,12 @@ class ContreeClient(base.ContreeSyncClient):
     log = logger.getChild("http")
     UA_TRANSPORT_LIBRARY = "http.client"
 
+    _STREAM_ERRORS = (
+        *base.ContreeSyncClient._STREAM_ERRORS,
+        http.client.HTTPException,
+        zlib.error,
+    )
+
     def __init__(
         self,
         token: str,
@@ -333,9 +340,16 @@ class ContreeClient(base.ContreeSyncClient):
                 response.status,
             )
             if response.status >= 400:
-                raise http.client.HTTPException(
+                error = http.client.HTTPException(
                     f"HTTP {response.status}: {response.reason}"
                 )
+                if spec.accept == "text/event-stream":
+                    error.__dict__["_contree_status_error"] = error_for_response(
+                        response.status,
+                        {key.lower(): value for key, value in response.getheaders()},
+                        response.reason.encode(),
+                    )
+                raise error
             # The connect timeout has done its job. SSE can otherwise
             # stay idle indefinitely, while downloads use the client
             # timeout. An absolute deadline bounds both cases.

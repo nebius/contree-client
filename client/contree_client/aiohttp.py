@@ -31,6 +31,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     log = logger.getChild("aiohttp")
     UA_TRANSPORT_LIBRARY = library_version(aiohttp)
+    _STREAM_ERRORS = (*base.ContreeAsyncClient._STREAM_ERRORS, aiohttp.ClientError)
 
     def __init__(
         self,
@@ -158,7 +159,16 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         ) as response:
             self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status)
             if response.status >= 400:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except aiohttp.ClientResponseError as exc:
+                    if spec.accept == "text/event-stream":
+                        exc.__dict__["_contree_status_error"] = error_for_response(
+                            response.status,
+                            {k.lower(): v for k, v in response.headers.items()},
+                            b"event stream request failed",
+                        )
+                    raise
             async for chunk in response.content.iter_chunked(CHUNK_SIZE):
                 remaining_timeout(spec.deadline, None)
                 yield chunk

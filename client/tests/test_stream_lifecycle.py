@@ -10,14 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 from collections.abc import AsyncIterator, Awaitable
 from types import ModuleType, SimpleNamespace
 
 import httpx
 import pytest
-
-from tests.stub_server import OPERATION_RESPONSE, OPERATION_UUID
 
 
 def make_tracking_client(generated_package: ModuleType) -> object:
@@ -220,40 +217,6 @@ def test_follow_early_aclose_closes_inner_iterator(
         assert client.inner_closed
 
     asyncio.run(scenario())
-
-
-def test_follow_reconnects_after_truncated_stream(
-    generated_package: ModuleType,
-) -> None:
-    """A broken stream triggers the terminal operation probe."""
-    base = importlib.import_module("contree_client.base")
-    runtime = importlib.import_module("contree_client.runtime")
-
-    class TruncatedStreamClient(base.ContreeSyncClient):
-        def __init__(self) -> None:
-            super().__init__("token")
-            self.stream_attempts = 0
-
-        def request(self, spec: runtime.RequestSpec) -> runtime.ResponseData:
-            # the terminal probe: the operation is already done
-            return runtime.ResponseData(
-                status=200,
-                headers={},
-                body=json.dumps(OPERATION_RESPONSE).encode(),
-            )
-
-        def stream(self, spec, auto_decompress=True):  # type: ignore[no-untyped-def]
-            self.stream_attempts += 1
-            raise EOFError("truncated gzip SSE")
-            yield b""  # pragma: no cover - makes this a generator
-
-        def close(self) -> None:
-            pass
-
-    client = TruncatedStreamClient()
-    events = list(client.follow_operation_events(OPERATION_UUID))
-    assert events == []  # the stream died; the terminal probe ended it
-    assert client.stream_attempts == 1
 
 
 def test_sse_id_only_frames_advance_the_resume_cursor(

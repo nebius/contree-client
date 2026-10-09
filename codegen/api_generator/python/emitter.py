@@ -1031,6 +1031,9 @@ class ContreeClientBase:
     """
 
     log: logging.Logger = logger
+    _STREAM_ERRORS: tuple[type[Exception], ...] = (
+        APIConnectionError, ConnectionError, TimeoutError, EOFError, OSError
+    )
     # User-Agent product tokens; adapters override UA_TRANSPORT_LIBRARY
     UA_PRODUCT = f"contree-client/{{package_version()}}"
     UA_TRANSPORT_LIBRARY = ""
@@ -1398,13 +1401,20 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
 
         Native stream failures trigger a terminal-status probe and a
         reconnect from the last event id. Iteration ends at the
-        ``completion`` event, a terminal status, or the timeout.
+        ``completion`` event or the timeout. After terminal status, drain
+        the retained log with bounded retries. An unavailable or incomplete
+        unfiltered log raises APIConnectionError. Filtered or explicitly
+        resumed logs may end normally without completion.
         The timeout is an absolute deadline checked whenever iteration
         resumes. Caller code between events is not interrupted. A
         synchronous native read can delay ``TimeoutError`` until it
         returns.
         """
         last_id = last_event_id
+        terminal = False
+        drain_attempts = 0
+        policy = self.retry or RetryPolicy(max_attempts=3)
+        delays = retry_generator(policy.delays)
         deadline = None if timeout is None else time.monotonic() + timeout
 
         def check_deadline() -> None:
@@ -1417,10 +1427,13 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         while True:
             check_deadline()
             events_before = last_id
+            missing_events = False
+            if terminal:
+                drain_attempts += 1
             try:
                 for event in self.iter_operation_events(
                     operation_id,
-                    follow=True,
+                    follow=not terminal,
                     spid=spid,
                     since=since,
                     last_event_id=last_id,
@@ -1433,15 +1446,55 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                     check_deadline()
             except Exception as exc:
                 check_deadline()
+                if not isinstance(exc, (APIStatusError, *self._STREAM_ERRORS)):
+                    raise
+                status_error = (
+                    exc if isinstance(exc, APIStatusError)
+                    else getattr(exc, "_contree_status_error", None)
+                )
                 resume_id = getattr(exc, "last_event_id", None)
                 if isinstance(resume_id, int):
                     last_id = resume_id
                 self.log.warning("stream broken (last_id=%s): %s", last_id, exc)
-            # the stream ended or broke without a completion frame:
-            # the retry must not outlive the operation itself
-            if self.operation_terminal(operation_id, deadline):
-                return
-            if last_id == events_before:
+                missing_events = (
+                    isinstance(status_error, APIStatusError)
+                    and status_error.status == 404
+                    and last_id is None
+                )
+                if terminal:
+                    if (
+                        isinstance(status_error, APIStatusError)
+                        and not policy.retryable_status(status_error.status)
+                    ) or (
+                        policy.max_attempts is not None
+                        and drain_attempts >= policy.max_attempts
+                    ):
+                        raise APIConnectionError(
+                            f"operation {operation_id} event log could not be read"
+                        ) from exc
+                    delay = (
+                        status_error.retry_after
+                        if isinstance(status_error, APIStatusError) else None
+                    )
+                    if delay is None:
+                        delay = next(delays)
+                    if deadline is not None:
+                        delay = min(delay, max(0.0, deadline - time.monotonic()))
+                    time.sleep(delay)
+                    continue
+            else:
+                if terminal:
+                    if spid is None and since is None and last_event_id is None:
+                        raise APIConnectionError(
+                            f"operation {operation_id} event log"
+                            " ended without completion"
+                        )
+                    return
+            # Terminal status does not prove this subscriber received the tail.
+            terminal = self.operation_terminal(operation_id, deadline)
+            if terminal and missing_events:
+                return  # preserve fallback for backends without an events route
+            if not terminal and last_id == events_before:
                 delay = TIGHT_LOOP_FLOOR
                 if deadline is not None:
                     delay = min(delay, max(0.0, deadline - time.monotonic()))
@@ -1737,11 +1790,18 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
 
         Native stream failures trigger a terminal-status probe and a
         reconnect from the last event id. Iteration ends at the
-        ``completion`` event, a terminal status, or the timeout.
+        ``completion`` event or the timeout. After terminal status, drain
+        the retained log with bounded retries. An unavailable or incomplete
+        unfiltered log raises APIConnectionError. Filtered or explicitly
+        resumed logs may end normally without completion.
         The timeout is an absolute deadline checked whenever iteration
         resumes. Caller code between events is not interrupted.
         """
         last_id = last_event_id
+        terminal = False
+        drain_attempts = 0
+        policy = self.retry or RetryPolicy(max_attempts=3)
+        delays = retry_generator(policy.delays)
         deadline = None if timeout is None else time.monotonic() + timeout
 
         def check_deadline() -> None:
@@ -1754,13 +1814,16 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         while True:
             check_deadline()
             events_before = last_id
+            missing_events = False
+            if terminal:
+                drain_attempts += 1
             try:
                 # aclosing: leaving this scope must close the transport
                 # stream even when the caller aborts the iteration
                 async with aclosing(
                     self.iter_operation_events(
                         operation_id,
-                        follow=True,
+                        follow=not terminal,
                         spid=spid,
                         since=since,
                         last_event_id=last_id,
@@ -1775,15 +1838,55 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                         check_deadline()
             except Exception as exc:
                 check_deadline()
+                if not isinstance(exc, (APIStatusError, *self._STREAM_ERRORS)):
+                    raise
+                status_error = (
+                    exc if isinstance(exc, APIStatusError)
+                    else getattr(exc, "_contree_status_error", None)
+                )
                 resume_id = getattr(exc, "last_event_id", None)
                 if isinstance(resume_id, int):
                     last_id = resume_id
                 self.log.warning("stream broken (last_id=%s): %s", last_id, exc)
-            # the stream ended or broke without a completion frame:
-            # the retry must not outlive the operation itself
-            if await self.operation_terminal(operation_id, deadline):
-                return
-            if last_id == events_before:
+                missing_events = (
+                    isinstance(status_error, APIStatusError)
+                    and status_error.status == 404
+                    and last_id is None
+                )
+                if terminal:
+                    if (
+                        isinstance(status_error, APIStatusError)
+                        and not policy.retryable_status(status_error.status)
+                    ) or (
+                        policy.max_attempts is not None
+                        and drain_attempts >= policy.max_attempts
+                    ):
+                        raise APIConnectionError(
+                            f"operation {operation_id} event log could not be read"
+                        ) from exc
+                    delay = (
+                        status_error.retry_after
+                        if isinstance(status_error, APIStatusError) else None
+                    )
+                    if delay is None:
+                        delay = next(delays)
+                    if deadline is not None:
+                        delay = min(delay, max(0.0, deadline - time.monotonic()))
+                    await asyncio.sleep(delay)
+                    continue
+            else:
+                if terminal:
+                    if spid is None and since is None and last_event_id is None:
+                        raise APIConnectionError(
+                            f"operation {operation_id} event log"
+                            " ended without completion"
+                        )
+                    return
+            # Terminal status does not prove this subscriber received the tail.
+            terminal = await self.operation_terminal(operation_id, deadline)
+            if terminal and missing_events:
+                return  # preserve fallback for backends without an events route
+            if not terminal and last_id == events_before:
                 delay = TIGHT_LOOP_FLOOR
                 if deadline is not None:
                     delay = min(delay, max(0.0, deadline - time.monotonic()))

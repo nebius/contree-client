@@ -44,6 +44,7 @@ class ContreeClient(base.ContreeSyncClient):
 
     log = logger.getChild("requests")
     UA_TRANSPORT_LIBRARY = library_version(requests)
+    _STREAM_ERRORS = (*base.ContreeSyncClient._STREAM_ERRORS, requests.RequestException)
 
     def __init__(
         self,
@@ -179,7 +180,16 @@ class ContreeClient(base.ContreeSyncClient):
         self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status_code)
         if response.status_code >= 400:
             with response:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except requests.HTTPError as exc:
+                    if spec.accept == "text/event-stream":
+                        exc.__dict__["_contree_status_error"] = error_for_response(
+                            response.status_code,
+                            {k.lower(): v for k, v in response.headers.items()},
+                            b"event stream request failed",
+                        )
+                    raise
         return response
 
     def stream(

@@ -34,6 +34,10 @@ class ContreeClient(base.ContreeSyncClient):
 
     log = logger.getChild("urllib3")
     UA_TRANSPORT_LIBRARY = library_version(urllib3)
+    _STREAM_ERRORS = (
+        *base.ContreeSyncClient._STREAM_ERRORS,
+        urllib3.exceptions.HTTPError,
+    )
 
     def __init__(
         self,
@@ -159,7 +163,14 @@ class ContreeClient(base.ContreeSyncClient):
         try:
             self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status)
             if response.status >= 400:
-                raise urllib3.exceptions.HTTPError(f"HTTP {response.status}")
+                error = urllib3.exceptions.HTTPError(f"HTTP {response.status}")
+                if spec.accept == "text/event-stream":
+                    error.__dict__["_contree_status_error"] = error_for_response(
+                        response.status,
+                        {key.lower(): value for key, value in response.headers.items()},
+                        b"event stream request failed",
+                    )
+                raise error
             for chunk in response.stream(CHUNK_SIZE, decode_content=decode_content):
                 remaining_timeout(spec.deadline, None)
                 yield chunk
