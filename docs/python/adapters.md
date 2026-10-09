@@ -410,7 +410,9 @@ with `follow=False`, preserving the cursor, filters, and original deadline.
 An interrupted read resumes from the last received event id. These drain
 attempts use the configured `RetryPolicy` statuses, delays, and `max_attempts`,
 or three attempts with the default delays when no policy is configured.
-A clean EOF completes a filtered log even without a `completion` event.
+A clean EOF completes a filtered or explicitly resumed log even without a
+`completion` event. An unfiltered log must include `completion`; otherwise the
+follower raises `APIConnectionError`.
 A permanent HTTP failure or exhausted drain budget raises `APIConnectionError`
 with the original failure as its cause, rather than silently returning partial
 events. `wait_operation` also requires a successfully consumed event log and

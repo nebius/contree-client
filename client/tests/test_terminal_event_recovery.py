@@ -169,26 +169,40 @@ def test_transient_status_failure_resumes_without_duplicate_events(
     assert requests[1].headers.get("last-event-id") == "1"
 
 
+@pytest.mark.parametrize("filters", [{"spid": 1}, {"since": 0}, {"last_event_id": 0}])
 def test_filtered_retained_log_can_end_without_completion(
     invoke: Callable[..., Any],
     stub_server: server.StubServer,
     terminal_log: Callable[..., None],
+    filters: dict[str, int],
 ) -> None:
     terminal_log(completion=False)
     events = invoke(
-        "follow_operation_events",
-        server.OPERATION_UUID,
-        last_event_id=0,
-        spid=1,
-        since=123,
-        collect=True,
+        "follow_operation_events", server.OPERATION_UUID, **filters, collect=True
     )
     assert events[-1].type == "exit"
     requests = [r for r in stub_server.captured if r.path.endswith("/events")]
     assert len(requests) >= 2
-    assert requests[0].headers["last-event-id"] == "0"
     assert requests[-1].headers["last-event-id"] == "1"
-    assert requests[-1].query == {"spid": ["1"], "since": ["123"]}
+    assert requests[-1].query == {
+        key: [str(value)] for key, value in filters.items() if key != "last_event_id"
+    }
+
+
+@pytest.mark.parametrize("method", ["follow_operation_events", "wait_operation"])
+def test_unfiltered_terminal_log_requires_completion(
+    invoke: Callable[..., Any],
+    terminal_log: Callable[..., None],
+    stub_server: server.StubServer,
+    method: str,
+) -> None:
+    terminal_log(completion=False)
+    with pytest.raises(APIConnectionError, match="ended without completion"):
+        invoke(
+            method, server.OPERATION_UUID, collect=method == "follow_operation_events"
+        )
+    # A status fetch must not turn the incomplete event log into success.
+    assert len([r for r in stub_server.captured if not r.path.endswith("/events")]) == 1
 
 
 @pytest.mark.parametrize("status", [404, 500])

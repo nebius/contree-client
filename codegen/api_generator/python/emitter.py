@@ -1420,8 +1420,9 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         drain the retained log without following before ending iteration.
         Interrupted retained reads resume from the last event id, using
         the configured retry policy (three attempts by default). Normal
-        EOF also completes a filtered retained log without a completion
-        event. An unavailable event log raises APIConnectionError,
+        EOF also completes a filtered or explicitly resumed retained log.
+        An unfiltered log must include completion. An unavailable or
+        incomplete event log raises APIConnectionError,
         including when consumed by wait_operation.
         The timeout is an absolute deadline checked whenever iteration
         resumes. Caller code between events is not interrupted. A
@@ -1486,6 +1487,11 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                     continue
             else:
                 if terminal:
+                    if spid is None and since is None and last_event_id is None:
+                        raise APIConnectionError(
+                            f"operation {operation_id} event log"
+                            " ended without completion"
+                        )
                     return
             # A terminal status does not mean this subscriber received all
             # events. Reconnect to drain the retained tail, retaining
@@ -1790,8 +1796,9 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         drain the retained log without following before ending iteration.
         Interrupted retained reads resume from the last event id, using
         the configured retry policy (three attempts by default). Normal
-        EOF also completes a filtered retained log without a completion
-        event. An unavailable event log raises APIConnectionError,
+        EOF also completes a filtered or explicitly resumed retained log.
+        An unfiltered log must include completion. An unavailable or
+        incomplete event log raises APIConnectionError,
         including when consumed by wait_operation.
         The timeout is an absolute deadline checked whenever iteration
         resumes. Caller code between events is not interrupted.
@@ -1859,6 +1866,11 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                     continue
             else:
                 if terminal:
+                    if spid is None and since is None and last_event_id is None:
+                        raise APIConnectionError(
+                            f"operation {operation_id} event log"
+                            " ended without completion"
+                        )
                     return
             # A terminal status does not mean this subscriber received all
             # events. Reconnect to drain the retained tail, retaining
