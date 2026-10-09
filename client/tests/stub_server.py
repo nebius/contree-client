@@ -292,6 +292,8 @@ class Reply:
     hang: float = 0.0
     # simulate a peer dying mid-transfer: the gzip trailer never comes
     truncate_gzip: bool = False
+    # Valid HTTP framing with an invalid gzip body.
+    corrupt_gzip: bool = False
     # simulate invalid HTTP chunk framing: close without the terminal
     # zero-length chunk after delivering all declared chunks
     truncate_chunked: bool = False
@@ -848,12 +850,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Encoding", "gzip")
         self.send_header("Transfer-Encoding", "chunked")
+        # Every streamed response below closes its socket. Advertise
+        # that fact before the terminating chunk so HTTP/1.1 clients
+        # do not briefly return the connection to a keep-alive pool
+        # and race the server-side close on their next request.
+        self.send_header("Connection", "close")
         self.end_headers()
         compressor = zlib.compressobj(6, zlib.DEFLATED, 16 + zlib.MAX_WBITS)
         try:
             for frame in reply.stream_chunks:
                 chunk = compressor.compress(frame)
                 chunk += compressor.flush(zlib.Z_SYNC_FLUSH)
+                if reply.corrupt_gzip:
+                    chunk = b"invalid gzip body"
                 self.write_chunk(chunk)
                 self.wfile.flush()
                 time.sleep(0.01)

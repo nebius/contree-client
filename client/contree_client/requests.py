@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import ssl
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, cast
 
 import requests
 import requests.adapters
-from urllib3.exceptions import ReadTimeoutError
+import urllib3
 from urllib3.util import Timeout as Urllib3Timeout
 
 from . import base
@@ -20,10 +21,41 @@ from .runtime import (
     RetryPolicy,
     error_for_response,
     library_version,
+    preserve_response_status,
     remaining_timeout,
 )
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
+
+
+@contextmanager
+def normalize_errors() -> Iterator[None]:
+    """Normalize transport failures for buffered and streaming requests."""
+    try:
+        yield
+    except requests.exceptions.HTTPError as exc:
+        response = exc.response
+        if response is None:
+            raise APIConnectionError(str(exc)) from exc
+        with normalize_errors():
+            body = response.content
+        raise error_for_response(
+            response.status_code,
+            {k.lower(): v for k, v in response.headers.items()},
+            body,
+        ) from exc
+    except (
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+        requests.exceptions.ChunkedEncodingError,
+        urllib3.exceptions.ProtocolError,
+        urllib3.exceptions.TimeoutError,
+    ) as exc:
+        reason = exc.args[0] if exc.args else exc
+        timed_out = isinstance(
+            exc, (requests.exceptions.Timeout, urllib3.exceptions.TimeoutError)
+        ) or isinstance(reason, urllib3.exceptions.ReadTimeoutError)
+        raise APIConnectionError(str(exc), timed_out=timed_out) from exc
 
 
 class SSLContextAdapter(requests.adapters.HTTPAdapter):
@@ -91,7 +123,7 @@ class ContreeClient(base.ContreeSyncClient):
                 connect=remaining_timeout(spec.deadline, self.timeout),
                 read=remaining_timeout(spec.deadline, self.timeout),
             )
-        try:
+        with normalize_errors():
             response = self._session.request(
                 spec.method,
                 url,
@@ -108,35 +140,6 @@ class ContreeClient(base.ContreeSyncClient):
                 headers={k.lower(): v for k, v in response.headers.items()},
                 body=response.content,
             )
-            response.raise_for_status()
-        except requests.exceptions.HTTPError as exc:
-            native_response = exc.response
-            if native_response is None:
-                raise APIConnectionError(str(exc)) from exc
-            try:
-                data = ResponseData(
-                    status=native_response.status_code,
-                    headers={k.lower(): v for k, v in native_response.headers.items()},
-                    body=native_response.content,
-                )
-            except Exception as body_exc:
-                raise APIConnectionError(
-                    str(body_exc),
-                    timed_out=isinstance(body_exc, requests.exceptions.Timeout),
-                ) from body_exc
-            if native_response.status_code >= 400:
-                raise error_for_response(data.status, data.headers, data.body) from exc
-            raise APIConnectionError(str(exc)) from exc
-        except Exception as exc:
-            timed_out = isinstance(exc, requests.exceptions.Timeout) or (
-                isinstance(exc, requests.exceptions.ConnectionError)
-                and bool(exc.args)
-                and isinstance(exc.args[0], ReadTimeoutError)
-            )
-            raise APIConnectionError(
-                str(exc),
-                timed_out=timed_out,
-            ) from exc
         if data.status >= 400:
             raise error_for_response(data.status, data.headers, data.body)
         remaining_timeout(spec.deadline, None)
@@ -178,8 +181,19 @@ class ContreeClient(base.ContreeSyncClient):
         )
         self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status_code)
         if response.status_code >= 400:
-            with response:
-                response.raise_for_status()
+            with (
+                preserve_response_status(
+                    response.status_code,
+                    {k.lower(): v for k, v in response.headers.items()},
+                ),
+                normalize_errors(),
+                response,
+            ):
+                raise error_for_response(
+                    response.status_code,
+                    {k.lower(): v for k, v in response.headers.items()},
+                    response.content,
+                )
         return response
 
     def stream(
@@ -187,17 +201,18 @@ class ContreeClient(base.ContreeSyncClient):
         spec: RequestSpec,
         auto_decompress: bool = True,
     ) -> Iterator[bytes]:
-        response = self._open_stream(spec)
-        with response:
-            if auto_decompress:
-                chunks = response.iter_content(CHUNK_SIZE)
-            else:
-                # iter_content always decodes; go one level down to
-                # the underlying urllib3 response for the wire bytes
-                chunks = response.raw.stream(CHUNK_SIZE, decode_content=False)
-            for chunk in chunks:
-                remaining_timeout(spec.deadline, None)
-                yield chunk
+        with normalize_errors():
+            response = self._open_stream(spec)
+            with response:
+                if auto_decompress:
+                    chunks = response.iter_content(CHUNK_SIZE)
+                else:
+                    # iter_content always decodes; go one level down to
+                    # the underlying urllib3 response for the wire bytes
+                    chunks = response.raw.stream(CHUNK_SIZE, decode_content=False)
+                for chunk in chunks:
+                    remaining_timeout(spec.deadline, None)
+                    yield chunk
 
     def close(self) -> None:
         if self.__owns_session:

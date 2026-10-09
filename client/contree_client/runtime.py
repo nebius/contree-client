@@ -10,6 +10,7 @@ import math
 import re
 import zlib
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -21,6 +22,7 @@ from urllib.parse import quote, urlencode
 
 from .exceptions import (
     ERROR_CLASSES,
+    APIConnectionError,
     APIStatusError,
     ServerError,
 )
@@ -451,6 +453,17 @@ def error_for_response(
     )
 
 
+@contextmanager
+def preserve_response_status(status: int, headers: Mapping[str, str]) -> Iterator[None]:
+    """Keep a known HTTP failure when its error body is interrupted."""
+    try:
+        yield
+    except APIConnectionError as exc:
+        if status < 400:
+            raise
+        raise error_for_response(status, headers, b"") from exc
+
+
 class GzipStreamDecoder:
     """Incremental gzip decoder for streamed response bodies.
 
@@ -616,7 +629,7 @@ def decode_event_frame(
     Return None for frames that carry no event payload.
     """
     if frame.event == "sse_error":
-        error = ConnectionError(frame.data)
+        error = APIConnectionError(frame.data)
         error.__dict__["last_event_id"] = last_event_id
         raise error
     if not frame.data:

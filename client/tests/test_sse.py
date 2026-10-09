@@ -69,9 +69,11 @@ def test_decode_event_frame(runtime: ModuleType, models: ModuleType) -> None:
     assert event.spid == 0
 
 
-def test_sse_error_frame_raises_connection_error(runtime: ModuleType) -> None:
+def test_sse_error_frame_raises_connection_error(
+    runtime: ModuleType, exceptions: ModuleType
+) -> None:
     frame = runtime.SSEFrame(event="sse_error", data="boom")
-    with pytest.raises(ConnectionError, match="boom") as caught:
+    with pytest.raises(exceptions.APIConnectionError, match="boom") as caught:
         runtime.decode_event_frame(frame, last_event_id=17)
-    assert type(caught.value) is ConnectionError
+    assert type(caught.value) is exceptions.APIConnectionError
     assert caught.value.__dict__["last_event_id"] == 17

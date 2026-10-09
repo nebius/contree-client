@@ -21,6 +21,7 @@ import select
 import ssl
 import threading
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from urllib.parse import urlsplit
 
 from . import base
@@ -32,6 +33,7 @@ from .runtime import (
     RetryPolicy,
     body_start,
     error_for_response,
+    preserve_response_status,
     remaining_timeout,
     rewind_body,
     stream_decoder,
@@ -56,11 +58,12 @@ def read_response(response: http.client.HTTPResponse) -> ResponseData:
     nobody downstream attempts a second decode against a stale length.
     """
     headers = {k.lower(): v for k, v in response.getheaders()}
-    body = response.read()
-    if body and headers.get("content-encoding", "").lower() == "gzip":
-        body = gzip.decompress(body)
-        headers.pop("content-encoding", None)
-        headers.pop("content-length", None)
+    with preserve_response_status(response.status, headers), normalize_errors():
+        body = response.read()
+        if body and headers.get("content-encoding", "").lower() == "gzip":
+            body = gzip.decompress(body)
+            headers.pop("content-encoding", None)
+            headers.pop("content-length", None)
     return ResponseData(status=response.status, headers=headers, body=body)
 
 
@@ -81,6 +84,24 @@ def connection_alive(connection: http.client.HTTPConnection) -> bool:
     except (OSError, ValueError):  # the descriptor is already closed
         return False
     return not readable
+
+
+@contextmanager
+def normalize_errors() -> Iterator[None]:
+    """Normalize transport failures for buffered and streaming requests."""
+    try:
+        yield
+    except gzip.BadGzipFile:
+        raise
+    except (
+        OSError,
+        EOFError,
+        http.client.IncompleteRead,
+        http.client.BadStatusLine,
+    ) as exc:
+        raise APIConnectionError(
+            str(exc), timed_out=isinstance(exc, TimeoutError)
+        ) from exc
 
 
 class ConnectionPool:
@@ -250,124 +271,120 @@ class ContreeClient(base.ContreeSyncClient):
         return connection.getresponse()
 
     def request(self, spec: RequestSpec) -> ResponseData:
-        start = body_start(spec)
-        while True:
-            connection, reused = self._pool.acquire(spec.deadline)
-            sent = False
+        with normalize_errors():
+            start = body_start(spec)
+            while True:
+                connection, reused = self._pool.acquire(spec.deadline)
+                sent = False
+                try:
+                    timeout = remaining_timeout(spec.deadline, self.timeout)
+                    try:
+                        connection.timeout = timeout
+                        if connection.sock is not None:
+                            connection.sock.settimeout(timeout)
+                        response = self._send_on(connection, spec)
+                        sent = True
+                        break
+                    except Exception as exc:
+                        if (
+                            reused
+                            and spec.idempotent
+                            and isinstance(exc, STALE_KEEPALIVE_ERRORS)
+                        ):
+                            # the pooled connection went stale while idle:
+                            # replay on another one (each round discards a
+                            # stale candidate, so the loop terminates - a
+                            # freshly dialed connection failure raises).
+                            # Only idempotent requests: after a lost response
+                            # the server may have executed a POST already, so
+                            # a transparent resend could double a side effect
+                            self.log.debug(
+                                "stale pooled connection, resending: %s", exc
+                            )
+                            rewind_body(spec, start)
+                            continue
+                        raise
+                finally:
+                    if not sent:
+                        self._pool.discard(connection)
+            read = False
             try:
                 timeout = remaining_timeout(spec.deadline, self.timeout)
-                try:
-                    connection.timeout = timeout
-                    if connection.sock is not None:
-                        connection.sock.settimeout(timeout)
-                    response = self._send_on(connection, spec)
-                    sent = True
-                    break
-                except Exception as exc:
-                    if (
-                        reused
-                        and spec.idempotent
-                        and isinstance(exc, STALE_KEEPALIVE_ERRORS)
-                    ):
-                        # the pooled connection went stale while idle:
-                        # replay on another one (each round discards a
-                        # stale candidate, so the loop terminates - a
-                        # freshly dialed connection failure raises).
-                        # Only idempotent requests: after a lost response
-                        # the server may have executed a POST already, so
-                        # a transparent resend could double a side effect
-                        self.log.debug("stale pooled connection, resending: %s", exc)
-                        rewind_body(spec, start)
-                        continue
-                    raise APIConnectionError(
-                        str(exc), timed_out=isinstance(exc, TimeoutError)
-                    ) from exc
-            finally:
-                if not sent:
-                    self._pool.discard(connection)
-        read = False
-        try:
-            timeout = remaining_timeout(spec.deadline, self.timeout)
-            try:
                 connection.timeout = timeout
                 if connection.sock is not None:
                     connection.sock.settimeout(timeout)
                 data = read_response(response)
                 read = True
-            except Exception as exc:
-                raise APIConnectionError(
-                    str(exc), timed_out=isinstance(exc, TimeoutError)
-                ) from exc
-        finally:
-            if not read:
+            finally:
+                if not read:
+                    self._pool.discard(connection)
+            # the body is fully drained: the connection is reusable unless
+            # the server asked to close it (`Connection: close` sets
+            # will_close) or the underlying socket is already gone
+            if response.will_close or connection.sock is None:
                 self._pool.discard(connection)
-        # the body is fully drained: the connection is reusable unless
-        # the server asked to close it (`Connection: close` sets
-        # will_close) or the underlying socket is already gone
-        if response.will_close or connection.sock is None:
-            self._pool.discard(connection)
-        else:
-            self._pool.release(connection)
-        if data.status >= 400:
-            raise error_for_response(data.status, data.headers, data.body)
-        remaining_timeout(spec.deadline, None)
-        return data
+            else:
+                self._pool.release(connection)
+            if data.status >= 400:
+                raise error_for_response(data.status, data.headers, data.body)
+            remaining_timeout(spec.deadline, None)
+            return data
 
     def stream(
         self,
         spec: RequestSpec,
         auto_decompress: bool = True,
     ) -> Iterator[bytes]:
-        timeout = remaining_timeout(spec.deadline, self.timeout)
-        # a stream owns its socket until EOF: dedicated connection
-        connection = self._connect()
-        try:
-            connection.timeout = timeout
-            if connection.sock is not None:
-                connection.sock.settimeout(timeout)
-            response = self._send_on(connection, spec)
-            self.log.debug(
-                "%s %s -> %d (stream)",
-                spec.method,
-                self.build_url(spec),
-                response.status,
-            )
-            if response.status >= 400:
-                raise http.client.HTTPException(
-                    f"HTTP {response.status}: {response.reason}"
+        with normalize_errors():
+            timeout = remaining_timeout(spec.deadline, self.timeout)
+            # a stream owns its socket until EOF: dedicated connection
+            connection = self._connect()
+            try:
+                connection.timeout = timeout
+                if connection.sock is not None:
+                    connection.sock.settimeout(timeout)
+                response = self._send_on(connection, spec)
+                self.log.debug(
+                    "%s %s -> %d (stream)",
+                    spec.method,
+                    self.build_url(spec),
+                    response.status,
                 )
-            # The connect timeout has done its job. SSE can otherwise
-            # stay idle indefinitely, while downloads use the client
-            # timeout. An absolute deadline bounds both cases.
-            read_maximum = (
-                spec.read_timeout
-                if spec.accept == "text/event-stream"
-                else self.timeout
-            )
-            timeout = remaining_timeout(spec.deadline, read_maximum)
-            connection.timeout = timeout
-            if connection.sock is not None:
-                connection.sock.settimeout(timeout)
-            decoder = stream_decoder(
-                response.getheader("Content-Encoding") if auto_decompress else None
-            )
-            while True:
+                if response.status >= 400:
+                    data = read_response(response)
+                    raise error_for_response(data.status, data.headers, data.body)
+                # The connect timeout has done its job. SSE can otherwise
+                # stay idle indefinitely, while downloads use the client
+                # timeout. An absolute deadline bounds both cases.
+                read_maximum = (
+                    spec.read_timeout
+                    if spec.accept == "text/event-stream"
+                    else self.timeout
+                )
                 timeout = remaining_timeout(spec.deadline, read_maximum)
                 connection.timeout = timeout
                 if connection.sock is not None:
                     connection.sock.settimeout(timeout)
-                raw = response.read1(CHUNK_SIZE)
-                remaining_timeout(spec.deadline, None)
-                if not raw:
-                    tail = decoder.flush()
-                    if tail:
-                        yield tail
-                    return
-                chunk = decoder.decompress(raw)
-                if chunk:
-                    yield chunk
-        finally:
-            connection.close()
+                decoder = stream_decoder(
+                    response.getheader("Content-Encoding") if auto_decompress else None
+                )
+                while True:
+                    timeout = remaining_timeout(spec.deadline, read_maximum)
+                    connection.timeout = timeout
+                    if connection.sock is not None:
+                        connection.sock.settimeout(timeout)
+                    raw = response.read1(CHUNK_SIZE)
+                    remaining_timeout(spec.deadline, None)
+                    if not raw:
+                        tail = decoder.flush()
+                        if tail:
+                            yield tail
+                        return
+                    chunk = decoder.decompress(raw)
+                    if chunk:
+                        yield chunk
+            finally:
+                connection.close()
 
     def close(self) -> None:
         """Close every idle pooled connection."""

@@ -6,11 +6,11 @@ from typing import Any
 
 
 class ContreeError(Exception):
-    """Base class for normalized buffered request errors."""
+    """Base class for normalized API client errors."""
 
 
 class APIConnectionError(ContreeError):
-    """An adapter could not complete a buffered ``request()`` call.
+    """A connection failed or a response body was interrupted.
 
     ``timed_out`` identifies a timeout without exposing a backend type.
     """
@@ -21,7 +21,7 @@ class APIConnectionError(ContreeError):
 
 
 class APIStatusError(ContreeError):
-    """A buffered ``request()`` received HTTP status 400 or greater."""
+    """A request or stream received HTTP status 400 or greater."""
 
     def __init__(
         self,

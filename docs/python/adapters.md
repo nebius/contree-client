@@ -399,9 +399,25 @@ The client checks it whenever iteration resumes, but it does not interrupt
 caller code between yielded events. A synchronous native read started before
 expiry can delay `TimeoutError` until it returns. Status probes use one
 transport attempt because the event follower controls reconnection.
-`RetryPolicy` never retries streaming requests. `follow_operation_events`
-handles native stream failures and reconnects with `Last-Event-Id`. A terminal
-operation stops reconnection.
+Low-level streaming requests use the shared exception hierarchy and are not
+retried by `call()`. `follow_operation_events` handles network interruptions
+and reconnects with `Last-Event-Id`; a transport timeout only ends the follower
+when its absolute deadline has elapsed. Unexpected errors, including malformed
+event data and corrupt compressed bodies, propagate without retry.
+
+After observing terminal status, the Python follower reads the retained log
+with `follow=False`, preserving the cursor, filters, and original deadline.
+An interrupted read resumes from the last received event id. These drain
+attempts use the configured `RetryPolicy` statuses, delays, and `max_attempts`,
+or three attempts with the default delays when no policy is configured.
+A clean EOF completes a filtered or explicitly resumed log even without a
+`completion` event. An unfiltered log must include `completion`; otherwise the
+follower raises `APIConnectionError`.
+A permanent HTTP failure or exhausted drain budget raises `APIConnectionError`
+with the original failure as its cause, rather than silently returning partial
+events. `wait_operation` also requires a successfully consumed event log and
+propagates stream failures. Its final status fetch occurs only after the
+follower completes successfully and shares the original deadline.
 
 ::::{tab-set}
 
@@ -451,12 +467,32 @@ client = ContreeAsyncClient(
 
 ## Request errors
 
-All adapters use the shared [exception hierarchy](api.md#exception-hierarchy).
-Their buffered `request()` method maps an HTTP status of 400 or greater
-to the matching `APIStatusError`. Transport failures become
-`APIConnectionError`, with the backend exception as `__cause__`.
-Streaming methods keep backend errors, including HTTP status failures.
-Task cancellation propagates unchanged.
+All adapters use the shared [exception hierarchy](api.md#exception-hierarchy)
+for both buffered `request()` and streaming `stream()`. HTTP statuses of 400
+or greater become the matching `APIStatusError`, including the response error
+body and `Retry-After` when available. Connection failures and interrupted
+bodies become `APIConnectionError`, with the backend exception as `__cause__`.
+Its `timed_out` flag identifies a transport timeout; it does not mean the
+operation deadline has elapsed.
+
+Streaming methods previously exposed native backend exceptions. Callers must
+now catch `APIConnectionError` or `APIStatusError` for transport failures.
+Unknown errors, malformed event data, and corrupt compressed bodies propagate
+unchanged in both request modes. Task cancellation also propagates unchanged.
+
+## Adding an adapter
+
+Use one normalization boundary for `request()` and `stream()`. It must cover
+connection setup, body reads, and cleanup, including reads after yielded
+chunks. Convert only recognized network failures to `APIConnectionError` and
+preserve their cause and timeout flag. Use `error_for_response()` for HTTP
+errors. Keep parsing and programming errors visible.
+
+Retry decisions belong to the shared client code. Adapters must not inspect
+`RetryPolicy` to classify errors or infer deadline expiry from a transport
+timeout. Add request/stream contract tests for native connect/read/reset/
+truncated/status failures. Verify cursor resume, deadlines, cancellation, and
+stream closure with the shared lifecycle tests.
 
 ## User-Agent
 
