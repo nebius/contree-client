@@ -1859,10 +1859,14 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                         f"operation {operation_id} event log could not be read"
                     ) from exc
                 if terminal:
-                    delay = next(delays)
+                    retry_at = time.monotonic() + next(delays)
                     if deadline is not None:
-                        delay = min(delay, max(0.0, deadline - time.monotonic()))
-                    await asyncio.sleep(delay)
+                        retry_at = min(retry_at, deadline)
+                    # asyncio timers can wake early on coarse-resolution clocks.
+                    while True:
+                        await asyncio.sleep(max(0.0, retry_at - time.monotonic()))
+                        if time.monotonic() >= retry_at:
+                            break
                     continue
             else:
                 if terminal:

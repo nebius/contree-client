@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import zlib
 from collections import Counter
@@ -323,6 +324,38 @@ def test_retry_delay_respects_original_deadline(async_mode: bool) -> None:
     assert any(
         not call.kwargs["follow"] for call in client.calls_for("iter_operation_events")
     )
+
+
+def test_async_retry_delay_handles_early_timer_wakeups() -> None:
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        loop._clock_resolution = 0.015625  # Windows-like timer resolution.
+        client = testing.ContreeAsyncClient()
+        client.mock("iter_operation_events", [])
+        for _ in range(3):
+            client.mock("iter_operation_events", error=TimeoutError("read timed out"))
+        client.mock("operation_terminal", True)
+
+        async def heartbeat() -> None:
+            while True:
+                await asyncio.sleep(0.001)
+
+        task = asyncio.create_task(heartbeat())
+        started = time.monotonic()
+        try:
+            with pytest.raises(TimeoutError, match="events did not complete"):
+                async for _event in client.follow_operation_events(
+                    server.OPERATION_UUID, timeout=0.05
+                ):
+                    pass
+            assert time.monotonic() - started >= 0.05
+            assert len(client.calls_for("iter_operation_events")) == 2
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await client.close()
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
