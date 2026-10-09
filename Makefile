@@ -4,6 +4,8 @@
 SPEC ?=
 PACKAGE = client/contree_client
 JS_PACKAGE = client-js/lib
+GO_ROOT = go
+GO_PACKAGE = $(GO_ROOT)/v1
 GENERATED = \
     $(PACKAGE)/__init__.py \
     $(PACKAGE)/base.py \
@@ -17,12 +19,13 @@ JS_GENERATED = \
     $(JS_PACKAGE)/client.js $(JS_PACKAGE)/client.d.ts \
     $(JS_PACKAGE)/specInfo.js $(JS_PACKAGE)/specInfo.d.ts \
     $(JS_PACKAGE)/index.js $(JS_PACKAGE)/index.d.ts
-.PHONY: all generate generate-js js lint lint-js typecheck \
-    test test-python test-js test-live test-live-python test-live-js \
+.PHONY: all generate generate-js generate-go js go lint lint-js lint-go \
+    typecheck test test-python test-js test-go \
+    test-live test-live-python test-live-js \
     coverage docs docs-mintlify \
-    docs-view build clean
+    docs-view build build-go clean
 
-all: generate generate-js lint lint-js typecheck test
+all: generate generate-js go lint lint-js typecheck test-python test-js
 
 # A single phony target keeps `make -j` down to one codegen run; the
 # spec is remote, so every invocation regenerates from the fresh spec.
@@ -38,11 +41,20 @@ generate:
 generate-js: client-js/node_modules
 	uv run python -m api_generator --lang js $(if $(SPEC),--spec "$(SPEC)") --package $(JS_PACKAGE)
 
+# Go source is generated in its versioned package and committed. This
+# keeps the tagged module complete for the Go module proxy.
+generate-go:
+	uv run python -m api_generator --lang go $(if $(SPEC),--spec "$(SPEC)") \
+	    --package $(GO_PACKAGE)
+
 client-js/node_modules: client-js/package.json client-js/package-lock.json
 	npm ci --prefix client-js --no-audit --no-fund
 	touch client-js/node_modules
 
 js: generate-js lint-js test-js
+
+go: generate-go
+	$(MAKE) lint-go test-go
 
 lint:
 	uv run ruff format --check codegen client/tests conftest.py
@@ -52,10 +64,14 @@ lint-js: generate-js
 	cd client-js && npx prettier --check lib test
 	cd client-js && npx tsc --noEmit
 
+lint-go:
+	@test -z "$$(gofmt -l $(GO_PACKAGE)/*.go)"
+	cd $(GO_ROOT) && go vet ./...
+
 typecheck:
 	uv run ty check codegen/api_generator
 
-test: test-python test-js
+test: test-python test-js test-go
 
 # markdown-pytest picks the annotated documentation pages up itself.
 # Default runs are fully offline: live tests against the real API
@@ -67,6 +83,11 @@ test-python: generate
 # the node suites spawn the python stub server themselves
 test-js: generate-js
 	cd client-js && node --test test/*.test.mjs
+
+# The committed generated files make this target independent of the
+# private OpenAPI specification.
+test-go:
+	cd $(GO_ROOT) && go test ./...
 
 # live tests against a real Contree API (CONTREE_TOKEN/CONTREE_URL or
 # the active saved profile); they perform WRITE operations (upload,
@@ -103,10 +124,14 @@ docs-view: docs-mintlify
 # it builds a wheel and imports it from an isolated environment.
 # the js tarball comes from npm pack (its prepack script import-checks
 # lib/); both artifacts land in dist/, same as CI.
-build: generate generate-js
+build: generate generate-js generate-go
 	rm -rf dist
 	uv build client --out-dir dist
 	cd client-js && npm pack --pack-destination ../dist
+	cd $(GO_ROOT) && go build ./...
+
+build-go:
+	cd $(GO_ROOT) && go build ./...
 
 clean:
 	rm -rf build dist $(GENERATED) $(JS_GENERATED)
