@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import gzip
 import ssl
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
+from contextlib import contextmanager
 from functools import cached_property
 
 import aiohttp
@@ -18,10 +21,31 @@ from .runtime import (
     RetryPolicy,
     error_for_response,
     library_version,
+    preserve_response_status,
     remaining_timeout,
 )
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
+
+
+@contextmanager
+def normalize_errors() -> Iterator[None]:
+    """Normalize transport failures for buffered and streaming requests."""
+    try:
+        yield
+    except aiohttp.ClientResponseError as exc:
+        headers = {k.lower(): v for k, v in (exc.headers or {}).items()}
+        raise error_for_response(exc.status, headers, exc.message.encode()) from exc
+    except aiohttp.ClientPayloadError as exc:
+        # Corrupt compressed bodies must remain visible and must not be retried.
+        if not isinstance(exc.__cause__, (ContentLengthError, TransferEncodingError)):
+            raise
+        raise APIConnectionError(str(exc)) from exc
+    except (aiohttp.ClientConnectionError, asyncio.TimeoutError, TimeoutError) as exc:
+        # asyncio.TimeoutError is a separate type on Python 3.10.
+        raise APIConnectionError(
+            str(exc), timed_out=isinstance(exc, (asyncio.TimeoutError, TimeoutError))
+        ) from exc
 
 
 class ContreeAsyncClient(base.ContreeAsyncClient):
@@ -32,22 +56,6 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
 
     log = logger.getChild("aiohttp")
     UA_TRANSPORT_LIBRARY = library_version(aiohttp)
-
-    def _stream_error_retryable(
-        self,
-        exc: Exception,
-        policy: RetryPolicy,
-    ) -> bool | None:
-        if isinstance(exc, aiohttp.ClientResponseError):
-            return policy.retryable_status(exc.status)
-        if isinstance(exc, aiohttp.ClientPayloadError):
-            # Only incomplete HTTP bodies qualify for recovery.
-            if isinstance(exc.__cause__, (ContentLengthError, TransferEncodingError)):
-                return True
-            return None
-        if isinstance(exc, aiohttp.ClientConnectionError):
-            return True
-        return super()._stream_error_retryable(exc, policy)
 
     def __init__(
         self,
@@ -105,8 +113,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
             if spec.deadline is None
             else aiohttp.ClientTimeout(total=timeout, ceil_threshold=float("inf"))
         )
-        data: ResponseData | None = None
-        try:
+        with normalize_errors():
             async with self._session.request(
                 spec.method,
                 url,
@@ -116,26 +123,23 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 timeout=client_timeout,
                 raise_for_status=False,
             ) as response:
-                body = await response.read()
+                with (
+                    preserve_response_status(
+                        response.status,
+                        {k.lower(): v for k, v in response.headers.items()},
+                    ),
+                    normalize_errors(),
+                ):
+                    body = await response.read()
                 data = ResponseData(
                     status=response.status,
                     headers={k.lower(): v for k, v in response.headers.items()},
                     body=body,
                 )
-                response.raise_for_status()
-        except aiohttp.ClientResponseError as exc:
-            if data is None:
-                raise APIConnectionError(str(exc)) from exc
-            if data.status >= 400:
-                raise error_for_response(data.status, data.headers, data.body) from exc
-            raise APIConnectionError(str(exc)) from exc
-        except Exception as exc:
-            raise APIConnectionError(
-                str(exc), timed_out=isinstance(exc, TimeoutError)
-            ) from exc
+        if data.status >= 400:
+            raise error_for_response(data.status, data.headers, data.body)
         remaining_timeout(spec.deadline, None)
 
-        assert data is not None
         return data
 
     async def stream(
@@ -143,42 +147,65 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         spec: RequestSpec,
         auto_decompress: bool = True,
     ) -> AsyncGenerator[bytes, None]:
-        url = self.build_url(spec)
-        headers = list(self.build_headers(spec))
-        connect_timeout = remaining_timeout(spec.deadline, self.timeout)
-        read_timeout = remaining_timeout(
-            spec.deadline,
-            spec.read_timeout if spec.accept == "text/event-stream" else self.timeout,
-        )
-        if spec.deadline is None:
-            client_timeout = aiohttp.ClientTimeout(
-                total=None,
-                sock_connect=connect_timeout,
-                sock_read=read_timeout,
+        with normalize_errors():
+            url = self.build_url(spec)
+            headers = list(self.build_headers(spec))
+            connect_timeout = remaining_timeout(spec.deadline, self.timeout)
+            read_timeout = remaining_timeout(
+                spec.deadline,
+                spec.read_timeout
+                if spec.accept == "text/event-stream"
+                else self.timeout,
             )
-        else:
-            client_timeout = aiohttp.ClientTimeout(
-                total=remaining_timeout(spec.deadline, None),
-                sock_connect=connect_timeout,
-                sock_read=read_timeout,
-                ceil_threshold=float("inf"),
-            )
-        async with self._session.request(
-            spec.method,
-            url,
-            data=spec.body,
-            headers=headers,
-            allow_redirects=False,
-            auto_decompress=auto_decompress,
-            timeout=client_timeout,
-            raise_for_status=False,
-        ) as response:
-            self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status)
-            if response.status >= 400:
-                response.raise_for_status()
-            async for chunk in response.content.iter_chunked(CHUNK_SIZE):
-                remaining_timeout(spec.deadline, None)
-                yield chunk
+            if spec.deadline is None:
+                client_timeout = aiohttp.ClientTimeout(
+                    total=None,
+                    sock_connect=connect_timeout,
+                    sock_read=read_timeout,
+                )
+            else:
+                client_timeout = aiohttp.ClientTimeout(
+                    total=remaining_timeout(spec.deadline, None),
+                    sock_connect=connect_timeout,
+                    sock_read=read_timeout,
+                    ceil_threshold=float("inf"),
+                )
+            async with self._session.request(
+                spec.method,
+                url,
+                data=spec.body,
+                headers=headers,
+                allow_redirects=False,
+                auto_decompress=auto_decompress,
+                timeout=client_timeout,
+                raise_for_status=False,
+            ) as response:
+                self.log.debug(
+                    "%s %s -> %d (stream)", spec.method, url, response.status
+                )
+                if response.status >= 400:
+                    with (
+                        preserve_response_status(
+                            response.status,
+                            {k.lower(): v for k, v in response.headers.items()},
+                        ),
+                        normalize_errors(),
+                    ):
+                        body = await response.read()
+                        if (
+                            not auto_decompress
+                            and response.headers.get("Content-Encoding", "").lower()
+                            == "gzip"
+                        ):
+                            body = gzip.decompress(body)
+                        raise error_for_response(
+                            response.status,
+                            {k.lower(): v for k, v in response.headers.items()},
+                            body,
+                        )
+                async for chunk in response.content.iter_chunked(CHUNK_SIZE):
+                    remaining_timeout(spec.deadline, None)
+                    yield chunk
 
     async def close(self) -> None:
         if self.__created_session is None or self.__created_session.closed:

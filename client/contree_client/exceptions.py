@@ -10,7 +10,7 @@ class ContreeError(Exception):
 
 
 class APIConnectionError(ContreeError):
-    """A buffered request failed or an operation event log could not be read.
+    """A connection failed or a response body was interrupted.
 
     ``timed_out`` identifies a timeout without exposing a backend type.
     """
@@ -21,7 +21,7 @@ class APIConnectionError(ContreeError):
 
 
 class APIStatusError(ContreeError):
-    """A buffered ``request()`` received HTTP status 400 or greater."""
+    """A request or stream received HTTP status 400 or greater."""
 
     def __init__(
         self,

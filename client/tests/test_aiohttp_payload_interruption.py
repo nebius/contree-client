@@ -7,9 +7,9 @@ import importlib
 from types import ModuleType
 from typing import Any
 
-import aiohttp
 import pytest
 
+from contree_client.exceptions import APIConnectionError
 from tests.stub_server import (
     PAYLOAD_INTERRUPTION_OPERATION_UUID,
     PAYLOAD_TIMEOUT_OPERATION_UUID,
@@ -59,7 +59,7 @@ async def follow_after_socket_timeout(
     async def interrupted_events(*args: Any, **kwargs: Any) -> Any:
         attempts.append("stream")
         await asyncio.sleep(delay)
-        raise aiohttp.SocketTimeoutError("read stalled")
+        raise APIConnectionError("read stalled", timed_out=True)
         yield  # pragma: no cover - makes this an async generator
 
     async def status(*args: Any, **kwargs: Any) -> bool:

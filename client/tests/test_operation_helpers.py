@@ -116,12 +116,13 @@ def test_permanent_stream_failure_does_not_probe_status(
     stub_server: StubServer,
     exceptions: ModuleType,
 ) -> None:
-    with pytest.raises(exceptions.APIConnectionError):
+    with pytest.raises(exceptions.APIConnectionError) as caught:
         invoke(
             "follow_operation_events",
             PAYLOAD_FORBIDDEN_OPERATION_UUID,
             collect=True,
         )
+    assert isinstance(caught.value.__cause__, exceptions.PermissionDeniedError)
     assert all(request.path.endswith("/events") for request in stub_server.captured)
 
 

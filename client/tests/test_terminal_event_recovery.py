@@ -311,7 +311,7 @@ def test_retry_delay_respects_original_deadline(async_mode: bool) -> None:
     cls = testing.ContreeAsyncClient if async_mode else testing.ContreeClient
     client = cls(retry=RetryPolicy(delays=(5.0,)))
     client.mock("iter_operation_events", [])
-    client.mock("iter_operation_events", error=ConnectionError("interrupted drain"))
+    client.mock("iter_operation_events", error=APIConnectionError("interrupted drain"))
     client.mock("operation_terminal", True)
     invoke = make_invoke("httpx_async" if async_mode else "http", lambda: client)
 
@@ -333,7 +333,10 @@ def test_async_retry_delay_handles_early_timer_wakeups() -> None:
         client = testing.ContreeAsyncClient()
         client.mock("iter_operation_events", [])
         for _ in range(3):
-            client.mock("iter_operation_events", error=TimeoutError("read timed out"))
+            client.mock(
+                "iter_operation_events",
+                error=APIConnectionError("read timed out", timed_out=True),
+            )
         client.mock("operation_terminal", True)
 
         async def heartbeat() -> None:

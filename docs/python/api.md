@@ -585,9 +585,10 @@ ContreeError
 ```
 
 {class}`~contree_client.APIConnectionError` covers backend failures in an
-adapter's buffered `request()` method. The backend exception remains the
-standard Python `__cause__` for diagnostics. Streaming methods preserve
-their backend's errors. `timed_out` is true for backend timeouts.
+adapter's `request()` and `stream()` methods. The backend exception remains
+the standard Python `__cause__` for diagnostics. HTTP failures use
+`APIStatusError` in both methods. `timed_out` is true for backend timeouts;
+operation deadlines are checked separately.
 
 <!--
 name: test_connection_error_handling;

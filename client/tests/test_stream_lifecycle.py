@@ -16,12 +16,11 @@ from collections.abc import AsyncIterator, Awaitable
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
-import aiohttp
 import httpx
 import pytest
-import requests
 import urllib3
 
+from contree_client.exceptions import APIConnectionError
 from tests import stub_server as server
 from tests.stub_server import OPERATION_RESPONSE, OPERATION_UUID
 
@@ -60,55 +59,19 @@ class FakeClock:
         return self.now
 
 
-def native_read_timeout(backend: str) -> Exception:
-    if backend == "http":
-        return TimeoutError("read timed out")
-    if backend == "urllib3":
-        return urllib3.exceptions.ReadTimeoutError(None, "/events", "read timed out")
-    if backend == "requests":
-        cause = urllib3.exceptions.ReadTimeoutError(None, "/events", "read timed out")
-        return requests.exceptions.ConnectionError(cause)
-    if backend in ("httpx", "httpx_async"):
-        return httpx.ReadTimeout("read timed out")
-    if backend == "aiohttp":
-        return aiohttp.SocketTimeoutError("read timed out")
-    raise AssertionError(f"unknown backend {backend}")
-
-
-def native_connect_timeout(backend: str) -> Exception:
-    if backend == "http":
-        return TimeoutError("connect timed out")
-    if backend == "urllib3":
-        return urllib3.exceptions.ConnectTimeoutError(None, "connect timed out")
-    if backend == "requests":
-        return requests.exceptions.ConnectTimeout("connect timed out")
-    if backend in ("httpx", "httpx_async"):
-        return httpx.ConnectTimeout("connect timed out")
-    if backend == "aiohttp":
-        return aiohttp.ConnectionTimeoutError("connect timed out")
-    raise AssertionError(f"unknown backend {backend}")
-
-
 @pytest.mark.parametrize(
     "backend", ("http", "urllib3", "requests", "httpx", "httpx_async", "aiohttp")
 )
-def test_follow_retries_native_read_timeout_before_deadline(
+def test_follow_retries_connection_error_before_deadline(
     generated_package: ModuleType,
     backend: str,
 ) -> None:
     module_name = "httpx" if backend == "httpx_async" else backend
     module = importlib.import_module(f"contree_client.{module_name}")
     models = importlib.import_module("contree_client.models")
-    runtime = importlib.import_module("contree_client.runtime")
     async_backend = backend in ("httpx_async", "aiohttp")
     client_class = module.ContreeAsyncClient if async_backend else module.ContreeClient
     client = client_class("token", timeout=0.01)
-    assert (
-        client._stream_error_retryable(
-            native_connect_timeout(backend), runtime.RetryPolicy()
-        )
-        is True
-    )
     completion = models.OperationEvent.from_dict(
         {
             "id": 7,
@@ -126,7 +89,7 @@ def test_follow_retries_native_read_timeout_before_deadline(
             nonlocal attempts
             attempts += 1
             if attempts == 1:
-                raise native_read_timeout(backend)
+                raise APIConnectionError("read timed out", timed_out=True)
             yield completion
 
         async def status(*args: Any, **kwargs: Any) -> bool:
@@ -156,7 +119,7 @@ def test_follow_retries_native_read_timeout_before_deadline(
             nonlocal attempts
             attempts += 1
             if attempts == 1:
-                raise native_read_timeout(backend)
+                raise APIConnectionError("read timed out", timed_out=True)
             yield completion
 
         def status(*args: Any, **kwargs: Any) -> bool:
@@ -366,7 +329,7 @@ def test_follow_reconnects_after_truncated_stream(
 
         def stream(self, spec, auto_decompress=True):  # type: ignore[no-untyped-def]
             self.stream_attempts += 1
-            raise EOFError("truncated gzip SSE")
+            raise APIConnectionError("truncated gzip SSE") from EOFError("truncated")
             yield b""  # pragma: no cover - makes this a generator
 
         def close(self) -> None:
@@ -376,7 +339,8 @@ def test_follow_reconnects_after_truncated_stream(
     exceptions = importlib.import_module("contree_client.exceptions")
     with pytest.raises(exceptions.APIConnectionError) as caught:
         list(client.follow_operation_events(OPERATION_UUID))
-    assert isinstance(caught.value.__cause__, EOFError)
+    assert isinstance(caught.value.__cause__, APIConnectionError)
+    assert isinstance(caught.value.__cause__.__cause__, EOFError)
     # One live read, then three bounded attempts to drain the terminal log.
     assert client.stream_attempts == 4
 
@@ -404,7 +368,7 @@ def test_sse_id_only_frames_advance_the_resume_cursor(
             pass
 
     client = IdOnlyClient()
-    with pytest.raises(ConnectionError) as caught:
+    with pytest.raises(APIConnectionError) as caught:
         list(client.iter_operation_events("00000000-0000-0000-0000-000000000000"))
     assert caught.value.__dict__["last_event_id"] == 5
 

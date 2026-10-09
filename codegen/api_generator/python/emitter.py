@@ -1078,25 +1078,6 @@ class ContreeClientBase:
         # e.g. identity="my-app/1.2.3" - the library tokens stay
         self.identity = identity
 
-    def _stream_error_retryable(
-        self,
-        exc: Exception,
-        policy: RetryPolicy,
-    ) -> bool | None:
-        """Classify a stream failure; None leaves programming errors visible.
-
-        Adapters extend this hook for native network and HTTP errors.
-        A transport timeout does not imply the absolute deadline elapsed.
-        """
-        if isinstance(exc, APIStatusError):
-            return policy.retryable_status(exc.status)
-        if isinstance(
-            exc,
-            (APIConnectionError, ConnectionError, TimeoutError, EOFError),
-        ):
-            return True
-        return None
-
     @classmethod
     def from_profile(
         cls: type[TClient],
@@ -1462,11 +1443,11 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                     if event.type == "completion":
                         return
                     check_deadline()
-            except Exception as exc:
+            except (APIConnectionError, APIStatusError) as exc:
                 check_deadline()
-                retryable = self._stream_error_retryable(exc, policy)
-                if retryable is None:
-                    raise
+                retryable = not isinstance(exc, APIStatusError) or (
+                    policy.retryable_status(exc.status)
+                )
                 resume_id = getattr(exc, "last_event_id", None)
                 if isinstance(resume_id, int):
                     last_id = resume_id
@@ -1841,11 +1822,11 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                         if event.type == "completion":
                             return
                         check_deadline()
-            except Exception as exc:
+            except (APIConnectionError, APIStatusError) as exc:
                 check_deadline()
-                retryable = self._stream_error_retryable(exc, policy)
-                if retryable is None:
-                    raise
+                retryable = not isinstance(exc, APIStatusError) or (
+                    policy.retryable_status(exc.status)
+                )
                 resume_id = getattr(exc, "last_event_id", None)
                 if isinstance(resume_id, int):
                     last_id = resume_id

@@ -351,18 +351,18 @@ def test_iter_operation_events_resume_header(
     assert stub_server.last.headers["last-event-id"] == "1"
 
 
-def test_stream_status_is_not_a_contree_error(
+def test_stream_status_is_a_contree_error(
     invoke: Invoke,
     stub_server: StubServer,
     exceptions: ModuleType,
 ) -> None:
-    with pytest.raises(Exception) as caught:
+    with pytest.raises(exceptions.GoneError) as caught:
         invoke(
             "iter_operation_events",
             stub.GONE_OPERATION_UUID,
             collect=True,
         )
-    assert not isinstance(caught.value, exceptions.ContreeError)
+    assert caught.value.status == 410
 
 
 def test_inspect_find_image_by_tag(invoke: Invoke, stub_server: StubServer) -> None:
@@ -581,14 +581,16 @@ def test_download_stream_read_timeout_async(
 def test_stdlib_rejects_truncated_gzip_archive(
     generated_package: ModuleType,
     stub_server: StubServer,
+    exceptions: ModuleType,
 ) -> None:
     """P2-16 end to end: the peer dies before the gzip trailer."""
     module = importlib.import_module("contree_client.http")
     with (
         module.ContreeClient(TOKEN, base_url=stub_server.base_url) as client,
-        pytest.raises(EOFError, match="truncated"),
+        pytest.raises(exceptions.APIConnectionError, match="truncated") as caught,
     ):
         list(client.inspect_image_archive(stub.TRUNCATED_IMAGE_UUID, "/etc"))
+    assert isinstance(caught.value.__cause__, EOFError)
 
 
 def test_ssl_context_is_wired_into_every_transport(

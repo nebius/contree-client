@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ssl
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import urllib3
@@ -17,10 +18,35 @@ from .runtime import (
     RetryPolicy,
     error_for_response,
     library_version,
+    preserve_response_status,
     remaining_timeout,
 )
 from .spec_info import DEFAULT_BASE_URL
 from .types import logger
+
+
+@contextmanager
+def normalize_errors() -> Iterator[None]:
+    """Normalize transport failures for buffered and streaming requests."""
+    try:
+        yield
+    except (
+        urllib3.exceptions.ProtocolError,
+        urllib3.exceptions.ProxyError,
+        urllib3.exceptions.SSLError,
+        urllib3.exceptions.TimeoutError,
+        urllib3.exceptions.NewConnectionError,
+        urllib3.exceptions.MaxRetryError,
+        urllib3.exceptions.EmptyPoolError,
+        urllib3.exceptions.ClosedPoolError,
+    ) as exc:
+        reason = (
+            exc.reason if isinstance(exc, urllib3.exceptions.MaxRetryError) else exc
+        )
+        timed_out = isinstance(
+            reason, urllib3.exceptions.TimeoutError
+        ) and not isinstance(reason, urllib3.exceptions.NewConnectionError)
+        raise APIConnectionError(str(exc), timed_out=timed_out) from exc
 
 
 class ContreeClient(base.ContreeSyncClient):
@@ -34,30 +60,6 @@ class ContreeClient(base.ContreeSyncClient):
 
     log = logger.getChild("urllib3")
     UA_TRANSPORT_LIBRARY = library_version(urllib3)
-
-    def _stream_error_retryable(
-        self,
-        exc: Exception,
-        policy: RetryPolicy,
-    ) -> bool | None:
-        status = getattr(exc, "status", None)
-        if isinstance(exc, urllib3.exceptions.HTTPError) and isinstance(status, int):
-            return policy.retryable_status(status)
-        if isinstance(
-            exc,
-            (
-                urllib3.exceptions.ProtocolError,
-                urllib3.exceptions.ProxyError,
-                urllib3.exceptions.SSLError,
-                urllib3.exceptions.TimeoutError,
-                urllib3.exceptions.NewConnectionError,
-                urllib3.exceptions.MaxRetryError,
-                urllib3.exceptions.EmptyPoolError,
-                urllib3.exceptions.ClosedPoolError,
-            ),
-        ):
-            return True
-        return super()._stream_error_retryable(exc, policy)
 
     def __init__(
         self,
@@ -112,7 +114,7 @@ class ContreeClient(base.ContreeSyncClient):
                 read=remaining_timeout(spec.deadline, self.timeout),
             )
             pool_options["pool_timeout"] = remaining_timeout(spec.deadline, None)
-        try:
+        with normalize_errors():
             response = self._http.request(
                 spec.method,
                 url,
@@ -130,13 +132,6 @@ class ContreeClient(base.ContreeSyncClient):
                 headers={k.lower(): v for k, v in response.headers.items()},
                 body=response.data,
             )
-        except urllib3.exceptions.NewConnectionError as exc:
-            raise APIConnectionError(str(exc), timed_out=False) from exc
-        except Exception as exc:
-            raise APIConnectionError(
-                str(exc),
-                timed_out=isinstance(exc, urllib3.exceptions.TimeoutError),
-            ) from exc
         if data.status >= 400:
             raise error_for_response(data.status, data.headers, data.body)
         remaining_timeout(spec.deadline, None)
@@ -147,53 +142,68 @@ class ContreeClient(base.ContreeSyncClient):
         spec: RequestSpec,
         auto_decompress: bool = True,
     ) -> Iterator[bytes]:
-        decode_content = auto_decompress
-        url = self.build_url(spec)
-        headers = self._request_headers(spec)
-        connect_timeout = remaining_timeout(spec.deadline, self.timeout)
-        read_timeout = remaining_timeout(
-            spec.deadline,
-            spec.read_timeout if spec.accept == "text/event-stream" else self.timeout,
-        )
-        pool_options: dict[str, Any] = {}
-        if spec.deadline is None:
-            timeout = urllib3.Timeout(
-                connect=connect_timeout,
-                read=read_timeout,
+        with normalize_errors():
+            decode_content = auto_decompress
+            url = self.build_url(spec)
+            headers = self._request_headers(spec)
+            connect_timeout = remaining_timeout(spec.deadline, self.timeout)
+            read_timeout = remaining_timeout(
+                spec.deadline,
+                spec.read_timeout
+                if spec.accept == "text/event-stream"
+                else self.timeout,
             )
-        else:
-            timeout = urllib3.Timeout(
-                total=remaining_timeout(spec.deadline, None),
-                connect=connect_timeout,
-                read=read_timeout,
+            pool_options: dict[str, Any] = {}
+            if spec.deadline is None:
+                timeout = urllib3.Timeout(
+                    connect=connect_timeout,
+                    read=read_timeout,
+                )
+            else:
+                timeout = urllib3.Timeout(
+                    total=remaining_timeout(spec.deadline, None),
+                    connect=connect_timeout,
+                    read=read_timeout,
+                )
+                pool_options["pool_timeout"] = remaining_timeout(spec.deadline, None)
+            response = self._http.request(
+                spec.method,
+                url,
+                body=spec.body,
+                headers=headers,
+                timeout=timeout,
+                redirect=False,
+                retries=False,
+                preload_content=False,
+                decode_content=decode_content,
+                **pool_options,
             )
-            pool_options["pool_timeout"] = remaining_timeout(spec.deadline, None)
-        response = self._http.request(
-            spec.method,
-            url,
-            body=spec.body,
-            headers=headers,
-            timeout=timeout,
-            redirect=False,
-            retries=False,
-            preload_content=False,
-            decode_content=decode_content,
-            **pool_options,
-        )
-        try:
-            self.log.debug("%s %s -> %d (stream)", spec.method, url, response.status)
-            if response.status >= 400:
-                error = urllib3.exceptions.HTTPError(f"HTTP {response.status}")
-                error.__dict__["status"] = response.status
-                raise error
-            for chunk in response.stream(CHUNK_SIZE, decode_content=decode_content):
-                remaining_timeout(spec.deadline, None)
-                yield chunk
-        finally:
-            # close before releasing: an aborted stream must not put a
-            # half-read connection back into the pool
-            response.close()
-            response.release_conn()
+            try:
+                self.log.debug(
+                    "%s %s -> %d (stream)", spec.method, url, response.status
+                )
+                if response.status >= 400:
+                    with (
+                        preserve_response_status(
+                            response.status,
+                            {k.lower(): v for k, v in response.headers.items()},
+                        ),
+                        normalize_errors(),
+                    ):
+                        body = response.read(decode_content=True)
+                        raise error_for_response(
+                            response.status,
+                            {k.lower(): v for k, v in response.headers.items()},
+                            body,
+                        )
+                for chunk in response.stream(CHUNK_SIZE, decode_content=decode_content):
+                    remaining_timeout(spec.deadline, None)
+                    yield chunk
+            finally:
+                # close before releasing: an aborted stream must not put a
+                # half-read connection back into the pool
+                response.close()
+                response.release_conn()
 
     def close(self) -> None:
         if self.__owns_http:

@@ -399,7 +399,7 @@ The client checks it whenever iteration resumes, but it does not interrupt
 caller code between yielded events. A synchronous native read started before
 expiry can delay `TimeoutError` until it returns. Status probes use one
 transport attempt because the event follower controls reconnection.
-Low-level streaming requests preserve native backend exceptions and are not
+Low-level streaming requests use the shared exception hierarchy and are not
 retried by `call()`. `follow_operation_events` handles network interruptions
 and reconnects with `Last-Event-Id`; a transport timeout only ends the follower
 when its absolute deadline has elapsed. Unexpected errors, including malformed
@@ -467,28 +467,32 @@ client = ContreeAsyncClient(
 
 ## Request errors
 
-All adapters use the shared [exception hierarchy](api.md#exception-hierarchy).
-Their buffered `request()` method maps an HTTP status of 400 or greater
-to the matching `APIStatusError`. Transport failures become
-`APIConnectionError`, with the backend exception as `__cause__`.
-Streaming methods keep backend errors, including HTTP status failures.
-Task cancellation propagates unchanged.
+All adapters use the shared [exception hierarchy](api.md#exception-hierarchy)
+for both buffered `request()` and streaming `stream()`. HTTP statuses of 400
+or greater become the matching `APIStatusError`, including the response error
+body and `Retry-After` when available. Connection failures and interrupted
+bodies become `APIConnectionError`, with the backend exception as `__cause__`.
+Its `timed_out` flag identifies a transport timeout; it does not mean the
+operation deadline has elapsed.
+
+Streaming methods previously exposed native backend exceptions. Callers must
+now catch `APIConnectionError` or `APIStatusError` for transport failures.
+Unknown errors, malformed event data, and corrupt compressed bodies propagate
+unchanged in both request modes. Task cancellation also propagates unchanged.
 
 ## Adding an adapter
 
-Keep native exceptions in the low-level `stream()` method. Extend the internal
-`_stream_error_retryable(exc, policy)` hook to return `True` for recognized
-network interruptions and retryable HTTP responses, `False` for permanent HTTP
-failures, and delegate unknown errors to the base hook. The base recognizes
-shared connection, timeout, and truncated-stream failures; returning `None`
-keeps programming and parsing errors visible. For native HTTP errors, consult
-`policy.retryable_status(status)`. The stdlib and urllib3 adapters attach the
-response status to their existing native exception without changing its type.
+Use one normalization boundary for `request()` and `stream()`. It must cover
+connection setup, body reads, and cleanup, including reads after yielded
+chunks. Convert only recognized network failures to `APIConnectionError` and
+preserve their cause and timeout flag. Use `error_for_response()` for HTTP
+errors. Keep parsing and programming errors visible.
 
-The follower checks the actual absolute deadline; adapters must not infer its
-expiry from an exception class or a per-connection timeout. Add contract tests
-for native connect/read/reset/truncated/status failures and verify cursor
-resume and stream closure with the shared lifecycle tests.
+Retry decisions belong to the shared client code. Adapters must not inspect
+`RetryPolicy` to classify errors or infer deadline expiry from a transport
+timeout. Add request/stream contract tests for native connect/read/reset/
+truncated/status failures. Verify cursor resume, deadlines, cancellation, and
+stream closure with the shared lifecycle tests.
 
 ## User-Agent
 
