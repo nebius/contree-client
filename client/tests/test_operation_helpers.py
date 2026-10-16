@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import time
+from collections import Counter
 from collections.abc import Callable
 from types import ModuleType
 from typing import Any
 
 import pytest
 
+from contree_client import base
+from tests import stub_server as server
 from tests.stub_server import (
     EVENTS_UNAVAILABLE_OPERATION_UUID,
     EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID,
@@ -58,6 +61,117 @@ def test_wait_operation_deadline_bounds_status_probe(
     with pytest.raises(TimeoutError, match=PAYLOAD_STALLED_STATUS_OPERATION_UUID):
         invoke("wait_operation", PAYLOAD_STALLED_STATUS_OPERATION_UUID, timeout=0.2)
     assert time.monotonic() - started < 1.0
+
+
+@pytest.mark.parametrize("outcome", ["SUCCESS", "FAILED", "CANCELLED"])
+def test_wait_operation_streaming_fetches_final_status(
+    invoke: Callable[..., Any],
+    stub_server: server.StubServer,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    detail = None if outcome == "SUCCESS" else "operation failed or was cancelled"
+
+    def route(request: server.Captured, attempts: Counter[str]) -> server.Reply:
+        if request.path.endswith("/events"):
+            completion = {
+                **server.EVENT_COMPLETION,
+                "data": {**server.EVENT_COMPLETION["data"], "status": outcome},
+            }
+            return server.Reply(
+                status=200,
+                content_type="text/event-stream",
+                stream_chunks=[server.sse_frame(completion)],
+            )
+        return server.json_reply(
+            200, {**server.OPERATION_RESPONSE, "status": outcome, "error": detail}
+        )
+
+    monkeypatch.setattr(server, "route", route)
+    result = invoke(
+        "wait_operation", server.OPERATION_UUID, timeout=2.0, follow_events=True
+    )
+    assert str(result.status) == outcome
+    assert result.error == detail
+    assert [r.path for r in stub_server.captured] == [
+        f"/v1/operations/{server.OPERATION_UUID}/events",
+        f"/v1/operations/{server.OPERATION_UUID}",
+    ]
+
+
+@pytest.mark.parametrize("outcome", ["SUCCESS", "FAILED", "CANCELLED"])
+@pytest.mark.parametrize("already_terminal", [False, True])
+def test_wait_operation_polling_returns_terminal_result(
+    invoke: Callable[..., Any],
+    stub_server: server.StubServer,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    already_terminal: bool,
+) -> None:
+    monkeypatch.setattr(base, "TIGHT_LOOP_FLOOR", 0.01)
+    statuses = [] if already_terminal else ["PENDING", "ASSIGNED", "EXECUTING"]
+    statuses.append(outcome)
+    detail = None if outcome == "SUCCESS" else "registry failure or cancellation"
+
+    def route(request: server.Captured, attempts: Counter[str]) -> server.Reply:
+        status = statuses.pop(0)
+        payload = {
+            **server.OPERATION_RESPONSE,
+            "kind": "image_import",
+            "status": status,
+            "error": detail,
+            "result_image_uuid": server.IMAGE_UUID if status == "SUCCESS" else None,
+        }
+        return server.json_reply(200, payload)
+
+    monkeypatch.setattr(server, "route", route)
+    result = invoke(
+        "wait_operation", server.OPERATION_UUID, timeout=5.0, follow_events=False
+    )
+    assert str(result.status) == outcome
+    assert result.error == detail
+    assert result.result_image_uuid == (
+        server.IMAGE_UUID if outcome == "SUCCESS" else None
+    )
+    assert len(stub_server.captured) == (1 if already_terminal else 4)
+    assert all(
+        r.method == "GET" and r.path == f"/v1/operations/{server.OPERATION_UUID}"
+        for r in stub_server.captured
+    )
+
+
+@pytest.mark.parametrize("stalled_status", [False, True])
+def test_wait_operation_polling_respects_deadline(
+    invoke: Callable[..., Any],
+    stub_server: server.StubServer,
+    monkeypatch: pytest.MonkeyPatch,
+    stalled_status: bool,
+) -> None:
+    reads = 0
+
+    def route(request: server.Captured, attempts: Counter[str]) -> server.Reply:
+        nonlocal reads
+        reads += 1
+        if stalled_status and reads > 1:
+            time.sleep(2.0)
+        return server.json_reply(
+            200,
+            {
+                **server.OPERATION_RESPONSE,
+                "kind": "image_import",
+                "status": "EXECUTING",
+            },
+        )
+
+    monkeypatch.setattr(server, "route", route)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match=server.OPERATION_UUID):
+        invoke(
+            "wait_operation", server.OPERATION_UUID, timeout=0.7, follow_events=False
+        )
+    assert time.monotonic() - started < 1.5
+    assert all(r.method == "GET" for r in stub_server.captured)
+    assert not any(r.path.endswith("/events") for r in stub_server.captured)
 
 
 def test_follow_operation_events_reconnects(

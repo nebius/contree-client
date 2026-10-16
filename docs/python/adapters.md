@@ -415,9 +415,13 @@ A clean EOF completes a filtered or explicitly resumed log even without a
 follower raises `APIConnectionError`.
 A permanent HTTP failure or exhausted drain budget raises `APIConnectionError`
 with the original failure as its cause, rather than silently returning partial
-events. `wait_operation` also requires a successfully consumed event log and
-propagates stream failures. Its final status fetch occurs only after the
-follower completes successfully and shares the original deadline.
+events.
+
+`wait_operation` follows events by default, then fetches the terminal response.
+For image imports, which have no event log, pass `follow_events=False` to poll
+status with a 0.5-second delay between reads. Both modes return failed and
+cancelled responses unchanged and share one deadline across requests, retries,
+and delays.
 
 ::::{tab-set}
 

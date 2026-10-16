@@ -364,14 +364,15 @@ await client.spawnInstance("/bin/sh", "tag:ubuntu:latest", {
 
 ## Wait for the result
 
-A spawn returns immediately with an operation id. `wait_operation()` /
-`waitOperation()` follows the event stream and probes status between
-reconnects. It then fetches the terminal
-{class}`~contree_client.OperationResponse`. *timeout* sets an absolute deadline
-for stream reads, reconnects, and status probes. The client checks it whenever
-iteration resumes. It does not interrupt caller code between events. A
-synchronous native read started before expiry can delay `TimeoutError` until it
-returns. An idle JavaScript stream past the deadline rejects with `TimeoutError`.
+A spawn returns an operation id. Python's `wait_operation()` follows events,
+then fetches the terminal {class}`~contree_client.OperationResponse`.
+For image imports, pass `follow_events=False` to poll status every 0.5 seconds.
+Failed and cancelled responses are returned unchanged. *timeout* covers the
+entire wait.
+
+JavaScript's `waitOperation()` follows events and probes status during
+reconnection, then fetches the terminal response. Its timeout covers the entire
+wait, including idle streams.
 
 ::::{tab-set}
 
@@ -833,7 +834,7 @@ import_id = client.import_image(
     ImageImportRegistry(url="docker://docker.io/library/busybox:latest"),
     tag="busybox:latest",
 )
-client.wait_operation(import_id, timeout=600)
+client.wait_operation(import_id, timeout=600, follow_events=False)
 
 image_uuid = client.resolve_image("tag:busybox:latest")
 # the raw lookup underneath resolve_image (tag name only, no prefix)
@@ -860,7 +861,7 @@ import_id = await client.import_image(
     ImageImportRegistry(url="docker://docker.io/library/busybox:latest"),
     tag="busybox:latest",
 )
-await client.wait_operation(import_id, timeout=600)
+await client.wait_operation(import_id, timeout=600, follow_events=False)
 
 image_uuid = await client.resolve_image("tag:busybox:latest")
 # the raw lookup underneath resolve_image (tag name only, no prefix)
