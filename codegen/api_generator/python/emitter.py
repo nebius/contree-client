@@ -1350,39 +1350,64 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
             raise
         return not isinstance(status, EllipsisType) and status.is_terminal()
 
+    def _read_operation_status(
+        self,
+        operation_id: str,
+        deadline: float | None,
+    ) -> OperationResponse:
+        """Fetch status using the waiter's deadline."""
+        spec = operations.build_get_operation_status(operation_id=operation_id)
+        spec.deadline = deadline
+        self.log_request(spec)
+        response = self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_get_operation_status(response)
+
     def wait_operation(
         self,
         operation_id: str,
         *,
         timeout: float | None = None,
+        follow_events: bool = True,
     ) -> OperationResponse:
-        """Wait until the operation finishes, driven by its event stream.
+        """Wait for the terminal operation response.
 
-        Follows the SSE event log until completion, then returns the terminal
-        ``OperationResponse``. Raises :class:`TimeoutError` after
-        *timeout* expires. A sync buffered response can delay the
-        exception until that response ends.
+        Follow events by default; use ``follow_events=False`` to poll status
+        every 0.5 seconds, as required for image imports. Return failed and
+        cancelled responses unchanged. ``timeout`` covers the entire wait
+        and raises :class:`TimeoutError` on expiry. Sync buffered reads can
+        delay the exception until the response ends.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         timeout_message = f"operation {operation_id} did not complete within {timeout}s"
         try:
-            for event in self.follow_operation_events(operation_id, timeout=timeout):
-                self.log.debug("wait_operation: event %s %s", event.id, event.type)
+            if follow_events:
+                remaining = (
+                    None if deadline is None else max(0.0, deadline - time.monotonic())
+                )
+                for event in self.follow_operation_events(
+                    operation_id, timeout=remaining
+                ):
+                    self.log.debug(
+                        "wait_operation: event %s %s", event.id, event.type
+                    )
+                return self._read_operation_status(operation_id, deadline)
+
+            while True:
+                result = self._read_operation_status(operation_id, deadline)
+                if (
+                    not isinstance(result.status, EllipsisType)
+                    and result.status.is_terminal()
+                ):
+                    return result
+                delay = TIGHT_LOOP_FLOOR
+                if deadline is not None:
+                    delay = min(delay, max(0.0, deadline - time.monotonic()))
+                time.sleep(delay)
         except TimeoutError as exc:
             if deadline is not None:
                 raise TimeoutError(timeout_message) from exc
             raise
-        spec = operations.build_get_operation_status(operation_id=operation_id)
-        spec.deadline = deadline
-        self.log_request(spec)
-        try:
-            response = self.call(spec)
-        except TimeoutError as exc:
-            if deadline is not None:
-                raise TimeoutError(timeout_message) from exc
-            raise
-        self.log_response(spec, response)
-        return operations.parse_get_operation_status(response)
 
     def follow_operation_events(
         self,
@@ -1403,8 +1428,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         the configured retry policy (three attempts by default). Normal
         EOF also completes a filtered or explicitly resumed retained log.
         An unfiltered log must include completion. An unavailable or
-        incomplete event log raises APIConnectionError,
-        including when consumed by wait_operation.
+        incomplete event log raises APIConnectionError.
         The timeout is an absolute deadline checked whenever iteration
         resumes. Caller code between events is not interrupted. A
         synchronous native read can delay ``TimeoutError`` until it
@@ -1725,40 +1749,63 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
             raise
         return not isinstance(status, EllipsisType) and status.is_terminal()
 
+    async def _read_operation_status(
+        self,
+        operation_id: str,
+        deadline: float | None,
+    ) -> OperationResponse:
+        """Fetch status using the waiter's deadline."""
+        spec = operations.build_get_operation_status(operation_id=operation_id)
+        spec.deadline = deadline
+        self.log_request(spec)
+        response = await self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_get_operation_status(response)
+
     async def wait_operation(
         self,
         operation_id: str,
         *,
         timeout: float | None = None,
+        follow_events: bool = True,
     ) -> OperationResponse:
-        """Wait until the operation finishes, driven by its event stream.
+        """Wait for the terminal operation response.
 
-        Follows the SSE event log until completion, then returns the terminal
-        ``OperationResponse``. Raises :class:`TimeoutError` when
-        *timeout* seconds elapse first.
+        Follow events by default; use ``follow_events=False`` to poll status
+        every 0.5 seconds, as required for image imports. Return failed and
+        cancelled responses unchanged. ``timeout`` covers the entire wait
+        and raises :class:`TimeoutError` on expiry.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         timeout_message = f"operation {operation_id} did not complete within {timeout}s"
         try:
-            async for event in self.follow_operation_events(
-                operation_id, timeout=timeout
-            ):
-                self.log.debug("wait_operation: event %s %s", event.id, event.type)
+            if follow_events:
+                remaining = (
+                    None if deadline is None else max(0.0, deadline - time.monotonic())
+                )
+                async for event in self.follow_operation_events(
+                    operation_id, timeout=remaining
+                ):
+                    self.log.debug(
+                        "wait_operation: event %s %s", event.id, event.type
+                    )
+                return await self._read_operation_status(operation_id, deadline)
+
+            while True:
+                result = await self._read_operation_status(operation_id, deadline)
+                if (
+                    not isinstance(result.status, EllipsisType)
+                    and result.status.is_terminal()
+                ):
+                    return result
+                delay = TIGHT_LOOP_FLOOR
+                if deadline is not None:
+                    delay = min(delay, max(0.0, deadline - time.monotonic()))
+                await asyncio.sleep(delay)
         except (asyncio.TimeoutError, TimeoutError) as exc:
             if deadline is not None:
                 raise TimeoutError(timeout_message) from exc
             raise
-        spec = operations.build_get_operation_status(operation_id=operation_id)
-        spec.deadline = deadline
-        self.log_request(spec)
-        try:
-            response = await self.call(spec)
-        except (asyncio.TimeoutError, TimeoutError) as exc:
-            if deadline is not None:
-                raise TimeoutError(timeout_message) from exc
-            raise
-        self.log_response(spec, response)
-        return operations.parse_get_operation_status(response)
 
     async def follow_operation_events(
         self,
@@ -1779,8 +1826,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         the configured retry policy (three attempts by default). Normal
         EOF also completes a filtered or explicitly resumed retained log.
         An unfiltered log must include completion. An unavailable or
-        incomplete event log raises APIConnectionError,
-        including when consumed by wait_operation.
+        incomplete event log raises APIConnectionError.
         The timeout is an absolute deadline checked whenever iteration
         resumes. Caller code between events is not interrupted.
         """
