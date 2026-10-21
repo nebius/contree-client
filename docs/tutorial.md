@@ -817,7 +817,8 @@ for await (const file of client.iterFiles({ pageSize: 100 })) {
 `import_image()` / `importImage()` pulls an image from a registry
 ({class}`~contree_client.ImageImportRegistry`, credentials ride in
 {class}`~contree_client.ImageImportRegistryCredentials`) and returns an
-operation id — wait for it like any other operation. `resolve_image()`
+operation id — use Python's `wait_import_operation()` to wait for it by
+polling status, since imports have no event log. `resolve_image()`
 / `resolveImage()` turns any reference (UUID, `tag:NAME`, bare tag)
 into a UUID:
 
@@ -834,7 +835,7 @@ import_id = client.import_image(
     ImageImportRegistry(url="docker://docker.io/library/busybox:latest"),
     tag="busybox:latest",
 )
-client.wait_operation(import_id, timeout=600, follow_events=False)
+client.wait_import_operation(import_id, timeout=600)
 
 image_uuid = client.resolve_image("tag:busybox:latest")
 # the raw lookup underneath resolve_image (tag name only, no prefix)
@@ -861,7 +862,7 @@ import_id = await client.import_image(
     ImageImportRegistry(url="docker://docker.io/library/busybox:latest"),
     tag="busybox:latest",
 )
-await client.wait_operation(import_id, timeout=600, follow_events=False)
+await client.wait_import_operation(import_id, timeout=600)
 
 image_uuid = await client.resolve_image("tag:busybox:latest")
 # the raw lookup underneath resolve_image (tag name only, no prefix)

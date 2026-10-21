@@ -1,4 +1,4 @@
-"""wait_operation / follow_operation_events / resolve_image helpers."""
+"""Operation waiters, event followers, and image resolution helpers."""
 
 from __future__ import annotations
 
@@ -101,12 +101,14 @@ def test_wait_operation_streaming_fetches_final_status(
 
 @pytest.mark.parametrize("outcome", ["SUCCESS", "FAILED", "CANCELLED"])
 @pytest.mark.parametrize("already_terminal", [False, True])
+@pytest.mark.parametrize("method", ["wait_operation", "wait_import_operation"])
 def test_wait_operation_polling_returns_terminal_result(
     invoke: Callable[..., Any],
     stub_server: server.StubServer,
     monkeypatch: pytest.MonkeyPatch,
     outcome: str,
     already_terminal: bool,
+    method: str,
 ) -> None:
     monkeypatch.setattr(base, "TIGHT_LOOP_FLOOR", 0.01)
     statuses = [] if already_terminal else ["PENDING", "ASSIGNED", "EXECUTING"]
@@ -125,9 +127,8 @@ def test_wait_operation_polling_returns_terminal_result(
         return server.json_reply(200, payload)
 
     monkeypatch.setattr(server, "route", route)
-    result = invoke(
-        "wait_operation", server.OPERATION_UUID, timeout=5.0, follow_events=False
-    )
+    kwargs = {"follow_events": False} if method == "wait_operation" else {}
+    result = invoke(method, server.OPERATION_UUID, timeout=5.0, **kwargs)
     assert str(result.status) == outcome
     assert result.error == detail
     assert result.result_image_uuid == (
@@ -141,11 +142,13 @@ def test_wait_operation_polling_returns_terminal_result(
 
 
 @pytest.mark.parametrize("stalled_status", [False, True])
+@pytest.mark.parametrize("method", ["wait_operation", "wait_import_operation"])
 def test_wait_operation_polling_respects_deadline(
     invoke: Callable[..., Any],
     stub_server: server.StubServer,
     monkeypatch: pytest.MonkeyPatch,
     stalled_status: bool,
+    method: str,
 ) -> None:
     reads = 0
 
@@ -165,10 +168,9 @@ def test_wait_operation_polling_respects_deadline(
 
     monkeypatch.setattr(server, "route", route)
     started = time.monotonic()
+    kwargs = {"follow_events": False} if method == "wait_operation" else {}
     with pytest.raises(TimeoutError, match=server.OPERATION_UUID):
-        invoke(
-            "wait_operation", server.OPERATION_UUID, timeout=0.7, follow_events=False
-        )
+        invoke(method, server.OPERATION_UUID, timeout=0.7, **kwargs)
     assert time.monotonic() - started < 1.5
     assert all(r.method == "GET" for r in stub_server.captured)
     assert not any(r.path.endswith("/events") for r in stub_server.captured)

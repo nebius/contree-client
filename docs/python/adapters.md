@@ -418,8 +418,9 @@ with the original failure as its cause, rather than silently returning partial
 events.
 
 `wait_operation` follows events by default, then fetches the terminal response.
-For image imports, which have no event log, pass `follow_events=False` to poll
-status with a 0.5-second delay between reads. Both modes return failed and
+For image imports, which have no event log, use `wait_import_operation` to poll
+status with a 0.5-second delay between reads. It calls `wait_operation` with
+`follow_events=False`. Both modes return failed and
 cancelled responses unchanged and share one deadline across requests, retries,
 and delays.
 

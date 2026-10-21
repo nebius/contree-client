@@ -1409,6 +1409,20 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                 raise TimeoutError(timeout_message) from exc
             raise
 
+    def wait_import_operation(
+        self,
+        operation_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> OperationResponse:
+        """Wait for an image import by polling status, since imports have no events.
+
+        Equivalent to ``wait_operation(..., follow_events=False)``.
+        """
+        return self.wait_operation(
+            operation_id, timeout=timeout, follow_events=False
+        )
+
     def follow_operation_events(
         self,
         operation_id: str,
@@ -1806,6 +1820,20 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
             if deadline is not None:
                 raise TimeoutError(timeout_message) from exc
             raise
+
+    async def wait_import_operation(
+        self,
+        operation_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> OperationResponse:
+        """Wait for an image import by polling status, since imports have no events.
+
+        Equivalent to ``await wait_operation(..., follow_events=False)``.
+        """
+        return await self.wait_operation(
+            operation_id, timeout=timeout, follow_events=False
+        )
 
     async def follow_operation_events(
         self,
