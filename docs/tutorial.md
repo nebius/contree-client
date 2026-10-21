@@ -364,11 +364,9 @@ await client.spawnInstance("/bin/sh", "tag:ubuntu:latest", {
 
 ## Wait for the result
 
-A spawn returns an operation id. Python's `wait_operation()` first fetches the
-operation kind, then follows events for instances or polls status every
-0.5 seconds for image imports. Pass `follow_events=True` to force events or
-`follow_events=False` to force polling. The default, `None`, selects the mode
-automatically. The result is the terminal {class}`~contree_client.OperationResponse`.
+A spawn returns an operation id. Python's `wait_operation()` follows instance
+events or polls image imports, then returns the terminal
+{class}`~contree_client.OperationResponse`.
 Failed and cancelled responses are returned unchanged. *timeout* covers the
 entire wait.
 
@@ -819,8 +817,7 @@ for await (const file of client.iterFiles({ pageSize: 100 })) {
 `import_image()` / `importImage()` pulls an image from a registry
 ({class}`~contree_client.ImageImportRegistry`, credentials ride in
 {class}`~contree_client.ImageImportRegistryCredentials`) and returns an
-operation id — Python's `wait_operation()` automatically polls status for
-imports, since they have no event log. `resolve_image()`
+operation id — wait for it like any other operation. `resolve_image()`
 / `resolveImage()` turns any reference (UUID, `tag:NAME`, bare tag)
 into a UUID:
 

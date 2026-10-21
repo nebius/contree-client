@@ -1,4 +1,4 @@
-"""Operation waiters, event followers, and image resolution helpers."""
+"""wait_operation / follow_operation_events / resolve_image helpers."""
 
 from __future__ import annotations
 
@@ -44,8 +44,6 @@ def test_wait_operation_is_event_driven(
         for c in stub_server.captured
         if c.path == f"/v1/operations/{PENDING_OPERATION_UUID}"
     ]
-    # Auto mode detects the kind before following events. Both modes also
-    # probe terminality on the 425 retry and fetch the final response.
     auto = kwargs.get("follow_events") is None
     assert len(status_requests) == (3 if auto else 2)
     assert stub_server.captured[0].path == (
@@ -250,7 +248,6 @@ def test_wait_operation_fails_when_events_are_missing(
         )
     events_path = f"/v1/operations/{EVENTS_UNAVAILABLE_OPERATION_UUID}/events"
     events_requests = [c for c in stub_server.captured if c.path == events_path]
-    # Kind detection must not hide a stream failure by falling back to polling.
     assert len(events_requests) == 1
     status_path = f"/v1/operations/{EVENTS_UNAVAILABLE_OPERATION_UUID}"
     status_requests = [c for c in stub_server.captured if c.path == status_path]

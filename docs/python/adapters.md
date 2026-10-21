@@ -417,13 +417,10 @@ A permanent HTTP failure or exhausted drain budget raises `APIConnectionError`
 with the original failure as its cause, rather than silently returning partial
 events.
 
-`wait_operation` defaults to `follow_events=None`: it first fetches the operation
-kind, then follows events for instances or polls status for image imports, which
-have no event log. Polling waits 0.5 seconds between reads. Pass
-`follow_events=True` to force events or `follow_events=False` to force polling.
-Both modes return the terminal response, including failed and cancelled responses
-unchanged, and share one deadline across kind detection, requests, retries, and
-delays.
+`wait_operation` uses events for instances and polls image imports every
+0.5 seconds when `follow_events=None` (the default). Set it to `True` or `False`
+to force events or polling. Both modes return failed and cancelled responses
+unchanged and share one deadline across requests, retries, and delays.
 
 ::::{tab-set}
 

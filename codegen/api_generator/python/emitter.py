@@ -1372,13 +1372,12 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
     ) -> OperationResponse:
         """Wait for the terminal operation response.
 
-        With ``follow_events=None`` (the default), fetch the operation kind
-        and follow events for instances or poll status for image imports.
-        Pass ``True`` to force events or ``False`` to force polling every
-        0.5 seconds. Return failed and cancelled responses unchanged.
-        ``timeout`` covers the entire wait, including kind detection,
-        and raises :class:`TimeoutError` on expiry. Sync buffered reads can
-        delay the exception until the response ends.
+        ``follow_events=None`` follows instance events and polls image imports
+        every 0.5 seconds. Use ``True`` to force events or ``False`` to force
+        polling. Return failed and cancelled responses unchanged.
+        ``timeout`` covers the entire wait and raises :class:`TimeoutError`
+        on expiry. Sync buffered reads can delay the exception until the
+        response ends.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         timeout_message = f"operation {operation_id} did not complete within {timeout}s"
@@ -1779,12 +1778,11 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
     ) -> OperationResponse:
         """Wait for the terminal operation response.
 
-        With ``follow_events=None`` (the default), fetch the operation kind
-        and follow events for instances or poll status for image imports.
-        Pass ``True`` to force events or ``False`` to force polling every
-        0.5 seconds. Return failed and cancelled responses unchanged.
-        ``timeout`` covers the entire wait, including kind detection,
-        and raises :class:`TimeoutError` on expiry.
+        ``follow_events=None`` follows instance events and polls image imports
+        every 0.5 seconds. Use ``True`` to force events or ``False`` to force
+        polling. Return failed and cancelled responses unchanged.
+        ``timeout`` covers the entire wait and raises :class:`TimeoutError`
+        on expiry.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         timeout_message = f"operation {operation_id} did not complete within {timeout}s"
