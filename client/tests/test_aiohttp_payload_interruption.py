@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -80,10 +80,28 @@ async def follow_after_socket_timeout(
 
 def test_follow_operation_events_retries_socket_timeout_until_deadline(
     generated_package: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    base = importlib.import_module("contree_client.base")
+    now = 1000.0
+    delays: list[float] = []
+
+    async def advance_time(delay: float) -> None:
+        nonlocal now
+        delays.append(delay)
+        now += delay
+
+    # Control the follower's clock without changing the event loop's clock.
+    # A real 30 ms deadline can expire before the status probe on busy runners.
+    monkeypatch.setattr(base, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(
+        base, "asyncio", SimpleNamespace(**{**vars(asyncio), "sleep": advance_time})
+    )
     attempts: list[str] = []
     with pytest.raises(TimeoutError, match=PAYLOAD_TIMEOUT_OPERATION_UUID):
         asyncio.run(
-            follow_after_socket_timeout(delay=0.0, timeout=0.03, attempts=attempts)
+            follow_after_socket_timeout(delay=0.0, timeout=1.0, attempts=attempts)
         )
-    assert attempts[:2] == ["stream", "status"]
+    assert attempts == ["stream", "status", "stream", "status"]
+    assert delays == [0.5, 0.5]
+    assert now == 1001.0

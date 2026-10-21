@@ -1,8 +1,8 @@
 # contree-client
 
-Python and JavaScript clients for the Contree API, generated from one
+Python, JavaScript, and Go clients for the Contree API, generated from one
 OpenAPI specification at build time. Same wire protocol, same models,
-same helpers — pick the language, the concepts transfer one-to-one. The
+same core concepts — pick the language, the concepts transfer directly. The
 [Tutorial](tutorial.md) walks through the whole API across languages,
 side by side.
 
@@ -14,6 +14,8 @@ side by side.
 - **JavaScript** — pure ESM with TypeScript declarations over the
   platform `fetch` (Node ≥ 18.17 and browsers); camelCase methods,
   wire-spelled fields.
+- **Go** — a typed `net/http` client with generated models and
+  operations, pull-based event followers, and lazy pagers.
 
 ## Install
 
@@ -25,6 +27,8 @@ pip install contree-client[httpx]     # + httpx (sync and async)
 pip install contree-client[aiohttp]   # + aiohttp (async)
 
 npm install contree-client            # JavaScript/TypeScript (fetch, ESM)
+
+go get github.com/nebius/contree-client/go/v1
 ```
 
 ## Quick start
@@ -76,6 +80,49 @@ await client.close();
 ```
 :::
 
+:::{tab-item} Go
+:sync: go
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    contree "github.com/nebius/contree-client/go/v1"
+)
+
+func main() {
+    ctx := context.Background()
+    client, err := contree.NewClient(
+        os.Getenv("CONTREE_TOKEN"),
+        contree.WithProject(os.Getenv("CONTREE_PROJECT")),
+    )
+    if err != nil {
+        log.Fatalf("create client: %v", err)
+    }
+    operationID, err := client.SpawnInstance(
+        ctx,
+        "uname -a",
+        "tag:ubuntu:latest",
+        contree.SpawnInstanceOptions{Shell: true},
+    )
+    if err != nil {
+        log.Fatalf("spawn uname command: %v", err)
+    }
+    for event, err := range client.FollowOperationEvents(ctx, operationID, nil) {
+        if err != nil {
+            log.Fatalf("read operation %s events: %v", operationID, err)
+        }
+        fmt.Println(event.Type, event.Data)
+    }
+}
+```
+:::
+
 ::::
 
 ## Documentation
@@ -84,6 +131,7 @@ await client.close();
 :maxdepth: 1
 
 tutorial
+parity
 ```
 
 ```{toctree}
@@ -104,8 +152,16 @@ js/reference
 js/testing
 ```
 
+```{toctree}
+:caption: Go client
+:maxdepth: 2
+
+go/api
+go/testing
+```
+
 ## License
 
-Both packages are distributed under the Apache License, Version 2.0.
+All clients are distributed under the Apache License, Version 2.0.
 
 Copyright Nebius B.V. 2026 (see the "LICENSE" file in the repository).

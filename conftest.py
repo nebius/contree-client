@@ -224,6 +224,27 @@ def arm(double: Any) -> Any:
         "inspect_image_list",
         models.DirectoryList.from_dict({"path": "/etc", "files": []}),
     )
+    double.mock(
+        "inspect_image_grep",
+        models.GrepResult.from_dict(
+            {
+                "path": "/etc/hosts",
+                "patterns": ["^root:", "localhost"],
+                "matches": [
+                    {
+                        "path": "/etc/hosts",
+                        "line_number": 1,
+                        "absolute_offset": 0,
+                        "line_text": "127.0.0.1 localhost\n",
+                        "line_bytes": 20,
+                        "submatches": [{"text": "localhost", "start": 10, "end": 19}],
+                        "type": "match",
+                    }
+                ],
+                "truncated": False,
+            }
+        ),
+    )
     double.mock("inspect_image_download", b"127.0.0.1 localhost\n")
     double.mock("inspect_image_download_stream", [b"127.0.0.1 ", b"localhost\n"])
     double.mock("check_image_file", True)
@@ -242,6 +263,32 @@ def client() -> Any:
 def async_client() -> Any:
     testing = importlib.import_module("contree_client.testing")
     return arm(testing.ContreeAsyncClient())
+
+
+@pytest.fixture
+def subprocess_events() -> list[Any]:
+    """Main-process readiness, child output and exit, then parent completion."""
+    models = importlib.import_module("contree_client.models")
+    payloads = [
+        EVENT_PAYLOADS[0],
+        EVENT_PAYLOADS[1],
+        {
+            **EVENT_PAYLOADS[1],
+            "spid": 2,
+            "data": {**EVENT_PAYLOADS[1]["data"], "command": "id", "args": []},
+        },
+        {**EVENT_PAYLOADS[2], "spid": 2},
+        {**EVENT_PAYLOADS[4], "spid": 2},
+        EVENT_PAYLOADS[4],
+        {
+            **EVENT_PAYLOADS[5],
+            "data": {"status": "CANCELLED", "duration_ms": 1500},
+        },
+    ]
+    return [
+        models.OperationEvent.from_dict({**payload, "id": event_id})
+        for event_id, payload in enumerate(payloads)
+    ]
 
 
 @pytest.fixture
