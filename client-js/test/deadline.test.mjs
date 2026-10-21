@@ -180,6 +180,7 @@ test("waitOperation deadline bounds an idle SSE stream", async () => {
   const started = monotonic();
   await assert.rejects(
     client.waitOperation("00000000-0000-0000-0000-000000000000", {
+      followEvents: true,
       timeout: 0.3,
     }),
     (error) => error.name === "TimeoutError",
@@ -214,6 +215,7 @@ test("waitOperation deadline bounds its terminal status probe", async () => {
 
   await assert.rejects(
     client.waitOperation("00000000-0000-0000-0000-000000000000", {
+      followEvents: true,
       timeout: 0.1,
     }),
     (error) => error.name === "TimeoutError",
@@ -230,6 +232,7 @@ test("waitOperation deadline bounds its final status fetch", async () => {
 
   await assert.rejects(
     client.waitOperation("00000000-0000-0000-0000-000000000000", {
+      followEvents: true,
       timeout: 0.1,
     }),
     (error) => error.name === "TimeoutError",

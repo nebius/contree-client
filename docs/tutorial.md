@@ -370,9 +370,9 @@ events or polls image imports, then returns the terminal
 Failed and cancelled responses are returned unchanged. *timeout* covers the
 entire wait.
 
-JavaScript's `waitOperation()` follows events and probes status during
-reconnection, then fetches the terminal response. Its timeout covers the entire
-wait, including idle streams.
+JavaScript's `waitOperation()` uses the same selection with `followEvents: null`
+by default. Set `followEvents` to `true` or `false` to force events or polling.
+Its timeout covers the entire wait, including idle streams.
 
 ::::{tab-set}
 

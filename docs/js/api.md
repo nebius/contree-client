@@ -81,7 +81,7 @@ The mapping from the Python client is one-to-one:
 - `iterImages()` / `iterOperations()` / `iterFiles()` paginate lazily
   with the same `pageSize` / `limit` knobs.
 
-Helpers carry over unchanged: `waitOperation(id, { timeout })`,
+Helpers carry over unchanged: `waitOperation(id, { timeout, followEvents })`,
 `resolveImage(ref)`, `ensureFile(content)` (sha256 dedup; Blobs hash
 chunk-by-chunk in Node).
 
