@@ -25,10 +25,13 @@ from tests.stub_server import (
 )
 
 
+@pytest.mark.parametrize(
+    "kwargs", [{}, {"follow_events": None}, {"follow_events": True}]
+)
 def test_wait_operation_is_event_driven(
-    invoke: Callable[..., Any], stub_server: StubServer
+    invoke: Callable[..., Any], stub_server: StubServer, kwargs: dict[str, Any]
 ) -> None:
-    operation = invoke("wait_operation", PENDING_OPERATION_UUID)
+    operation = invoke("wait_operation", PENDING_OPERATION_UUID, **kwargs)
 
     assert str(operation.status) == "SUCCESS"
     events_path = f"/v1/operations/{PENDING_OPERATION_UUID}/events"
@@ -41,8 +44,13 @@ def test_wait_operation_is_event_driven(
         for c in stub_server.captured
         if c.path == f"/v1/operations/{PENDING_OPERATION_UUID}"
     ]
-    # one terminality probe on the 425 retry + the final terminal fetch
-    assert len(status_requests) == 2
+    # Auto mode detects the kind before following events. Both modes also
+    # probe terminality on the 425 retry and fetch the final response.
+    auto = kwargs.get("follow_events") is None
+    assert len(status_requests) == (3 if auto else 2)
+    assert stub_server.captured[0].path == (
+        f"/v1/operations/{PENDING_OPERATION_UUID}" if auto else events_path
+    )
 
 
 def test_wait_operation_timeout(
@@ -64,15 +72,23 @@ def test_wait_operation_deadline_bounds_status_probe(
 
 
 @pytest.mark.parametrize("outcome", ["SUCCESS", "FAILED", "CANCELLED"])
+@pytest.mark.parametrize(
+    ("kind", "follow_events"),
+    [("instance", None), ("instance", True), ("image_import", True)],
+)
 def test_wait_operation_streaming_fetches_final_status(
     invoke: Callable[..., Any],
     stub_server: server.StubServer,
     monkeypatch: pytest.MonkeyPatch,
     outcome: str,
+    kind: str,
+    follow_events: bool | None,
 ) -> None:
     detail = None if outcome == "SUCCESS" else "operation failed or was cancelled"
+    status_reads = 0
 
     def route(request: server.Captured, attempts: Counter[str]) -> server.Reply:
+        nonlocal status_reads
         if request.path.endswith("/events"):
             completion = {
                 **server.EVENT_COMPLETION,
@@ -83,32 +99,55 @@ def test_wait_operation_streaming_fetches_final_status(
                 content_type="text/event-stream",
                 stream_chunks=[server.sse_frame(completion)],
             )
+        status_reads += 1
+        status = "EXECUTING" if follow_events is None and status_reads == 1 else outcome
         return server.json_reply(
-            200, {**server.OPERATION_RESPONSE, "status": outcome, "error": detail}
+            200,
+            {
+                **server.OPERATION_RESPONSE,
+                "kind": kind,
+                "status": status,
+                "error": detail,
+            },
         )
 
     monkeypatch.setattr(server, "route", route)
     result = invoke(
-        "wait_operation", server.OPERATION_UUID, timeout=2.0, follow_events=True
+        "wait_operation",
+        server.OPERATION_UUID,
+        timeout=2.0,
+        follow_events=follow_events,
     )
     assert str(result.status) == outcome
     assert result.error == detail
-    assert [r.path for r in stub_server.captured] == [
+    paths = [
         f"/v1/operations/{server.OPERATION_UUID}/events",
         f"/v1/operations/{server.OPERATION_UUID}",
     ]
+    if follow_events is None:
+        paths.insert(0, f"/v1/operations/{server.OPERATION_UUID}")
+    assert [r.path for r in stub_server.captured] == paths
 
 
 @pytest.mark.parametrize("outcome", ["SUCCESS", "FAILED", "CANCELLED"])
 @pytest.mark.parametrize("already_terminal", [False, True])
-@pytest.mark.parametrize("method", ["wait_operation", "wait_import_operation"])
+@pytest.mark.parametrize(
+    ("kind", "kwargs"),
+    [
+        ("image_import", {}),
+        ("image_import", {"follow_events": None}),
+        ("image_import", {"follow_events": False}),
+        ("instance", {"follow_events": False}),
+    ],
+)
 def test_wait_operation_polling_returns_terminal_result(
     invoke: Callable[..., Any],
     stub_server: server.StubServer,
     monkeypatch: pytest.MonkeyPatch,
     outcome: str,
     already_terminal: bool,
-    method: str,
+    kind: str,
+    kwargs: dict[str, Any],
 ) -> None:
     monkeypatch.setattr(base, "TIGHT_LOOP_FLOOR", 0.01)
     statuses = [] if already_terminal else ["PENDING", "ASSIGNED", "EXECUTING"]
@@ -119,7 +158,7 @@ def test_wait_operation_polling_returns_terminal_result(
         status = statuses.pop(0)
         payload = {
             **server.OPERATION_RESPONSE,
-            "kind": "image_import",
+            "kind": kind,
             "status": status,
             "error": detail,
             "result_image_uuid": server.IMAGE_UUID if status == "SUCCESS" else None,
@@ -127,8 +166,7 @@ def test_wait_operation_polling_returns_terminal_result(
         return server.json_reply(200, payload)
 
     monkeypatch.setattr(server, "route", route)
-    kwargs = {"follow_events": False} if method == "wait_operation" else {}
-    result = invoke(method, server.OPERATION_UUID, timeout=5.0, **kwargs)
+    result = invoke("wait_operation", server.OPERATION_UUID, timeout=5.0, **kwargs)
     assert str(result.status) == outcome
     assert result.error == detail
     assert result.result_image_uuid == (
@@ -141,21 +179,21 @@ def test_wait_operation_polling_returns_terminal_result(
     )
 
 
-@pytest.mark.parametrize("stalled_status", [False, True])
-@pytest.mark.parametrize("method", ["wait_operation", "wait_import_operation"])
+@pytest.mark.parametrize("stalled_read", [None, 1, 2])
+@pytest.mark.parametrize("follow_events", [None, False])
 def test_wait_operation_polling_respects_deadline(
     invoke: Callable[..., Any],
     stub_server: server.StubServer,
     monkeypatch: pytest.MonkeyPatch,
-    stalled_status: bool,
-    method: str,
+    stalled_read: int | None,
+    follow_events: bool | None,
 ) -> None:
     reads = 0
 
     def route(request: server.Captured, attempts: Counter[str]) -> server.Reply:
         nonlocal reads
         reads += 1
-        if stalled_status and reads > 1:
+        if stalled_read is not None and reads >= stalled_read:
             time.sleep(2.0)
         return server.json_reply(
             200,
@@ -168,9 +206,13 @@ def test_wait_operation_polling_respects_deadline(
 
     monkeypatch.setattr(server, "route", route)
     started = time.monotonic()
-    kwargs = {"follow_events": False} if method == "wait_operation" else {}
     with pytest.raises(TimeoutError, match=server.OPERATION_UUID):
-        invoke(method, server.OPERATION_UUID, timeout=0.7, **kwargs)
+        invoke(
+            "wait_operation",
+            server.OPERATION_UUID,
+            timeout=0.7,
+            follow_events=follow_events,
+        )
     assert time.monotonic() - started < 1.5
     assert all(r.method == "GET" for r in stub_server.captured)
     assert not any(r.path.endswith("/events") for r in stub_server.captured)
@@ -193,18 +235,26 @@ def test_follow_operation_events_reconnects(
     assert stream_requests[1].headers["last-event-id"] == "1"
 
 
+@pytest.mark.parametrize("follow_events", [None, True])
 def test_wait_operation_fails_when_events_are_missing(
-    invoke: Callable[..., Any], stub_server: StubServer, exceptions: ModuleType
+    invoke: Callable[..., Any],
+    stub_server: StubServer,
+    exceptions: ModuleType,
+    follow_events: bool | None,
 ) -> None:
     with pytest.raises(exceptions.APIConnectionError):
-        invoke("wait_operation", EVENTS_UNAVAILABLE_OPERATION_UUID)
+        invoke(
+            "wait_operation",
+            EVENTS_UNAVAILABLE_OPERATION_UUID,
+            follow_events=follow_events,
+        )
     events_path = f"/v1/operations/{EVENTS_UNAVAILABLE_OPERATION_UUID}/events"
     events_requests = [c for c in stub_server.captured if c.path == events_path]
-    # No status polling or final status fetch may hide the stream failure.
+    # Kind detection must not hide a stream failure by falling back to polling.
     assert len(events_requests) == 1
     status_path = f"/v1/operations/{EVENTS_UNAVAILABLE_OPERATION_UUID}"
     status_requests = [c for c in stub_server.captured if c.path == status_path]
-    assert status_requests == []
+    assert len(status_requests) == (1 if follow_events is None else 0)
 
 
 def test_follow_operation_events_reports_unavailable_log(
@@ -224,6 +274,7 @@ def test_wait_operation_missing_events_fails_even_with_deadline(
             "wait_operation",
             EVENTS_UNAVAILABLE_STALLED_OPERATION_UUID,
             timeout=0.3,
+            follow_events=True,
         )
 
 

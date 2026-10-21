@@ -364,9 +364,11 @@ await client.spawnInstance("/bin/sh", "tag:ubuntu:latest", {
 
 ## Wait for the result
 
-A spawn returns an operation id. Python's `wait_operation()` follows events,
-then fetches the terminal {class}`~contree_client.OperationResponse`.
-For image imports, pass `follow_events=False` to poll status every 0.5 seconds.
+A spawn returns an operation id. Python's `wait_operation()` first fetches the
+operation kind, then follows events for instances or polls status every
+0.5 seconds for image imports. Pass `follow_events=True` to force events or
+`follow_events=False` to force polling. The default, `None`, selects the mode
+automatically. The result is the terminal {class}`~contree_client.OperationResponse`.
 Failed and cancelled responses are returned unchanged. *timeout* covers the
 entire wait.
 
@@ -817,8 +819,8 @@ for await (const file of client.iterFiles({ pageSize: 100 })) {
 `import_image()` / `importImage()` pulls an image from a registry
 ({class}`~contree_client.ImageImportRegistry`, credentials ride in
 {class}`~contree_client.ImageImportRegistryCredentials`) and returns an
-operation id — use Python's `wait_import_operation()` to wait for it by
-polling status, since imports have no event log. `resolve_image()`
+operation id — Python's `wait_operation()` automatically polls status for
+imports, since they have no event log. `resolve_image()`
 / `resolveImage()` turns any reference (UUID, `tag:NAME`, bare tag)
 into a UUID:
 
@@ -835,7 +837,7 @@ import_id = client.import_image(
     ImageImportRegistry(url="docker://docker.io/library/busybox:latest"),
     tag="busybox:latest",
 )
-client.wait_import_operation(import_id, timeout=600)
+client.wait_operation(import_id, timeout=600)
 
 image_uuid = client.resolve_image("tag:busybox:latest")
 # the raw lookup underneath resolve_image (tag name only, no prefix)
@@ -862,7 +864,7 @@ import_id = await client.import_image(
     ImageImportRegistry(url="docker://docker.io/library/busybox:latest"),
     tag="busybox:latest",
 )
-await client.wait_import_operation(import_id, timeout=600)
+await client.wait_operation(import_id, timeout=600)
 
 image_uuid = await client.resolve_image("tag:busybox:latest")
 # the raw lookup underneath resolve_image (tag name only, no prefix)

@@ -1368,19 +1368,25 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         operation_id: str,
         *,
         timeout: float | None = None,
-        follow_events: bool = True,
+        follow_events: bool | None = None,
     ) -> OperationResponse:
         """Wait for the terminal operation response.
 
-        Follow events by default; use ``follow_events=False`` to poll status
-        every 0.5 seconds, as required for image imports. Return failed and
-        cancelled responses unchanged. ``timeout`` covers the entire wait
+        With ``follow_events=None`` (the default), fetch the operation kind
+        and follow events for instances or poll status for image imports.
+        Pass ``True`` to force events or ``False`` to force polling every
+        0.5 seconds. Return failed and cancelled responses unchanged.
+        ``timeout`` covers the entire wait, including kind detection,
         and raises :class:`TimeoutError` on expiry. Sync buffered reads can
         delay the exception until the response ends.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         timeout_message = f"operation {operation_id} did not complete within {timeout}s"
         try:
+            result = None
+            if follow_events is None:
+                result = self._read_operation_status(operation_id, deadline)
+                follow_events = result.kind != "image_import"
             if follow_events:
                 remaining = (
                     None if deadline is None else max(0.0, deadline - time.monotonic())
@@ -1393,8 +1399,9 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                     )
                 return self._read_operation_status(operation_id, deadline)
 
-            while True:
+            if result is None:
                 result = self._read_operation_status(operation_id, deadline)
+            while True:
                 if (
                     not isinstance(result.status, EllipsisType)
                     and result.status.is_terminal()
@@ -1404,24 +1411,11 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                 if deadline is not None:
                     delay = min(delay, max(0.0, deadline - time.monotonic()))
                 time.sleep(delay)
+                result = self._read_operation_status(operation_id, deadline)
         except TimeoutError as exc:
             if deadline is not None:
                 raise TimeoutError(timeout_message) from exc
             raise
-
-    def wait_import_operation(
-        self,
-        operation_id: str,
-        *,
-        timeout: float | None = None,
-    ) -> OperationResponse:
-        """Wait for an image import by polling status, since imports have no events.
-
-        Equivalent to ``wait_operation(..., follow_events=False)``.
-        """
-        return self.wait_operation(
-            operation_id, timeout=timeout, follow_events=False
-        )
 
     def follow_operation_events(
         self,
@@ -1781,18 +1775,24 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         operation_id: str,
         *,
         timeout: float | None = None,
-        follow_events: bool = True,
+        follow_events: bool | None = None,
     ) -> OperationResponse:
         """Wait for the terminal operation response.
 
-        Follow events by default; use ``follow_events=False`` to poll status
-        every 0.5 seconds, as required for image imports. Return failed and
-        cancelled responses unchanged. ``timeout`` covers the entire wait
+        With ``follow_events=None`` (the default), fetch the operation kind
+        and follow events for instances or poll status for image imports.
+        Pass ``True`` to force events or ``False`` to force polling every
+        0.5 seconds. Return failed and cancelled responses unchanged.
+        ``timeout`` covers the entire wait, including kind detection,
         and raises :class:`TimeoutError` on expiry.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         timeout_message = f"operation {operation_id} did not complete within {timeout}s"
         try:
+            result = None
+            if follow_events is None:
+                result = await self._read_operation_status(operation_id, deadline)
+                follow_events = result.kind != "image_import"
             if follow_events:
                 remaining = (
                     None if deadline is None else max(0.0, deadline - time.monotonic())
@@ -1805,8 +1805,9 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                     )
                 return await self._read_operation_status(operation_id, deadline)
 
-            while True:
+            if result is None:
                 result = await self._read_operation_status(operation_id, deadline)
+            while True:
                 if (
                     not isinstance(result.status, EllipsisType)
                     and result.status.is_terminal()
@@ -1816,24 +1817,11 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                 if deadline is not None:
                     delay = min(delay, max(0.0, deadline - time.monotonic()))
                 await asyncio.sleep(delay)
+                result = await self._read_operation_status(operation_id, deadline)
         except (asyncio.TimeoutError, TimeoutError) as exc:
             if deadline is not None:
                 raise TimeoutError(timeout_message) from exc
             raise
-
-    async def wait_import_operation(
-        self,
-        operation_id: str,
-        *,
-        timeout: float | None = None,
-    ) -> OperationResponse:
-        """Wait for an image import by polling status, since imports have no events.
-
-        Equivalent to ``await wait_operation(..., follow_events=False)``.
-        """
-        return await self.wait_operation(
-            operation_id, timeout=timeout, follow_events=False
-        )
 
     async def follow_operation_events(
         self,
