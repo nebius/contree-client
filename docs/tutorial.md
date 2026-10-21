@@ -364,15 +364,15 @@ await client.spawnInstance("/bin/sh", "tag:ubuntu:latest", {
 
 ## Wait for the result
 
-A spawn returns an operation id. Python's `wait_operation()` follows events,
-then fetches the terminal {class}`~contree_client.OperationResponse`.
-For image imports, pass `follow_events=False` to poll status every 0.5 seconds.
+A spawn returns an operation id. Python's `wait_operation()` follows instance
+events or polls image imports, then returns the terminal
+{class}`~contree_client.OperationResponse`.
 Failed and cancelled responses are returned unchanged. *timeout* covers the
 entire wait.
 
-JavaScript's `waitOperation()` follows events and probes status during
-reconnection, then fetches the terminal response. Its timeout covers the entire
-wait, including idle streams.
+JavaScript's `waitOperation()` uses the same selection with `followEvents: null`
+by default. Set `followEvents` to `true` or `false` to force events or polling.
+Its timeout covers the entire wait, including idle streams.
 
 ::::{tab-set}
 
@@ -834,7 +834,7 @@ import_id = client.import_image(
     ImageImportRegistry(url="docker://docker.io/library/busybox:latest"),
     tag="busybox:latest",
 )
-client.wait_operation(import_id, timeout=600, follow_events=False)
+client.wait_operation(import_id, timeout=600)
 
 image_uuid = client.resolve_image("tag:busybox:latest")
 # the raw lookup underneath resolve_image (tag name only, no prefix)
@@ -861,7 +861,7 @@ import_id = await client.import_image(
     ImageImportRegistry(url="docker://docker.io/library/busybox:latest"),
     tag="busybox:latest",
 )
-await client.wait_operation(import_id, timeout=600, follow_events=False)
+await client.wait_operation(import_id, timeout=600)
 
 image_uuid = await client.resolve_image("tag:busybox:latest")
 # the raw lookup underneath resolve_image (tag name only, no prefix)

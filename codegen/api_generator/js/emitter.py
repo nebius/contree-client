@@ -1348,35 +1348,57 @@ export class ContreeClient {{
     return status !== undefined && isTerminalStatus(status);
   }}
 
-  /** Wait until the operation finishes, driven by its event stream:
-   * follows the SSE log until `completion`, then fetches and returns
-   * the terminal OperationResponse. */
-  async waitOperation(operationId, {{ timeout = null }} = {{}}) {{
+  /** Wait using instance events or import status polling by default. */
+  async waitOperation(
+    operationId,
+    {{ timeout = null, followEvents = null }} = {{}},
+  ) {{
     const deadline = timeout === null ? null : monotonic() + timeout;
-    // eslint-disable-next-line no-unused-vars
-    for await (const event of this.followOperationEvents(operationId, {{ timeout }})) {{
-      // draining the stream is the wait
-    }}
-    const spec = operations.buildGetOperationStatus(operationId);
-    spec.deadline = deadline;
-    const deadlineLimited =
-      deadline !== null &&
-      (this.timeout === null || deadline - monotonic() <= this.timeout);
-    try {{
-      return operations.parseGetOperationStatus(await this.call(spec));
-    }} catch (error) {{
-      if (
+    const readStatus = async () => {{
+      const spec = operations.buildGetOperationStatus(operationId);
+      spec.deadline = deadline;
+      const deadlineLimited =
         deadline !== null &&
-        error instanceof APIConnectionError &&
-        (monotonic() >= deadline || (deadlineLimited && error.timedOut))
-      ) {{
-        throw new DOMException(
-          `operation ${{operationId}} did not complete within ${{timeout}}s`,
-          "TimeoutError",
-        );
+        (this.timeout === null || deadline - monotonic() <= this.timeout);
+      try {{
+        return operations.parseGetOperationStatus(await this.call(spec));
+      }} catch (error) {{
+        if (
+          deadline !== null &&
+          error instanceof APIConnectionError &&
+          (monotonic() >= deadline || (deadlineLimited && error.timedOut))
+        ) {{
+          throw new DOMException(
+            `operation ${{operationId}} did not complete within ${{timeout}}s`,
+            "TimeoutError",
+          );
+        }}
+        throw error;
       }}
-      throw error;
+    }};
+    let result = null;
+    if (followEvents === null) {{
+      result = await readStatus();
+      followEvents = result.kind !== "image_import";
     }}
+    if (followEvents) {{
+      const remaining = deadline === null ? null : Math.max(0, deadline - monotonic());
+      for await (const event of this.followOperationEvents(operationId, {{ timeout: remaining }})) {{
+        void event;
+      }}
+      return await readStatus();
+    }}
+    if (result === null) {{
+      result = await readStatus();
+    }}
+    while (!isTerminalStatus(result.status)) {{
+      const delay = deadline === null
+        ? TIGHT_LOOP_FLOOR
+        : Math.min(TIGHT_LOOP_FLOOR, Math.max(0, deadline - monotonic()));
+      await sleep(delay);
+      result = await readStatus();
+    }}
+    return result;
   }}
 
   /** Stream operation events with transparent reconnection.
@@ -1699,7 +1721,7 @@ export declare class ContreeClient {
   operationTerminal(operationId: string): Promise<boolean>;
   waitOperation(
     operationId: string,
-    options?: { timeout?: number | null },
+    options?: { timeout?: number | null; followEvents?: boolean | null },
   ): Promise<OperationResponse>;
   followOperationEvents(
     operationId: string,
@@ -1943,10 +1965,11 @@ def render_model_reference(cls: ModelDef, public_names: set[str] | None = None) 
 REFERENCE_HELPERS_RST = """\
 .. js:method:: ContreeClient.waitOperation(operationId, options?)
 
-   Follows the event stream to the ``completion`` frame and fetches
-   the terminal ``OperationResponse`` — push, no polling.
+   Uses instance events or polls image imports and returns the terminal response.
 
    :param operationId: ``string``
+   :param options.followEvents: ``boolean | null`` — default ``null`` selects by
+      operation kind; ``true`` forces events and ``false`` forces polling.
    :param options.timeout: ``number | null`` — bounds the whole wait
       in seconds, idle streams included; expiry rejects with a
       ``TimeoutError`` ``DOMException``.

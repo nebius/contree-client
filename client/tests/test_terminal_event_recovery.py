@@ -203,7 +203,9 @@ def test_unfiltered_terminal_log_requires_completion(
             method, server.OPERATION_UUID, collect=method == "follow_operation_events"
         )
     # A status fetch must not turn the incomplete event log into success.
-    assert len([r for r in stub_server.captured if not r.path.endswith("/events")]) == 1
+    assert len([r for r in stub_server.captured if not r.path.endswith("/events")]) == (
+        2 if method == "wait_operation" else 1
+    )
 
 
 @pytest.mark.parametrize("status", [404, 500])
@@ -383,4 +385,4 @@ def test_corrupt_gzip_is_not_retried_or_hidden(
     with pytest.raises(native_error):
         invoke("wait_operation", server.OPERATION_UUID, timeout=2.0)
     assert len([r for r in stub_server.captured if r.path.endswith("/events")]) == 2
-    assert len([r for r in stub_server.captured if not r.path.endswith("/events")]) == 1
+    assert len([r for r in stub_server.captured if not r.path.endswith("/events")]) == 2
