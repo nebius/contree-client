@@ -201,4 +201,4 @@ through the environment. Each program has a deadline and cleans up its running
 operations. Missing credentials or permissions appear as explicit pytest skips.
 
 The shared GitHub Actions integration job runs Python, JavaScript, and Go
-in one pytest session with the same repository secrets and concurrency limit.
+in separate pytest steps with the same repository secrets and concurrency limit.

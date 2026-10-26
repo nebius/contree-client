@@ -82,4 +82,5 @@ built npm artifact at that location first. Credentials pass through the
 environment, and failures and skip reasons appear in the pytest report.
 
 `make test-live` runs the Python, JavaScript, and Go scenarios in one pytest
-session. GitHub Actions uses the same sequence and repository secrets.
+session. GitHub Actions runs each language in a separate pytest step within
+the shared integration job, using the same repository secrets.
