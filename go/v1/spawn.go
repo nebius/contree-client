@@ -19,6 +19,7 @@ type SpawnInstanceOptions struct {
 	Shell       bool
 	Env         map[string]string
 	PreserveEnv bool
+	PreserveCwd bool
 	Cwd         string
 	UID         int64
 	GID         int64
@@ -73,6 +74,9 @@ func (c *Client) SpawnInstance(
 	}
 	if options.PreserveEnv {
 		wire.PreserveEnv = Some(true)
+	}
+	if options.PreserveCwd {
+		wire.PreserveCwd = Some(true)
 	}
 	if options.Cwd != "" {
 		wire.Cwd = Some(options.Cwd)

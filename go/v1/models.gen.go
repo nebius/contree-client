@@ -1858,6 +1858,7 @@ type InstanceSpawnRequest struct {
 	Shell            Optional[bool]                    `json:"shell"`
 	Env              Optional[map[string]string]       `json:"env"`
 	PreserveEnv      Optional[bool]                    `json:"preserve_env"`
+	PreserveCwd      Optional[bool]                    `json:"preserve_cwd"`
 	Cwd              Optional[string]                  `json:"cwd"`
 	UID              Optional[int64]                   `json:"uid"`
 	GID              Optional[int64]                   `json:"gid"`
@@ -1871,7 +1872,7 @@ type InstanceSpawnRequest struct {
 
 // MarshalJSON encodes InstanceSpawnRequest with exact wire names.
 func (m InstanceSpawnRequest) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 17)
+	object := make(map[string]json.RawMessage, 18)
 	if err := putJSONField(object, "command", m.Command); err != nil {
 		return nil, fmt.Errorf("marshal InstanceSpawnRequest.command: %w", err)
 	}
@@ -1906,6 +1907,11 @@ func (m InstanceSpawnRequest) MarshalJSON() ([]byte, error) {
 	if m.PreserveEnv.IsSet() {
 		if err := putJSONField(object, "preserve_env", m.PreserveEnv); err != nil {
 			return nil, fmt.Errorf("marshal InstanceSpawnRequest.preserve_env: %w", err)
+		}
+	}
+	if m.PreserveCwd.IsSet() {
+		if err := putJSONField(object, "preserve_cwd", m.PreserveCwd); err != nil {
+			return nil, fmt.Errorf("marshal InstanceSpawnRequest.preserve_cwd: %w", err)
 		}
 	}
 	if m.Cwd.IsSet() {
@@ -2023,6 +2029,12 @@ func (m *InstanceSpawnRequest) UnmarshalJSON(data []byte) error {
 	if ok {
 		if err := json.Unmarshal(rawPreserveEnv, &decoded.PreserveEnv); err != nil {
 			return fmt.Errorf("unmarshal InstanceSpawnRequest.preserve_env: %w", err)
+		}
+	}
+	rawPreserveCwd, ok := object["preserve_cwd"]
+	if ok {
+		if err := json.Unmarshal(rawPreserveCwd, &decoded.PreserveCwd); err != nil {
+			return fmt.Errorf("unmarshal InstanceSpawnRequest.preserve_cwd: %w", err)
 		}
 	}
 	rawCwd, ok := object["cwd"]
@@ -2912,6 +2924,7 @@ type OperationInstanceMetadata struct {
 	Shell            Optional[bool]                    `json:"shell"`
 	Env              Optional[map[string]string]       `json:"env"`
 	PreserveEnv      Optional[bool]                    `json:"preserve_env"`
+	PreserveCwd      Optional[bool]                    `json:"preserve_cwd"`
 	Cwd              Optional[string]                  `json:"cwd"`
 	UID              Optional[int64]                   `json:"uid"`
 	GID              Optional[int64]                   `json:"gid"`
@@ -2926,7 +2939,7 @@ type OperationInstanceMetadata struct {
 
 // MarshalJSON encodes OperationInstanceMetadata with exact wire names.
 func (m OperationInstanceMetadata) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 18)
+	object := make(map[string]json.RawMessage, 19)
 	if err := putJSONField(object, "command", m.Command); err != nil {
 		return nil, fmt.Errorf("marshal OperationInstanceMetadata.command: %w", err)
 	}
@@ -2961,6 +2974,11 @@ func (m OperationInstanceMetadata) MarshalJSON() ([]byte, error) {
 	if m.PreserveEnv.IsSet() {
 		if err := putJSONField(object, "preserve_env", m.PreserveEnv); err != nil {
 			return nil, fmt.Errorf("marshal OperationInstanceMetadata.preserve_env: %w", err)
+		}
+	}
+	if m.PreserveCwd.IsSet() {
+		if err := putJSONField(object, "preserve_cwd", m.PreserveCwd); err != nil {
+			return nil, fmt.Errorf("marshal OperationInstanceMetadata.preserve_cwd: %w", err)
 		}
 	}
 	if m.Cwd.IsSet() {
@@ -3083,6 +3101,12 @@ func (m *OperationInstanceMetadata) UnmarshalJSON(data []byte) error {
 	if ok {
 		if err := json.Unmarshal(rawPreserveEnv, &decoded.PreserveEnv); err != nil {
 			return fmt.Errorf("unmarshal OperationInstanceMetadata.preserve_env: %w", err)
+		}
+	}
+	rawPreserveCwd, ok := object["preserve_cwd"]
+	if ok {
+		if err := json.Unmarshal(rawPreserveCwd, &decoded.PreserveCwd); err != nil {
+			return fmt.Errorf("unmarshal OperationInstanceMetadata.preserve_cwd: %w", err)
 		}
 	}
 	rawCwd, ok := object["cwd"]

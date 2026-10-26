@@ -119,7 +119,11 @@ it to `WaitOperation` or `FollowOperationEvents`.
 
 Zero scalar values and nil collections or pointers omit their fields. Non-nil
 empty maps and slices are sent as empty objects and arrays. `Shell`,
-`Disposable`, and `PreserveEnv` default to `false` on the server.
+`Disposable`, `PreserveEnv`, and `PreserveCwd` default to `false` on the server.
+
+Set `PreserveCwd` to save the initial working directory in the resulting image.
+This requires `Disposable` to remain `false`. Later directory changes made by
+the command do not change the saved value.
 
 `Timeout` is a `time.Duration` for server execution. Zero uses the server default;
 positive values round up to whole seconds. Negative values fail before sending

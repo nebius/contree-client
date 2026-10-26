@@ -362,6 +362,7 @@ type SpawnInstanceWithResponseOptions struct {
 	Shell            Optional[bool]
 	Env              Optional[map[string]string]
 	PreserveEnv      Optional[bool]
+	PreserveCwd      Optional[bool]
 	Cwd              Optional[string]
 	UID              Optional[int64]
 	GID              Optional[int64]
@@ -389,6 +390,7 @@ func buildSpawnInstanceWithResponse(
 		payload.Shell = options.Shell
 		payload.Env = options.Env
 		payload.PreserveEnv = options.PreserveEnv
+		payload.PreserveCwd = options.PreserveCwd
 		payload.Cwd = options.Cwd
 		payload.UID = options.UID
 		payload.GID = options.GID

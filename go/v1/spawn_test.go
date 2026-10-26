@@ -49,6 +49,7 @@ func TestSpawnInstanceRequest(t *testing.T) {
 				Hostname:    "worker",
 				Args:        []string{"-c", "cat"},
 				PreserveEnv: true,
+				PreserveCwd: true,
 				UID:         1000,
 				GID:         1001,
 				ResourcesLimits: &InstanceResourcesLimits{
@@ -68,7 +69,7 @@ func TestSpawnInstanceRequest(t *testing.T) {
 			},
 			body: `{
 				"command":"/bin/sh","image":"f85d16e5-43ef-42ad-86bc-06f56518c443",
-				"hostname":"worker","args":["-c","cat"],"preserve_env":true,
+				"hostname":"worker","args":["-c","cat"],"preserve_env":true,"preserve_cwd":true,
 				"uid":1000,"gid":1001,"resources_limits":{"max_layer_bytes":1073741824},
 				"networking":{"enabled":false},
 				"stdin":{"value":"input\n","encoding":"ascii","close":false},
