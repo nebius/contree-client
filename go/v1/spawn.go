@@ -38,21 +38,21 @@ type SpawnInstanceOptions struct {
 	Files            map[string]FileSpec
 }
 
-// SpawnInstance starts an instance and returns its operation ID without waiting for
+// SpawnInstance starts an instance and returns the full response without waiting for
 // execution to finish. Image accepts a tag:NAME reference or a bare image UUID.
 // Pass SpawnInstanceOptions{} to use the server defaults.
 //
-// A successful HTTP response without a non-empty operation ID returns an error.
-// The instance can already exist in that case; SpawnInstance does not repeat the call.
-// Use SpawnInstanceWithResponse for the full response or exact JSON field states.
+// The response preserves all documented fields and their absent, null, and value
+// states. Check response.UUID before using it to wait for or follow the operation.
+// Use SpawnInstanceWithResponse for exact JSON states in request options.
 func (c *Client) SpawnInstance(
 	ctx context.Context,
 	command string,
 	image string,
 	options SpawnInstanceOptions,
-) (string, error) {
+) (InstanceSpawnResponse, error) {
 	if options.Timeout < 0 {
-		return "", errors.New("contree: spawn timeout must not be negative")
+		return InstanceSpawnResponse{}, errors.New("contree: spawn timeout must not be negative")
 	}
 
 	wire := SpawnInstanceWithResponseOptions{}
@@ -106,13 +106,5 @@ func (c *Client) SpawnInstance(
 		wire.Files = Some(options.Files)
 	}
 
-	response, err := c.SpawnInstanceWithResponse(ctx, command, image, &wire)
-	if err != nil {
-		return "", err
-	}
-	operationID, ok := response.UUID.Value()
-	if !ok || operationID == "" {
-		return "", errors.New("contree: spawn response has no operation ID")
-	}
-	return operationID, nil
+	return c.SpawnInstanceWithResponse(ctx, command, image, &wire)
 }

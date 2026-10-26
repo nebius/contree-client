@@ -114,7 +114,8 @@ func TestSpawnInstanceRequest(t *testing.T) {
 				}
 				return convenienceResponse(request, http.StatusCreated, `{"uuid":"`+spawnOperationID+`"}`), nil
 			})
-			id, err := client.SpawnInstance(context.Background(), "/bin/sh", test.image, test.options)
+			spawned, err := client.SpawnInstance(context.Background(), "/bin/sh", test.image, test.options)
+			id, _ := spawned.UUID.Value()
 			if err != nil || id != spawnOperationID {
 				t.Fatalf("SpawnInstance = %q, %v", id, err)
 			}
@@ -164,24 +165,73 @@ func TestSpawnInstanceTimeout(t *testing.T) {
 			t.Fatal("unexpected request")
 			return nil, nil
 		})
-		id, err := client.SpawnInstance(context.Background(), "true", convenienceImageUUID, SpawnInstanceOptions{
+		spawned, err := client.SpawnInstance(context.Background(), "true", convenienceImageUUID, SpawnInstanceOptions{
 			Timeout: -time.Nanosecond,
 		})
+		id, _ := spawned.UUID.Value()
 		if err == nil || id != "" {
 			t.Fatalf("SpawnInstance = %q, %v; want empty ID and error", id, err)
 		}
 	})
 }
 
-func TestSpawnInstanceRejectsInvalidResponses(t *testing.T) {
-	for _, body := range []string{`{}`, `{"uuid":null}`, `{"uuid":""}`, `{"uuid":123}`, `invalid json`} {
+func TestSpawnInstancePreservesFullResponse(t *testing.T) {
+	for _, body := range []string{
+		`{}`,
+		`{"uuid":null,"result":null}`,
+		`{"uuid":"","env":{},"files":{}}`,
+		`{
+			"uuid":"operation-1","command":"echo hi","image":"image-1",
+			"hostname":"worker","args":["-n"],"shell":false,"env":{"A":"B"},
+			"preserve_env":true,"cwd":"/work","uid":1000,"gid":1001,
+			"resources_limits":{"max_layer_bytes":4096},"networking":{"enabled":false},
+			"stdin":{"value":"input","encoding":"ascii","close":true},
+			"timeout":60,"truncate_output_at":0,"disposable":false,
+			"files":{"/work/data":{"uuid":"file-1","mode":"0644"}},
+			"result":{"stdout":{"value":"hi","encoding":"ascii"},"stderr":null}
+		}`,
+	} {
 		t.Run(body, func(t *testing.T) {
 			calls := 0
 			client := newConvenienceClient(t, func(request *http.Request) (*http.Response, error) {
 				calls++
 				return convenienceResponse(request, http.StatusCreated, body), nil
 			})
-			id, err := client.SpawnInstance(context.Background(), "true", convenienceImageUUID, SpawnInstanceOptions{})
+			response, err := client.SpawnInstance(context.Background(), "echo hi", convenienceImageUUID, SpawnInstanceOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got, want any
+			if err := json.Unmarshal(encoded, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(body), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("response lost fields: got %s, want %s", encoded, body)
+			}
+			if calls != 1 {
+				t.Fatalf("requests = %d, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestSpawnInstanceRejectsInvalidResponses(t *testing.T) {
+	for _, body := range []string{`{"uuid":123}`, `invalid json`} {
+		t.Run(body, func(t *testing.T) {
+			calls := 0
+			client := newConvenienceClient(t, func(request *http.Request) (*http.Response, error) {
+				calls++
+				return convenienceResponse(request, http.StatusCreated, body), nil
+			})
+			spawned, err := client.SpawnInstance(context.Background(), "true", convenienceImageUUID, SpawnInstanceOptions{})
+			id, _ := spawned.UUID.Value()
 			if err == nil || id != "" {
 				t.Fatalf("SpawnInstance = %q, %v; want empty ID and error", id, err)
 			}
@@ -197,7 +247,8 @@ func TestSpawnInstancePreservesErrors(t *testing.T) {
 		client := newConvenienceClient(t, func(request *http.Request) (*http.Response, error) {
 			return convenienceResponse(request, http.StatusForbidden, `{"error":"denied"}`), nil
 		})
-		id, err := client.SpawnInstance(context.Background(), "true", convenienceImageUUID, SpawnInstanceOptions{})
+		spawned, err := client.SpawnInstance(context.Background(), "true", convenienceImageUUID, SpawnInstanceOptions{})
+		id, _ := spawned.UUID.Value()
 		var denied *PermissionDeniedError
 		if id != "" || !errors.As(err, &denied) || denied.StatusCode != http.StatusForbidden {
 			t.Fatalf("SpawnInstance = %q, %v; want PermissionDeniedError", id, err)
@@ -207,7 +258,8 @@ func TestSpawnInstancePreservesErrors(t *testing.T) {
 		client := newConvenienceClient(t, func(*http.Request) (*http.Response, error) {
 			return nil, io.ErrUnexpectedEOF
 		})
-		id, err := client.SpawnInstance(context.Background(), "true", convenienceImageUUID, SpawnInstanceOptions{})
+		spawned, err := client.SpawnInstance(context.Background(), "true", convenienceImageUUID, SpawnInstanceOptions{})
+		id, _ := spawned.UUID.Value()
 		var connection *APIConnectionError
 		if id != "" || !errors.As(err, &connection) || !errors.Is(err, io.ErrUnexpectedEOF) {
 			t.Fatalf("SpawnInstance = %q, %v; want wrapped transport error", id, err)
@@ -220,7 +272,8 @@ func TestSpawnInstancePreservesErrors(t *testing.T) {
 			cancel()
 			return nil, request.Context().Err()
 		})
-		id, err := client.SpawnInstance(ctx, "true", convenienceImageUUID, SpawnInstanceOptions{})
+		spawned, err := client.SpawnInstance(ctx, "true", convenienceImageUUID, SpawnInstanceOptions{})
+		id, _ := spawned.UUID.Value()
 		if id != "" || !errors.Is(err, context.Canceled) {
 			t.Fatalf("SpawnInstance = %q, %v; want context cancellation", id, err)
 		}

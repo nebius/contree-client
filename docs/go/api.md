@@ -91,10 +91,10 @@ HTTP status, and SSE errors. `APIConnectionError` retains its cause for
 
 ## Run a command
 
-`SpawnInstance` returns the operation ID directly. Common options use ordinary Go values:
+`SpawnInstance` returns the full `InstanceSpawnResponse`. Common options use ordinary Go values:
 
 ```go
-operationID, err := client.SpawnInstance(
+response, err := client.SpawnInstance(
     ctx,
     "wc -l < /work/data.txt",
     "tag:ubuntu:latest",
@@ -109,11 +109,13 @@ operationID, err := client.SpawnInstance(
 if err != nil {
     return fmt.Errorf("spawn word-count command: %w", err)
 }
+fmt.Println(response)
 ```
 
 Use `contree.SpawnInstanceOptions{}` for server defaults. `SpawnInstance` starts the instance
-without waiting for execution to finish. Pass its ID to `WaitOperation` or
-`FollowOperationEvents` when needed.
+without waiting for execution to finish. Extract the operation ID with
+`response.UUID.Value()` and check that it is present and non-empty before passing
+it to `WaitOperation` or `FollowOperationEvents`.
 
 Zero scalar values and nil collections or pointers omit their fields. Non-nil
 empty maps and slices are sent as empty objects and arrays. `Shell`,
@@ -135,9 +137,9 @@ options := contree.SpawnInstanceOptions{
 }
 ```
 
-`SpawnInstance` returns an error if the response omits the operation ID or contains a
-null or empty ID. The instance can already exist in that case. The helper does
-not retry that response.
+`SpawnInstance` preserves all documented response fields, including `Files`,
+`ResourcesLimits`, and `Result`. An absent, null, or empty UUID remains unchanged;
+callers that need an operation ID must check it before use.
 
 ## Literal constants
 
@@ -149,8 +151,8 @@ new values added by the server.
 ## Optional values
 
 Generated `Optional[T]` values preserve absent, explicit `null`, and present
-JSON states. Use the generated `SpawnInstanceWithResponse` method when you need the full
-response or explicit values that `SpawnInstance` would omit:
+JSON states. Use the generated `SpawnInstanceWithResponse` method when you need
+explicit request values that `SpawnInstance` would omit:
 
 ```go
 options := &contree.SpawnInstanceWithResponseOptions{

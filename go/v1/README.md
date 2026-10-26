@@ -39,10 +39,10 @@ if err != nil {
 }
 ```
 
-`SpawnInstance` accepts ordinary Go values and returns the operation ID:
+`SpawnInstance` accepts ordinary Go values and returns the full response:
 
 ```go
-operationID, err := client.SpawnInstance(
+response, err := client.SpawnInstance(
     ctx,
     "wc -l < /work/data.txt",
     "tag:ubuntu:latest",
@@ -57,12 +57,16 @@ operationID, err := client.SpawnInstance(
 if err != nil {
     return fmt.Errorf("spawn word-count command: %w", err)
 }
+operationID, ok := response.UUID.Value()
+if !ok || operationID == "" {
+    return fmt.Errorf("spawn response has no operation ID")
+}
 fmt.Println(operationID)
 ```
 
 Import `time` for duration values. `SpawnInstanceOptions{}` uses server defaults.
-Positive timeouts round up to whole seconds. Use `SpawnInstanceWithResponse` for the full
-response or exact absent, null, and value states.
+Positive timeouts round up to whole seconds. Both spawn methods return the full response.
+Use `SpawnInstanceWithResponse` for exact absent, null, and value states in request options.
 
 `NewTestClient` returns a normal `*Client` and an offline `*MockTransport`.
 Queue model responses with `Mock`, failures with `MockError`, and inspect HTTP

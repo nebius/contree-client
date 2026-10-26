@@ -113,10 +113,14 @@ err := mock.Mock(contree.OpSpawnInstance, contree.InstanceSpawnResponse{
 if err != nil {
     return fmt.Errorf("mock instance creation: %w", err)
 }
-operationID, err := client.SpawnInstance(ctx, "echo hello", "tag:ubuntu:latest",
+response, err := client.SpawnInstance(ctx, "echo hello", "tag:ubuntu:latest",
     contree.SpawnInstanceOptions{Shell: true})
 if err != nil {
     return fmt.Errorf("spawn greeting command: %w", err)
+}
+operationID, ok := response.UUID.Value()
+if !ok || operationID == "" {
+    return fmt.Errorf("spawn response has no operation ID")
 }
 fmt.Println(operationID)
 

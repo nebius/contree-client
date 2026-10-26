@@ -114,7 +114,8 @@ func TestMockSpawnInstanceResponseAlias(t *testing.T) {
 	client, mock := newMockClient(t)
 	requireMock(t, mock.Mock(OpSpawnInstance, InstanceSpawnResponse{UUID: Some("first")}))
 	requireMock(t, mock.Mock(OpSpawnInstance, InstanceSpawnResponse{UUID: Some("second")}))
-	id, err := client.SpawnInstance(context.Background(), "true", "image", SpawnInstanceOptions{})
+	spawned, err := client.SpawnInstance(context.Background(), "true", "image", SpawnInstanceOptions{})
+	id, _ := spawned.UUID.Value()
 	requireMock(t, err)
 	if id != "first" {
 		t.Fatalf("SpawnInstance = %q", id)
@@ -138,9 +139,10 @@ func TestMockSpawnInstanceResponseAlias(t *testing.T) {
 func TestMockSpawnInstanceRecordsWireValuesAndIndependentCalls(t *testing.T) {
 	client, mock := newMockClient(t)
 	requireMock(t, mock.Mock(OpSpawnInstance, InstanceSpawnResponse{UUID: Some("op")}))
-	id, err := client.SpawnInstance(context.Background(), "echo hi", "tag:ubuntu:latest", SpawnInstanceOptions{
+	spawned, err := client.SpawnInstance(context.Background(), "echo hi", "tag:ubuntu:latest", SpawnInstanceOptions{
 		Shell: true, Timeout: time.Minute,
 	})
+	id, _ := spawned.UUID.Value()
 	if err != nil || id != "op" {
 		t.Fatalf("SpawnInstance = %q, %v", id, err)
 	}
@@ -244,7 +246,8 @@ func TestMockHTTPClonesInputAndDecodesRealResponses(t *testing.T) {
 	body[0] = '!'
 	header.Set("X-Request-Id", "changed")
 	for i := 0; i < 2; i++ {
-		id, err := client.SpawnInstance(context.Background(), "true", "image", SpawnInstanceOptions{})
+		spawned, err := client.SpawnInstance(context.Background(), "true", "image", SpawnInstanceOptions{})
+		id, _ := spawned.UUID.Value()
 		if err != nil || id != "original" {
 			t.Fatalf("SpawnInstance = %q, %v", id, err)
 		}
@@ -393,7 +396,8 @@ func TestMockConcurrentCalls(t *testing.T) {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			id, err := client.SpawnInstance(context.Background(), "true", "image", SpawnInstanceOptions{})
+			spawned, err := client.SpawnInstance(context.Background(), "true", "image", SpawnInstanceOptions{})
+			id, _ := spawned.UUID.Value()
 			if err != nil || id != "op" {
 				t.Errorf("SpawnInstance = %q, %v", id, err)
 			}

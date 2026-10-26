@@ -47,7 +47,8 @@ func TestBufferedReadDoesNotRetryUnsafeOperation(t *testing.T) {
 			StatusCode: 201, BodyError: io.ErrUnexpectedEOF,
 		}))
 		requireMock(t, mock.Mock(OpSpawnInstance, InstanceSpawnResponse{UUID: Some("op")}))
-		id, err := client.SpawnInstance(context.Background(), "true", "image", SpawnInstanceOptions{})
+		spawned, err := client.SpawnInstance(context.Background(), "true", "image", SpawnInstanceOptions{})
+		id, _ := spawned.UUID.Value()
 		if unsafe {
 			if err != nil || id != "op" || len(mock.Calls()) != 2 {
 				t.Fatalf("unsafe retry = %q, %v, %v", id, err, mock.Calls())

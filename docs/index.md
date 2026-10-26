@@ -104,7 +104,7 @@ func main() {
     if err != nil {
         log.Fatalf("create client: %v", err)
     }
-    operationID, err := client.SpawnInstance(
+    response, err := client.SpawnInstance(
         ctx,
         "uname -a",
         "tag:ubuntu:latest",
@@ -112,6 +112,10 @@ func main() {
     )
     if err != nil {
         log.Fatalf("spawn uname command: %v", err)
+    }
+    operationID, ok := response.UUID.Value()
+    if !ok || operationID == "" {
+        log.Fatal("spawn response has no operation ID")
     }
     for event, err := range client.FollowOperationEvents(ctx, operationID, nil) {
         if err != nil {

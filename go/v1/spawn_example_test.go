@@ -17,7 +17,7 @@ func ExampleClient_SpawnInstance() {
 	if err := mock.Mock(contree.OpSpawnInstance, contree.InstanceSpawnResponse{UUID: contree.Some("operation-1")}); err != nil {
 		log.Fatalf("mock instance creation: %v", err)
 	}
-	operationID, err := client.SpawnInstance(
+	response, err := client.SpawnInstance(
 		context.Background(),
 		"wc -l < /work/data.txt",
 		"tag:ubuntu:latest",
@@ -31,6 +31,10 @@ func ExampleClient_SpawnInstance() {
 	)
 	if err != nil {
 		log.Fatalf("spawn word-count command: %v", err)
+	}
+	operationID, ok := response.UUID.Value()
+	if !ok || operationID == "" {
+		log.Fatal("spawn response has no operation ID")
 	}
 	fmt.Println(operationID)
 	// Output: operation-1

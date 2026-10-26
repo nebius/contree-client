@@ -16,7 +16,7 @@ Naming translates mechanically across languages. Python uses snake_case,
 JavaScript uses camelCase, and Go uses PascalCase. Every client maps public
 names to exact wire names. Optional arguments use kwargs in Python and a trailing
 options object in JavaScript. Go's `SpawnInstance` helper accepts an options struct and
-returns the operation ID:
+returns the full response:
 
 ```text
 client.spawn_instance(cmd, image, shell=True)      # Python
@@ -355,7 +355,7 @@ const operationId = response.uuid;
 :sync: go
 
 ```go
-operationID, err := client.SpawnInstance(
+response, err := client.SpawnInstance(
     ctx,
     "wc -l < /work/data.txt",
     "tag:ubuntu:latest", // an image tag, or a bare image UUID
@@ -370,17 +370,21 @@ operationID, err := client.SpawnInstance(
 if err != nil {
     return fmt.Errorf("spawn word-count command: %w", err)
 }
+operationID, ok := response.UUID.Value()
+if !ok || operationID == "" {
+    return fmt.Errorf("spawn response has no operation ID")
+}
 ```
 :::
 
 ::::
 
-Go's `SpawnInstance` returns the operation ID without waiting for completion. Pass
+Go's `SpawnInstance` returns the full `InstanceSpawnResponse` without waiting for completion. Pass
 `contree.SpawnInstanceOptions{}` for server defaults. Zero scalar values and nil
 collections or pointers omit their fields; non-nil empty collections are sent
 explicitly. `Timeout` uses `time.Duration` and rounds positive values up to whole
-seconds. Use `SpawnInstanceWithResponse` for the full response or explicit zero and null
-values that `SpawnInstance` would omit.
+seconds. Use `SpawnInstanceWithResponse` for explicit zero and null request values
+that `SpawnInstance` would omit.
 
 Standard input is a {class}`~contree_client.StreamRepr` (build one with
 `from_text()` / `fromText()` or `from_bytes()` / `fromBytes()`). Go uses a
@@ -831,12 +835,16 @@ Import `context`, `encoding/json`, `fmt`, `log`, and `time` in the enclosing fil
 ```go
 runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 defer cancel()
-operationID, err := client.SpawnInstance(
+response, err := client.SpawnInstance(
     runCtx, "sleep 60", "tag:ubuntu:latest",
     contree.SpawnInstanceOptions{Shell: true, Timeout: time.Minute, Disposable: true},
 )
 if err != nil {
     return fmt.Errorf("start parent operation: %w", err)
+}
+operationID, ok := response.UUID.Value()
+if !ok || operationID == "" {
+    return fmt.Errorf("spawn response has no operation ID")
 }
 var spid int64
 subprocessExited, operationCompleted := false, false

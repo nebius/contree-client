@@ -9,7 +9,7 @@ clients. **Complete** means the client preserves the same API semantics.
 | Capability | Python | JavaScript | Go | Status |
 |---|---|---|---|---|
 | Generated API | Sync and async methods | Promise-based methods | Context-aware methods | Complete: all 26 wire operations and all schemas |
-| Simple instance creation | `spawn_instance` with keyword arguments; response UUID | `spawnInstance` with options; response UUID | `SpawnInstance` with plain options, `time.Duration`, and a direct operation ID | Idiomatic; `SpawnInstanceWithResponse` retains full response and JSON control |
+| Simple instance creation | `spawn_instance` with keyword arguments; full response | `spawnInstance` with options; full response | `SpawnInstance` with plain options, `time.Duration`, and the full response | Idiomatic; `SpawnInstanceWithResponse` provides exact JSON request control |
 | Optional JSON fields | `...`, `None`, value | `undefined`, `null`, value | `Optional[T]`: unset, null, value | Complete |
 | Client construction | Five transport adapters | Injectable `fetch` | Functional options and injectable `http.Client` | Idiomatic |
 | Saved profiles | `load_profiles()` and `from_profile()` | Node-only `loadProfiles()` and `fromProfile()` | `LoadProfiles()`, `ResolveProfile()`, and `NewClientFromProfile()` | Complete; Go resolves and constructs in two calls |
