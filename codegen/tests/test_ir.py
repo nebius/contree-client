@@ -103,16 +103,35 @@ def test_integer_path_param_is_semantic(ir: SpecIR) -> None:
     assert parameter.location is ParameterLocation.PATH
 
 
-def test_grep_repeatable_query_params_accept_sequences() -> None:
+@pytest.mark.parametrize(
+    ("operation_id", "operation_name", "endpoint", "uuid_param"),
+    (
+        (
+            "inspectImageGrep",
+            "inspect_image_grep",
+            "/inspect/{image_uuid}/grep",
+            "image_uuid",
+        ),
+        (
+            "inspectInstanceGrep",
+            "inspect_instance_grep",
+            "/operations/{operation_uuid}/inspect/grep",
+            "operation_uuid",
+        ),
+    ),
+)
+def test_grep_repeatable_query_params_accept_sequences(
+    operation_id: str, operation_name: str, endpoint: str, uuid_param: str
+) -> None:
     spec = make_synthetic_spec(
         {},
         paths={
-            "/inspect/{image_uuid}/grep": {
+            endpoint: {
                 "get": {
-                    "operationId": "inspectImageGrep",
+                    "operationId": operation_id,
                     "parameters": [
                         {
-                            "name": "image_uuid",
+                            "name": uuid_param,
                             "in": "path",
                             "required": True,
                             "schema": {"type": "string"},
@@ -139,7 +158,7 @@ def test_grep_repeatable_query_params_accept_sequences() -> None:
             }
         },
     )
-    op = op_by_name(build_ir(spec), "inspect_image_grep")
+    op = op_by_name(build_ir(spec), operation_name)
     arguments = {argument.name: argument for argument in op.arguments}
     parameters = {parameter.argument: parameter for parameter in op.request.parameters}
     repeatable_type = TypeRef(
@@ -170,6 +189,60 @@ def test_download_has_buffered_and_streaming_bytes_behavior(ir: SpecIR) -> None:
     op = op_by_name(ir, "inspect_image_download")
     assert op.response.mode is ResponseMode.BYTES
     assert op.response.type == TypeRef(TypeKind.BYTES)
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "operation_name", "endpoint", "content", "response_mode"),
+    (
+        (
+            "inspectInstanceArchive",
+            "inspect_instance_archive",
+            "/operations/{operation_uuid}/inspect/archive",
+            {"application/x-tar": {"schema": {"type": "string", "format": "binary"}}},
+            ResponseMode.BYTE_STREAM,
+        ),
+        (
+            "inspectInstanceFile",
+            "inspect_instance_list",
+            "/operations/{operation_uuid}/inspect/list",
+            {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/DirectoryList"}
+                }
+            },
+            ResponseMode.JSON,
+        ),
+    ),
+)
+def test_live_inspection_matches_image_client_conventions(
+    operation_id: str,
+    operation_name: str,
+    endpoint: str,
+    content: dict,
+    response_mode: ResponseMode,
+) -> None:
+    spec = make_synthetic_spec(
+        {"DirectoryList": {"type": "object", "properties": {}}},
+        paths={
+            endpoint: {
+                "get": {
+                    "operationId": operation_id,
+                    "parameters": [
+                        {
+                            "name": "operation_uuid",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
+                    ],
+                    "responses": {"200": {"content": content}},
+                }
+            }
+        },
+    )
+    op = op_by_name(build_ir(spec), operation_name)
+    assert op.path == endpoint
+    assert op.response.mode is response_mode
 
 
 def test_check_ops_return_bool(ir: SpecIR) -> None:

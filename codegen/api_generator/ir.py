@@ -30,18 +30,22 @@ NESTED_NAME_OVERRIDES = {
 
 SKIP_OPERATIONS = {"inspectRedirect", "inspectImageRedirect"}
 # archives can be arbitrarily large: stream-only, never buffered
-STREAM_ONLY_OPERATIONS = {"inspectImageArchive"}
+STREAM_ONLY_OPERATIONS = {"inspectImageArchive", "inspectInstanceArchive"}
 # The server accepts duplicate keys for these parameters, but the current
 # OpenAPI document still declares each item as a scalar string.
 REPEATABLE_QUERY_PARAMS = {
     ("inspect_image_grep", "pattern"),
     ("inspect_image_grep", "path"),
     ("inspect_image_grep", "glob"),
+    ("inspect_instance_grep", "pattern"),
+    ("inspect_instance_grep", "path"),
+    ("inspect_instance_grep", "glob"),
 }
 OPERATION_NAME_OVERRIDES = {
     "whoAmI": "whoami",
     "getOperationEvents": "iter_operation_events",
     "inspectImageFile": "inspect_image_list",
+    "inspectInstanceFile": "inspect_instance_list",
 }
 SYNTHETIC_OPERATION_IDS = {
     ("get", "/files"): "listFiles",
