@@ -130,10 +130,10 @@ jobs:
         run: uv sync
 
       - name: Ruff format
-        run: uv run ruff format --check codegen client/tests conftest.py
+        run: uv run ruff format --check codegen client/tests go/tests conftest.py
 
       - name: Ruff check
-        run: uv run ruff check codegen client/tests conftest.py
+        run: uv run ruff check codegen client/tests go/tests conftest.py
 
       - name: Run ty (codegen)
         run: uv run ty check codegen/api_generator
@@ -302,8 +302,8 @@ jobs:
         run: make docs docs-mintlify
 
   integration:
-    name: Integration (live API, python + js)
-    # One job for both languages, Linux only, independent of the unit
+    name: Integration (live API, python + js + go)
+    # One job for all three languages, Linux only, independent of the unit
     # matrices (runs in parallel with them). These tests perform WRITE
     # operations (upload, spawn, cancel, one import) against the
     # endpoint in the CONTREE_URL secret - never point it at
@@ -362,9 +362,22 @@ jobs:
       - name: Run Python integration tests
         if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
         run: >
-          uv run --no-project pytest -v --tb=short --timeout 300
+          uv run --no-project pytest -v -rs --tb=short --timeout 300
           -m integration client
 
       - name: Run JS integration tests
         if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
         run: cd client-js && node --test --test-timeout=300000 test/live/*.test.mjs
+
+      - name: Set up Go
+        if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go/go.mod
+          cache: false
+
+      - name: Run Go integration tests through pytest
+        if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
+        run: >
+          uv run --no-project pytest -v -rs --tb=short --timeout 300
+          -m integration go/tests

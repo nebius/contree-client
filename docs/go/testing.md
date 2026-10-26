@@ -181,3 +181,24 @@ gzip behavior when `Content-Encoding: gzip` is set.
 For factories that construct their own clients, create a zero-value
 `MockTransport` and pass it through `WithHTTPClient`. The test-client constructor
 accepts ordinary client options, but always installs its offline transport last.
+
+## Live integration tests
+
+Run the Go scenarios from the repository root with Go 1.27 or later:
+
+```sh
+CONTREE_TOKEN=... CONTREE_URL=... make test-live-go
+```
+
+Set `CONTREE_PROJECT` when the endpoint requires a project header. These tests
+upload files, start instances, cancel operations, and persist an image to check
+`PreserveCwd`. Use a test endpoint and token.
+
+Pytest runs the scenarios in `go/tests/test_integration.py`. The `gorun` fixture
+writes each Go program and a `go.mod` into `tmp_path`, then runs `go run .`.
+A local `replace` directive selects this checkout's Go client. Credentials pass
+through the environment. Each program has a deadline and cleans up its running
+operations. Missing credentials or permissions appear as explicit pytest skips.
+
+The shared GitHub Actions integration job runs Python, JavaScript, and Go
+sequentially with the same repository secrets and concurrency limit.

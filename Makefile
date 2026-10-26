@@ -21,7 +21,7 @@ JS_GENERATED = \
     $(JS_PACKAGE)/index.js $(JS_PACKAGE)/index.d.ts
 .PHONY: all generate generate-js generate-go js go lint lint-js lint-go \
     typecheck test test-python test-js test-go \
-    test-live test-live-python test-live-js \
+    test-live test-live-python test-live-js test-live-go \
     coverage docs docs-mintlify \
     docs-view build build-go clean
 
@@ -57,8 +57,8 @@ go: generate-go
 	$(MAKE) lint-go test-go
 
 lint:
-	uv run ruff format --check codegen client/tests conftest.py
-	uv run ruff check codegen client/tests conftest.py
+	uv run ruff format --check codegen client/tests go/tests conftest.py
+	uv run ruff check codegen client/tests go/tests conftest.py
 
 lint-js: generate-js
 	cd client-js && npx prettier --check lib test
@@ -92,7 +92,7 @@ test-go:
 # live tests against a real Contree API (CONTREE_TOKEN/CONTREE_URL or
 # the active saved profile); they perform WRITE operations (upload,
 # tag, import, spawn, cancel) - never point this at production
-test-live: test-live-python test-live-js
+test-live: test-live-python test-live-js test-live-go
 
 # per-test timeouts: a hung live call must fail the test, not stall
 # the whole run (the in-test waits go up to 180s)
@@ -101,6 +101,9 @@ test-live-python: generate
 
 test-live-js: generate-js
 	cd client-js && node --test --test-timeout=300000 test/live/*.test.mjs
+
+test-live-go:
+	uv run pytest -v -rs go/tests -m integration --timeout 300
 
 coverage: generate
 	uv run pytest -q codegen/tests client docs -m "not integration" \
