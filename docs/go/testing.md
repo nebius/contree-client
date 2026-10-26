@@ -194,11 +194,11 @@ Set `CONTREE_PROJECT` when the endpoint requires a project header. These tests
 upload files, start instances, cancel operations, and persist an image to check
 `PreserveCwd`. Use a test endpoint and token.
 
-Pytest runs the scenarios in `go/tests/test_integration.py`. The `gorun` fixture
+Pytest runs the scenarios in `go/tests/test_go_integration.py`. The `gorun` fixture
 writes each Go program and a `go.mod` into `tmp_path`, then runs `go run .`.
 A local `replace` directive selects this checkout's Go client. Credentials pass
 through the environment. Each program has a deadline and cleans up its running
 operations. Missing credentials or permissions appear as explicit pytest skips.
 
 The shared GitHub Actions integration job runs Python, JavaScript, and Go
-sequentially with the same repository secrets and concurrency limit.
+in one pytest session with the same repository secrets and concurrency limit.

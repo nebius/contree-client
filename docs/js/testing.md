@@ -62,3 +62,24 @@ client.mock("iterOperationEvents", [initEvent, exitEvent]);
 The double is just another client: code annotated against
 `ContreeClient` (or duck-typed) cannot tell the difference, exactly
 like the [Python testing double](../python/testing.md).
+
+## Live integration tests
+
+Run the JavaScript live scenarios from the repository root:
+
+```sh
+CONTREE_TOKEN=... CONTREE_URL=... make test-live-js
+```
+
+Set `CONTREE_SPEC` to generate the client and `CONTREE_PROJECT` when the endpoint
+requires a project header. These tests start disposable instances and exercise
+subprocess creation, stdin, and cancellation. Use a test endpoint and token.
+
+Pytest runs the scenarios in `client-js/test/test_js_integration.py`. The
+`jsrun(source)` fixture writes an ES module into `tmp_path` and executes it with
+Node.js. The scenarios import this checkout's generated client; CI installs the
+built npm artifact at that location first. Credentials pass through the
+environment, and failures and skip reasons appear in the pytest report.
+
+`make test-live` runs the Python, JavaScript, and Go scenarios in one pytest
+session. GitHub Actions uses the same sequence and repository secrets.

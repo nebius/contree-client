@@ -57,8 +57,8 @@ go: generate-go
 	$(MAKE) lint-go test-go
 
 lint:
-	uv run ruff format --check codegen client/tests go/tests conftest.py
-	uv run ruff check codegen client/tests go/tests conftest.py
+	uv run ruff format --check codegen client/tests client-js/test go/tests conftest.py
+	uv run ruff check codegen client/tests client-js/test go/tests conftest.py
 
 lint-js: generate-js
 	cd client-js && npx prettier --check lib test
@@ -92,7 +92,8 @@ test-go:
 # live tests against a real Contree API (CONTREE_TOKEN/CONTREE_URL or
 # the active saved profile); they perform WRITE operations (upload,
 # tag, import, spawn, cancel) - never point this at production
-test-live: test-live-python test-live-js test-live-go
+test-live: generate generate-js
+	uv run pytest -v -rs client client-js/test go/tests -m integration --timeout 300
 
 # per-test timeouts: a hung live call must fail the test, not stall
 # the whole run (the in-test waits go up to 180s)
@@ -100,7 +101,7 @@ test-live-python: generate
 	uv run pytest -v client -m integration --timeout 300
 
 test-live-js: generate-js
-	cd client-js && node --test --test-timeout=300000 test/live/*.test.mjs
+	uv run pytest -v -rs client-js/test -m integration --timeout 300
 
 test-live-go:
 	uv run pytest -v -rs go/tests -m integration --timeout 300
