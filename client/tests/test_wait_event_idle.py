@@ -6,6 +6,7 @@ import asyncio
 import select
 import socket
 import threading
+import time
 from collections.abc import Callable, Iterator
 from types import SimpleNamespace
 from typing import Any
@@ -16,6 +17,42 @@ import pytest
 from contree_client import base
 from contree_client.httpx import ContreeAsyncClient, ContreeClient
 from tests import stub_server as server
+
+
+@pytest.mark.parametrize("inter_event", [False, True])
+def test_wait_reads_delayed_retained_events(
+    invoke: Callable[..., Any], monkeypatch: pytest.MonkeyPatch, inter_event: bool
+) -> None:
+    """A retained payload pause must not consume the live idle retry budget."""
+    retained_requests = 0
+
+    def frames() -> Iterator[bytes]:
+        if inter_event:
+            yield server.sse_frame(server.EVENT_INIT)
+        # Exercise the native transports and incremental gzip decoder beyond
+        # the live waiter's 0.5-second payload-idle interval.
+        time.sleep(0.8)
+        yield server.sse_frame(server.EVENT_COMPLETION)
+
+    def route(request: server.Captured, attempts: Any) -> server.Reply:
+        nonlocal retained_requests
+        if not request.path.endswith("/events"):
+            return server.json_reply(200, server.OPERATION_RESPONSE)
+        if request.query.get("follow") == ["1"]:
+            chunks = []
+        else:
+            retained_requests += 1
+            chunks = frames()
+        return server.Reply(
+            status=200, content_type="text/event-stream", stream_chunks=chunks
+        )
+
+    monkeypatch.setattr(server, "route", route)
+    result = invoke(
+        "wait_operation", server.OPERATION_UUID, follow_events=True, timeout=10
+    )
+    assert str(result.status) == "SUCCESS"
+    assert retained_requests == 1
 
 
 @pytest.mark.parametrize("outcome", ["SUCCESS", "FAILED", "CANCELLED"])

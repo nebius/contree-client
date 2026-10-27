@@ -1,6 +1,7 @@
 package contree
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -130,4 +132,57 @@ func TestWaitOperationDelayedStatusKeepsDeadline(t *testing.T) {
 			t.Fatalf("error = %v", err)
 		}
 	})
+}
+
+// Retained delays must not consume the live waiter's idle retry budget.
+func TestWaitOperationDelayedRetainedEvents(t *testing.T) {
+	for _, interEvent := range []bool{false, true} {
+		t.Run(fmt.Sprint(interEvent), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				retainedRequests := 0
+				var writers sync.WaitGroup
+				client := newOperationHelperClient(t, func(request *http.Request) (*http.Response, error) {
+					if !strings.HasSuffix(request.URL.Path, "/events") {
+						return operationHelperJSONResponse(request, 200, `{"status":"SUCCESS"}`), nil
+					}
+					if request.URL.Query().Get("follow") == "1" {
+						return operationHelperJSONResponse(request, 200, ""), nil
+					}
+					retainedRequests++
+					reader, writer := io.Pipe()
+					go func() {
+						<-request.Context().Done()
+						_ = writer.CloseWithError(request.Context().Err())
+					}()
+					writers.Add(1)
+					go func() {
+						defer writers.Done()
+						defer writer.Close()
+						compressed := gzip.NewWriter(writer)
+						defer compressed.Close()
+						if interEvent {
+							_, _ = io.WriteString(compressed, operationHelperEvent(0, "stdout", `{"value":"x","encoding":"ascii"}`))
+							_ = compressed.Flush()
+						}
+						time.Sleep(800 * time.Millisecond)
+						_, _ = io.WriteString(compressed, operationHelperEvent(1, "completion", `{"status":"SUCCESS","duration_ms":1}`))
+					}()
+					response := operationHelperResponse(request, 200, reader)
+					response.Header.Set("Content-Encoding", "gzip")
+					return response, nil
+				})
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer func() {
+					cancel()
+					writers.Wait()
+				}()
+				yes := true
+				result, err := client.WaitOperation(ctx, operationHelperID, WaitOperationOptions{FollowEvents: &yes})
+				requireMock(t, err)
+				if status, _ := result.Status.Value(); status != OperationStatusSuccess || retainedRequests != 1 {
+					t.Fatalf("result = %#v, retained requests = %d", result, retainedRequests)
+				}
+			})
+		})
+	}
 }

@@ -91,6 +91,9 @@ terminal status, it reads retained events without follow mode. An unfiltered
 stream must include a completion event; a filtered or resumed stream can end
 without one. Incomplete retained reads use the configured retry limit, or three
 attempts when request retries are disabled. The context bounds all attempts.
+The waiter's 500-millisecond payload-idle limit applies only to live streams.
+Retained reads use the original context without this idle limit. Without a
+context deadline, a silent retained connection can wait indefinitely.
 
 `WaitOperation` automatically follows instance events or polls image imports.
 Use `WaitOperationOptions.FollowEvents` to force events or polling. Failed and

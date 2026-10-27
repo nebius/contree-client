@@ -204,8 +204,11 @@ reads the operation kind, follows instance events, and polls image imports every
 kinds use events. A context deadline bounds the entire wait.
 
 After a completion event, it polls until the API returns a terminal status.
-After 500 milliseconds without a payload event, it closes the stream before
-checking status. Payload events reset this interval; keepalives do not.
+After 500 milliseconds without a live payload event, it closes the stream
+before checking status. Payload events reset this interval; keepalives do not.
+After terminal status, retained reads use the original context without this idle
+limit. Without a context deadline, a silent retained connection can wait
+indefinitely.
 
 To force polling for any operation:
 
