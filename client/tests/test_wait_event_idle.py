@@ -180,7 +180,9 @@ def test_event_progress_through_transport(
         assert stream_socket is not None
         if stream_socket.fileno() < 0:
             return True
-        readable, _, _ = select.select([stream_socket], [], [], 0)
+        # Wait for the peer FIN/RST instead of racing its network delivery.
+        # This is a deadlock watchdog, not an elapsed-time assertion.
+        readable, _, _ = select.select([stream_socket], [], [], 15)
         if not readable:
             return False
         try:
@@ -371,4 +373,9 @@ def test_invalid_idle_timeout(
     invoke: Callable[..., Any], method: str, idle_timeout: float
 ) -> None:
     with pytest.raises(ValueError, match="idle_timeout"):
-        invoke(method, server.OPERATION_UUID, idle_timeout=idle_timeout)
+        invoke(
+            method,
+            server.OPERATION_UUID,
+            idle_timeout=idle_timeout,
+            collect=method == "follow_operation_events",
+        )

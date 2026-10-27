@@ -311,6 +311,10 @@ def test_request_and_stream_share_transport_errors(
         client = client_class(backend)(TOKEN, base_url="http://127.0.0.1")
         if backend == "http":
             target, name = client, "_send_on"
+            if method == "stream":
+                monkeypatch.setattr(
+                    client, "_connect", MagicMock(return_value=MagicMock())
+                )
         elif backend == "urllib3":
             target, name = client._http, "request"
         elif backend in ("requests", "aiohttp"):
