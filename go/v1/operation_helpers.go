@@ -218,7 +218,7 @@ func (f *operationEventFollower) openStream() error {
 		options.LastEventID = &value
 	}
 	streamContext := f.ctx
-	if f.idleTimeout > 0 {
+	if f.idleTimeout > 0 && !f.draining {
 		streamContext, f.streamCancel = context.WithCancel(f.ctx)
 		f.idleTimer = time.AfterFunc(f.idleTimeout, f.streamCancel)
 	}
@@ -406,8 +406,10 @@ type WaitOperationOptions struct {
 // responses unchanged. By default it reads the operation kind, follows instance
 // events, and polls image imports every 500 milliseconds. An unknown kind uses
 // events. Supply at most one options value to select a mode explicitly.
-// After 500 milliseconds without an event, the waiter closes the stream before
-// checking status. Event progress resets this idle interval; keepalives do not.
+// After 500 milliseconds without a live payload event, the waiter closes the
+// stream before checking status. Payload events reset this interval; keepalives
+// do not. Retained reads use the context without the live idle limit. Without a
+// context deadline, a silent retained connection can wait indefinitely.
 // A completion event still requires a terminal status response.
 // The context bounds the entire wait, including status reads and polling delays.
 func (c *Client) WaitOperation(

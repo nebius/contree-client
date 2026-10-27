@@ -514,9 +514,14 @@ Failed and cancelled responses are returned unchanged. *timeout* covers the
 entire wait.
 
 In all three clients, a completion event is followed by status checks until the
-API returns a terminal status. If no payload event arrives for 0.5 seconds, the
-waiter closes the event stream before checking status. Payload events reset this
-idle interval; keepalives do not. These checks share the original wait deadline.
+API returns a terminal status. If no live payload event arrives for 0.5 seconds,
+the waiter closes the event stream before checking status. Payload events reset
+this idle interval; keepalives do not. These checks share the original wait deadline.
+
+After terminal status, Python and Go drain retained events using the original
+caller deadline, without the live idle limit. A silent retained connection can
+wait indefinitely if no caller deadline is set. JavaScript's follower stops on
+terminal status without this retained drain, so unread tail events can be missed.
 
 JavaScript's `waitOperation()` uses the same selection with `followEvents: null`
 by default. Set `followEvents` to `true` or `false` to force events or polling.

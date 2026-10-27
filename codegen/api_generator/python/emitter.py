@@ -1375,8 +1375,10 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
 
         ``follow_events=None`` follows instance events and polls image imports
         every 0.5 seconds. Use ``True`` to force events or ``False`` to force
-        polling. After 0.5 seconds without a payload event, close the stream
-        before checking status. Keepalives do not reset this interval.
+        polling. After 0.5 seconds without a live payload event, close the
+        stream before checking status. Keepalives do not reset this interval.
+        Retained reads use the overall timeout, without the live idle limit.
+        Without a timeout, a silent retained connection can wait indefinitely.
         After completion, poll until the status is terminal.
         Return failed and cancelled responses unchanged.
         ``timeout`` covers the entire wait and raises :class:`TimeoutError`
@@ -1444,7 +1446,8 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         The timeout is an absolute deadline checked whenever iteration
         resumes. Caller code between events is not interrupted. A
         synchronous native read can delay ``TimeoutError`` until it
-        returns.
+        returns. Retained reads have no live idle limit. Without a timeout,
+        a silent retained connection can wait indefinitely.
         """
         last_id = last_event_id
         terminal = False
@@ -1473,7 +1476,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                     since=since,
                     last_event_id=last_id,
                     deadline=deadline,
-                    _idle_timeout=_idle_timeout,
+                    _idle_timeout=None if terminal else _idle_timeout,
                 )) as source:
                     for event in source:
                         last_id = event.id
@@ -1789,8 +1792,10 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
 
         ``follow_events=None`` follows instance events and polls image imports
         every 0.5 seconds. Use ``True`` to force events or ``False`` to force
-        polling. After 0.5 seconds without a payload event, close the stream
-        before checking status. Keepalives do not reset this interval.
+        polling. After 0.5 seconds without a live payload event, close the
+        stream before checking status. Keepalives do not reset this interval.
+        Retained reads use the overall timeout, without the live idle limit.
+        Without a timeout, a silent retained connection can wait indefinitely.
         After completion, poll until the status is terminal.
         Return failed and cancelled responses unchanged.
         ``timeout`` covers the entire wait and raises :class:`TimeoutError`
@@ -1856,6 +1861,8 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         incomplete event log raises APIConnectionError.
         The timeout is an absolute deadline checked whenever iteration
         resumes. Caller code between events is not interrupted.
+        Retained reads have no live idle limit. Without a timeout,
+        a silent retained connection can wait indefinitely.
         """
         last_id = last_event_id
         terminal = False
@@ -1887,7 +1894,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                         since=since,
                         last_event_id=last_id,
                         deadline=deadline,
-                        _idle_timeout=_idle_timeout,
+                        _idle_timeout=None if terminal else _idle_timeout,
                     )
                 ) as source:
                     async for event in source:
