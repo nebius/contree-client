@@ -34,6 +34,7 @@ mintlify_docs_json = {
     "name": "contree-client",
     "theme": "mint",
     "colors": {"primary": "#0d9373"},
+    "logo": {"light": "_static/logo.svg", "dark": "_static/logo.svg"},
 }
 
 source_suffix = {
@@ -67,6 +68,10 @@ myst_enable_extensions = [
 myst_heading_anchors = 3
 
 html_title = "contree-client"
+html_theme = "furo"
+html_static_path = ["_static"]
+html_logo = "_static/logo.svg"
+html_favicon = "_static/logo.svg"
 
 exclude_patterns = ["_build"]
 

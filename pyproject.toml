@@ -13,6 +13,7 @@ dev = [
     "myst-parser>=4.0.1",
     "sphinx-design>=0.6",
     "sphinx-mintlify-output>=0.1.2",
+    "furo>=2025.12.19",
 ]
 
 # `pytest client docs` runs with the repository root as rootdir,
