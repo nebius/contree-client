@@ -6,6 +6,32 @@ same core concepts — pick the language, the concepts transfer directly. The
 [Tutorial](tutorial.md) walks through the whole API across languages,
 side by side.
 
+::::{grid} 1 1 3 3
+:gutter: 2
+
+:::{grid-item-card} Python Tutorial
+:link: tutorial.html?tab=sync
+:link-alt: Python Tutorial
+
+Sync and async Python clients.
+:::
+
+:::{grid-item-card} JavaScript Tutorial
+:link: tutorial.html?tab=js
+:link-alt: JavaScript Tutorial
+
+JavaScript and TypeScript with fetch.
+:::
+
+:::{grid-item-card} Go Tutorial
+:link: tutorial.html?tab=go
+:link-alt: Go Tutorial
+
+Typed Go clients with net/http.
+:::
+
+::::
+
 - **Python** — sync and async flavours over pluggable
   [transport adapters](python/adapters.md) (stdlib http.client,
   urllib3, requests, httpx, aiohttp); the whole API surface lives on

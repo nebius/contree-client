@@ -440,6 +440,8 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "docutils", version = "0.21.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "docutils", version = "0.22.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "ty" },
     { name = "types-pyyaml" },
 ]
@@ -447,6 +449,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "argclass", specifier = ">=1.9" },
+    { name = "docutils", marker = "extra == 'dev'", specifier = ">=0.21" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "ruff", specifier = ">=0.8" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.58" },
