@@ -22,7 +22,6 @@ def test_completion_before_terminal_status(
     invoke: Callable[..., Any], monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
     reads = []
-    monkeypatch.setattr(base, "TIGHT_LOOP_FLOOR", 0.05)
 
     def route(request: server.Captured, attempts: Any) -> server.Reply:
         if request.path.endswith("/events"):
