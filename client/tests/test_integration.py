@@ -248,7 +248,7 @@ def test_upload_get_and_list_files(live: Invoke) -> None:
 
 
 def test_inspect_find_image_by_tag(live: Invoke, sample_image: Any) -> None:
-    resolved = live("inspect_find_image_by_tag", str(sample_image.tag))
+    resolved = live("inspect_find_image_by_tag", "alpine:latest")
     assert resolved == str(sample_image.uuid)
 
 

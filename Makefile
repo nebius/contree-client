@@ -93,18 +93,18 @@ test-go:
 # the active saved profile); they perform WRITE operations (upload,
 # tag, import, spawn, cancel) - never point this at production
 test-live: generate generate-js
-	uv run pytest -v -rs client client-js/test go/tests -m integration --timeout 300
+	uv run pytest -c pyproject.toml -v -rs client client-js/test go/tests -m integration --timeout 300
 
 # per-test timeouts: a hung live call must fail the test, not stall
 # the whole run (the in-test waits go up to 180s)
 test-live-python: generate
-	uv run pytest -v client -m integration --timeout 300
+	uv run pytest -c pyproject.toml -v client -m integration --timeout 300
 
 test-live-js: generate-js
-	uv run pytest -v -rs client-js/test -m integration --timeout 300
+	uv run pytest -c pyproject.toml -v -rs client-js/test -m integration --timeout 300
 
 test-live-go:
-	uv run pytest -v -rs go/tests -m integration --timeout 300
+	uv run pytest -c pyproject.toml -v -rs go/tests -m integration --timeout 300
 
 coverage: generate
 	uv run pytest -q codegen/tests client docs -m "not integration" \

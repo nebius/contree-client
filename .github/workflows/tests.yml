@@ -411,17 +411,17 @@ jobs:
       - name: Run Python integration tests
         if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
         run: >
-          uv run --no-project pytest -v -rs --tb=short --timeout 300
+          uv run --no-project pytest -c pyproject.toml -v -rs --tb=short --timeout 300
           -m integration client
 
       - name: Run JS integration tests
         if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
         run: >
-          uv run --no-project pytest -v -rs --tb=short --timeout 300
+          uv run --no-project pytest -c pyproject.toml -v -rs --tb=short --timeout 300
           -m integration client-js/test
 
       - name: Run Go integration tests
         if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
         run: >
-          uv run --no-project pytest -v -rs --tb=short --timeout 300
+          uv run --no-project pytest -c pyproject.toml -v -rs --tb=short --timeout 300
           -m integration go/tests
