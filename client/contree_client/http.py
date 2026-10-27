@@ -336,14 +336,32 @@ class ContreeClient(base.ContreeSyncClient):
         auto_decompress: bool = True,
     ) -> Iterator[bytes]:
         with normalize_errors():
-            timeout = remaining_timeout(spec.stream_deadline, self.timeout)
+            timeout = remaining_timeout(spec.deadline, self.timeout)
             # a stream owns its socket until EOF: dedicated connection
             connection = self._connect()
             response = None
             try:
                 connection.timeout = timeout
-                if connection.sock is not None:
-                    connection.sock.settimeout(timeout)
+                connection.connect()
+                # getresponse() clears connection.sock for Connection: close.
+                # Keep the socket reference while HTTPResponse owns its reader.
+                stream_socket = connection.sock
+                read_maximum = (
+                    spec.read_timeout
+                    if spec.accept == "text/event-stream"
+                    else self.timeout
+                )
+                header_maximum = read_maximum
+                if self.timeout is not None:
+                    header_maximum = (
+                        self.timeout
+                        if header_maximum is None
+                        else min(header_maximum, self.timeout)
+                    )
+                if stream_socket is not None:
+                    stream_socket.settimeout(
+                        remaining_timeout(spec.deadline, header_maximum)
+                    )
                 response = self._send_on(connection, spec)
                 self.log.debug(
                     "%s %s -> %d (stream)",
@@ -354,28 +372,16 @@ class ContreeClient(base.ContreeSyncClient):
                 if response.status >= 400:
                     data = read_response(response)
                     raise error_for_response(data.status, data.headers, data.body)
-                # The connect timeout has done its job. SSE can otherwise
-                # stay idle indefinitely, while downloads use the client
-                # timeout. An absolute deadline bounds both cases.
-                read_maximum = (
-                    spec.read_timeout
-                    if spec.accept == "text/event-stream"
-                    else self.timeout
-                )
-                timeout = remaining_timeout(spec.stream_deadline, read_maximum)
-                connection.timeout = timeout
-                if connection.sock is not None:
-                    connection.sock.settimeout(timeout)
                 decoder = stream_decoder(
                     response.getheader("Content-Encoding") if auto_decompress else None
                 )
                 while True:
-                    timeout = remaining_timeout(spec.stream_deadline, read_maximum)
+                    timeout = remaining_timeout(spec.deadline, read_maximum)
                     connection.timeout = timeout
-                    if connection.sock is not None:
-                        connection.sock.settimeout(timeout)
+                    if stream_socket is not None:
+                        stream_socket.settimeout(timeout)
                     raw = response.read1(CHUNK_SIZE)
-                    remaining_timeout(spec.stream_deadline, None)
+                    remaining_timeout(spec.deadline, None)
                     if not raw:
                         tail = decoder.flush()
                         if tail:

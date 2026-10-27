@@ -204,11 +204,16 @@ reads the operation kind, follows instance events, and polls image imports every
 kinds use events. A context deadline bounds the entire wait.
 
 After a completion event, it polls until the API returns a terminal status.
-After 500 milliseconds without a live payload event, it closes the stream
-before checking status. Payload events reset this interval; keepalives do not.
-After terminal status, retained reads use the original context without this idle
-limit. Without a context deadline, a silent retained connection can wait
-indefinitely.
+The event stream stays open until completion, EOF, a transport error, or context
+cancellation or an inactivity timeout. Gaps between payload events, including
+periods with only ping/keepalive frames, do not trigger status checks or
+reconnections.
+Live and retained reads use the original context. `WaitOperationOptions` and
+`FollowOperationEventsOptions` accept `IdleTimeout`, a `*float64` value in
+seconds. Nil uses 15 seconds; zero disables the limit. Any incoming SSE frame,
+including ping comments, renews this limit without extending the context
+deadline. When it expires, the client closes the stream before probing status
+and reconnecting.
 
 To force polling for any operation:
 

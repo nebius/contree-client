@@ -23,14 +23,14 @@ from tests import stub_server as server
 def test_wait_reads_delayed_retained_events(
     invoke: Callable[..., Any], monkeypatch: pytest.MonkeyPatch, inter_event: bool
 ) -> None:
-    """A retained payload pause must not consume the live idle retry budget."""
+    """Retained reads tolerate gaps between payload events."""
     retained_requests = 0
 
     def frames() -> Iterator[bytes]:
         if inter_event:
             yield server.sse_frame(server.EVENT_INIT)
         # Exercise the native transports and incremental gzip decoder beyond
-        # the live waiter's 0.5-second payload-idle interval.
+        # the former 0.5-second payload-idle cutoff.
         time.sleep(0.8)
         yield server.sse_frame(server.EVENT_COMPLETION)
 
@@ -81,8 +81,7 @@ def test_completion_before_terminal_status(
 
 
 @pytest.fixture
-def silent_events(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
-    release = threading.Event()
+def disconnected_events(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     calls: list[str] = []
 
     def route(request: server.Captured, attempts: Any) -> server.Reply:
@@ -93,7 +92,6 @@ def silent_events(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
                     status=200,
                     content_type="text/event-stream",
                     stream_chunks=[b": ready\n\n"],
-                    stream_release=release,
                 )
             assert request.query.get("follow") != ["1"]
             return server.Reply(
@@ -101,31 +99,26 @@ def silent_events(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
                 content_type="text/event-stream",
                 stream_chunks=[server.sse_frame(server.EVENT_COMPLETION)],
             )
-        # The first response must remain open until the waiter returns.
-        assert not release.is_set()
         calls.append("status")
         return server.json_reply(200, server.OPERATION_RESPONSE)
 
     monkeypatch.setattr(server, "route", route)
-    try:
-        yield calls
-    finally:
-        release.set()
+    yield calls
 
 
-def test_silent_events_probe_status(
-    invoke: Callable[..., Any], silent_events: list[str]
+def test_disconnected_events_probe_status(
+    invoke: Callable[..., Any], disconnected_events: list[str]
 ) -> None:
     result = invoke(
         "wait_operation", server.OPERATION_UUID, follow_events=True, timeout=15
     )
     assert str(result.status) == "SUCCESS"
-    assert silent_events == ["events", "status", "events", "status"]
+    assert disconnected_events == ["events", "status", "events", "status"]
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
-def test_silent_events_release_single_connection(
-    stub_server: server.StubServer, silent_events: list[str], asynchronous: bool
+def test_disconnected_events_release_single_connection(
+    stub_server: server.StubServer, disconnected_events: list[str], asynchronous: bool
 ) -> None:
     limits = httpx.Limits(max_connections=1, max_keepalive_connections=1)
     if asynchronous:
@@ -149,25 +142,33 @@ def test_silent_events_release_single_connection(
                 server.OPERATION_UUID, follow_events=True, timeout=15
             )
     assert str(result.status) == "SUCCESS"
-    assert silent_events == ["events", "status", "events", "status"]
+    assert disconnected_events == ["events", "status", "events", "status"]
 
 
-@pytest.mark.parametrize("ending", ["pause", "keepalive", "deadline"])
+@pytest.mark.parametrize(
+    ("traffic", "ending"),
+    [
+        (traffic, ending)
+        for traffic in ("payload", "ping", "silent")
+        for ending in ("completion", "deadline")
+    ]
+    + [("ping", "disconnect"), ("ping", "idle")],
+)
 def test_event_progress_through_transport(
     invoke: Callable[..., Any],
     stub_server: server.StubServer,
     monkeypatch: pytest.MonkeyPatch,
+    traffic: str,
     ending: str,
 ) -> None:
     """Exercise native adapter timers and sockets, including compressed SSE."""
     progress_done = threading.Event()
     release = threading.Event()
     stream_finished = threading.Event()
-    idle_interval = base.TIGHT_LOOP_FLOOR
-    # The producer runs across several native idle intervals. This timer drives
+    # The producer runs across several former idle intervals. This timer drives
     # server output; assertions use protocol phases and socket state, not elapsed
     # durations. Mocking stream() or its clock would bypass aiohttp's total timer.
-    progress_timer = threading.Timer(3 * idle_interval, progress_done.set)
+    progress_timer = threading.Timer(1.5, progress_done.set)
     stream_socket: socket.socket | None = None
     probes: list[tuple[bool, bool]] = []
     keepalives = 0
@@ -179,7 +180,9 @@ def test_event_progress_through_transport(
         assert stream_socket is not None
         if stream_socket.fileno() < 0:
             return True
-        readable, _, _ = select.select([stream_socket], [], [], 0)
+        # Wait for the peer FIN/RST instead of racing its network delivery.
+        # This is a deadlock watchdog, not an elapsed-time assertion.
+        readable, _, _ = select.select([stream_socket], [], [], 15)
         if not readable:
             return False
         try:
@@ -204,26 +207,28 @@ def test_event_progress_through_transport(
     def frames() -> Iterator[bytes]:
         nonlocal keepalives, sent
         progress_timer.start()
+        yield server.sse_frame({**server.EVENT_INIT, "id": 0})
+        sent = 1
         while not progress_done.is_set() and not release.is_set():
-            yield server.sse_frame(
-                {
-                    **server.EVENT_COMPLETION,
-                    "id": sent,
-                    "type": "stdout",
-                    "data": {"value": "x", "encoding": "ascii"},
-                }
-            )
-            sent += 1
-        if ending == "deadline":
-            # A waiter that renews its overall deadline would reach completion
-            # and return success instead of raising TimeoutError.
-            yield server.sse_frame({**server.EVENT_COMPLETION, "id": sent})
-        elif ending == "keepalive":
-            while not release.is_set():
+            if traffic == "silent":
+                progress_done.wait(15)
+            elif traffic == "ping":
                 keepalives += 1
-                yield b": keepalive\n\n"
-        else:
-            release.wait(15)  # Deadlock watchdog; the server does not send EOF.
+                yield b": ping\n\n"
+            else:
+                yield server.sse_frame(
+                    {
+                        **server.EVENT_COMPLETION,
+                        "id": sent,
+                        "type": "stdout",
+                        "data": {"value": "x", "encoding": "ascii"},
+                    }
+                )
+                sent += 1
+        if ending == "idle":
+            release.wait(15)
+        elif ending != "disconnect" and not release.is_set():
+            yield server.sse_frame({**server.EVENT_COMPLETION, "id": sent})
 
     def route(request: server.Captured, attempts: Any) -> server.Reply:
         nonlocal stream_calls
@@ -233,6 +238,8 @@ def test_event_progress_through_transport(
                 return server.Reply(
                     status=200, content_type="text/event-stream", stream_chunks=frames()
                 )
+            assert ending in ("disconnect", "idle"), "a healthy stream was reconnected"
+            assert request.headers.get("last-event-id") == str(sent - 1)
             return server.Reply(
                 status=200,
                 content_type="text/event-stream",
@@ -252,24 +259,32 @@ def test_event_progress_through_transport(
                     "wait_operation",
                     server.OPERATION_UUID,
                     follow_events=True,
-                    timeout=2 * idle_interval,
+                    timeout=1,
+                    idle_timeout=0.75 if traffic != "silent" else 0,
                 )
-            assert probes == [], "status was requested while payload events progressed"
+            assert probes == [], "status was requested while the SSE stream was open"
             assert peer_closed(), "the expired waiter left its stream open"
         else:
             result = invoke(
-                "wait_operation", server.OPERATION_UUID, follow_events=True, timeout=15
+                "wait_operation",
+                server.OPERATION_UUID,
+                follow_events=True,
+                timeout=15,
+                idle_timeout=0.75 if traffic != "silent" else 0,
             )
             assert str(result.status) == "SUCCESS"
-            assert probes == [(True, True), (True, True)], (
+            expected = [(True, True)] * (2 if ending in ("disconnect", "idle") else 1)
+            assert probes == expected, (
                 "status probes must follow the progress phase and stream closure",
                 probes,
             )
-            if ending == "keepalive":
+            if traffic == "ping":
                 assert keepalives > 0
+        assert stream_calls == (2 if ending in ("disconnect", "idle") else 1)
         assert sent > 0
     finally:
         release.set()
+        progress_done.set()
         progress_timer.cancel()
         try:
             assert stream_finished.wait(15), "server stream did not shut down"
@@ -350,3 +365,17 @@ def test_delayed_status_keeps_original_deadline(
             client.wait_operation(server.OPERATION_UUID, follow_events=True, timeout=1)
     assert deadlines == [101.0, 101.0]
     assert clock.now == 101.0
+
+
+@pytest.mark.parametrize("method", ["wait_operation", "follow_operation_events"])
+@pytest.mark.parametrize("idle_timeout", [-1.0, float("nan"), float("inf")])
+def test_invalid_idle_timeout(
+    invoke: Callable[..., Any], method: str, idle_timeout: float
+) -> None:
+    with pytest.raises(ValueError, match="idle_timeout"):
+        invoke(
+            method,
+            server.OPERATION_UUID,
+            idle_timeout=idle_timeout,
+            collect=method == "follow_operation_events",
+        )

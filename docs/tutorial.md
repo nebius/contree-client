@@ -513,15 +513,21 @@ events or polls image imports, then returns the terminal
 Failed and cancelled responses are returned unchanged. *timeout* covers the
 entire wait.
 
-In all three clients, a completion event is followed by status checks until the
-API returns a terminal status. If no live payload event arrives for 0.5 seconds,
-the waiter closes the event stream before checking status. Payload events reset
-this idle interval; keepalives do not. These checks share the original wait deadline.
+In all three clients, the event stream stays open until completion, EOF, a
+transport error, an inactivity timeout, or the overall deadline. Gaps between payload events, including
+periods with only ping/keepalive frames, do not trigger status checks or
+reconnections. After completion, the waiter polls until the API returns a
+terminal status. All requests share the original wait deadline.
+
+The inactivity timeout defaults to 15 seconds. Any SSE frame, including ping
+comments, renews it. Set `idle_timeout=30.0` in Python, `idleTimeout: 30.0` in
+JavaScript, or `IdleTimeout: &seconds` with a `float64` seconds value in Go.
+The option is available on both wait and follow helpers. Set it to 0 to disable
+the inactivity limit. It never extends the overall deadline.
 
 After terminal status, Python and Go drain retained events using the original
-caller deadline, without the live idle limit. A silent retained connection can
-wait indefinitely if no caller deadline is set. JavaScript's follower stops on
-terminal status without this retained drain, so unread tail events can be missed.
+caller deadline and the same inactivity timeout. JavaScript's follower stops on terminal status without this
+retained drain, so unread tail events can be missed.
 
 JavaScript's `waitOperation()` uses the same selection with `followEvents: null`
 by default. Set `followEvents` to `true` or `false` to force events or polling.

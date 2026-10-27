@@ -958,6 +958,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import platform
 import sys
 import time
@@ -1370,21 +1371,25 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         *,
         timeout: float | None = None,
         follow_events: bool | None = None,
+        idle_timeout: float = 15.0,
     ) -> OperationResponse:
         """Wait for the terminal operation response.
 
         ``follow_events=None`` follows instance events and polls image imports
         every 0.5 seconds. Use ``True`` to force events or ``False`` to force
-        polling. After 0.5 seconds without a live payload event, close the
-        stream before checking status. Keepalives do not reset this interval.
-        Retained reads use the overall timeout, without the live idle limit.
-        Without a timeout, a silent retained connection can wait indefinitely.
+        polling. Keep the event stream open until completion, EOF, a transport
+        error, or a timeout. ``idle_timeout`` is the maximum gap between
+        incoming data chunks in seconds (default 15.0; 0 disables it).
+        Ping/keepalive traffic resets this limit; it does not extend the
+        overall timeout. Gaps between payload events do not trigger checks.
         After completion, poll until the status is terminal.
         Return failed and cancelled responses unchanged.
         ``timeout`` covers the entire wait and raises :class:`TimeoutError`
         on expiry. Sync buffered reads can delay the exception until the
         response ends.
         """
+        if not math.isfinite(idle_timeout) or idle_timeout < 0:
+            raise ValueError("idle_timeout must be finite and non-negative")
         deadline = None if timeout is None else time.monotonic() + timeout
         timeout_message = f"operation {operation_id} did not complete within {timeout}s"
         try:
@@ -1397,7 +1402,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                     None if deadline is None else max(0.0, deadline - time.monotonic())
                 )
                 for event in self.follow_operation_events(
-                    operation_id, timeout=remaining, _idle_timeout=TIGHT_LOOP_FLOOR
+                    operation_id, timeout=remaining, idle_timeout=idle_timeout
                 ):
                     self.log.debug(
                         "wait_operation: event %s %s", event.id, event.type
@@ -1430,7 +1435,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         spid: int | None = None,
         since: int | None = None,
         timeout: float | None = None,
-        _idle_timeout: float | None = None,
+        idle_timeout: float = 15.0,
     ) -> Iterator[OperationEvent]:
         """Stream operation events with transparent reconnection.
 
@@ -1446,9 +1451,12 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         The timeout is an absolute deadline checked whenever iteration
         resumes. Caller code between events is not interrupted. A
         synchronous native read can delay ``TimeoutError`` until it
-        returns. Retained reads have no live idle limit. Without a timeout,
-        a silent retained connection can wait indefinitely.
+        returns. ``idle_timeout`` bounds gaps between incoming data in seconds
+        (default 15.0; 0 disables it). Ping/keepalive traffic resets this
+        limit without extending the overall timeout.
         """
+        if not math.isfinite(idle_timeout) or idle_timeout < 0:
+            raise ValueError("idle_timeout must be finite and non-negative")
         last_id = last_event_id
         terminal = False
         drain_attempts = 0
@@ -1476,7 +1484,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                     since=since,
                     last_event_id=last_id,
                     deadline=deadline,
-                    _idle_timeout=None if terminal else _idle_timeout,
+                    idle_timeout=idle_timeout,
                 )) as source:
                     for event in source:
                         last_id = event.id
@@ -1484,9 +1492,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                         if event.type == "completion":
                             return
                         check_deadline()
-            except (APIConnectionError, APIStatusError, TimeoutError) as exc:
-                if isinstance(exc, TimeoutError) and _idle_timeout is None:
-                    raise
+            except (APIConnectionError, APIStatusError) as exc:
                 check_deadline()
                 retryable = not isinstance(exc, APIStatusError) or (
                     policy.retryable_status(exc.status)
@@ -1787,20 +1793,24 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         *,
         timeout: float | None = None,
         follow_events: bool | None = None,
+        idle_timeout: float = 15.0,
     ) -> OperationResponse:
         """Wait for the terminal operation response.
 
         ``follow_events=None`` follows instance events and polls image imports
         every 0.5 seconds. Use ``True`` to force events or ``False`` to force
-        polling. After 0.5 seconds without a live payload event, close the
-        stream before checking status. Keepalives do not reset this interval.
-        Retained reads use the overall timeout, without the live idle limit.
-        Without a timeout, a silent retained connection can wait indefinitely.
+        polling. Keep the event stream open until completion, EOF, a transport
+        error, or a timeout. ``idle_timeout`` is the maximum gap between
+        incoming data chunks in seconds (default 15.0; 0 disables it).
+        Ping/keepalive traffic resets this limit; it does not extend the
+        overall timeout. Gaps between payload events do not trigger checks.
         After completion, poll until the status is terminal.
         Return failed and cancelled responses unchanged.
         ``timeout`` covers the entire wait and raises :class:`TimeoutError`
         on expiry.
         """
+        if not math.isfinite(idle_timeout) or idle_timeout < 0:
+            raise ValueError("idle_timeout must be finite and non-negative")
         deadline = None if timeout is None else time.monotonic() + timeout
         timeout_message = f"operation {operation_id} did not complete within {timeout}s"
         try:
@@ -1813,7 +1823,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                     None if deadline is None else max(0.0, deadline - time.monotonic())
                 )
                 async for event in self.follow_operation_events(
-                    operation_id, timeout=remaining, _idle_timeout=TIGHT_LOOP_FLOOR
+                    operation_id, timeout=remaining, idle_timeout=idle_timeout
                 ):
                     self.log.debug(
                         "wait_operation: event %s %s", event.id, event.type
@@ -1846,7 +1856,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         spid: int | None = None,
         since: int | None = None,
         timeout: float | None = None,
-        _idle_timeout: float | None = None,
+        idle_timeout: float = 15.0,
     ) -> AsyncGenerator[OperationEvent, None]:
         """Stream operation events with transparent reconnection.
 
@@ -1861,9 +1871,12 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         incomplete event log raises APIConnectionError.
         The timeout is an absolute deadline checked whenever iteration
         resumes. Caller code between events is not interrupted.
-        Retained reads have no live idle limit. Without a timeout,
-        a silent retained connection can wait indefinitely.
+        ``idle_timeout`` bounds gaps between incoming data in seconds
+        (default 15.0; 0 disables it). Ping/keepalive traffic resets this
+        limit without extending the overall timeout.
         """
+        if not math.isfinite(idle_timeout) or idle_timeout < 0:
+            raise ValueError("idle_timeout must be finite and non-negative")
         last_id = last_event_id
         terminal = False
         drain_attempts = 0
@@ -1894,7 +1907,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                         since=since,
                         last_event_id=last_id,
                         deadline=deadline,
-                        _idle_timeout=None if terminal else _idle_timeout,
+                        idle_timeout=idle_timeout,
                     )
                 ) as source:
                     async for event in source:
@@ -1903,9 +1916,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                         if event.type == "completion":
                             return
                         check_deadline()
-            except (APIConnectionError, APIStatusError, TimeoutError) as exc:
-                if isinstance(exc, TimeoutError) and _idle_timeout is None:
-                    raise
+            except (APIConnectionError, APIStatusError) as exc:
                 check_deadline()
                 retryable = not isinstance(exc, APIStatusError) or (
                     policy.retryable_status(exc.status)
@@ -2146,18 +2157,33 @@ def emit_sse_method(operation: OperationDef, async_mode: bool) -> list[str]:
     lines = [
         f"{prefix}def {operation.name}("
         f"{method_signature(operation)}, deadline: float | None = None, "
-        f"_idle_timeout: float | None = None"
+        f"idle_timeout: float = 0.0"
         f") -> {iterator}:",
     ]
     lines.extend(
         op_docstring(
             operation,
-            extra_entries=[("deadline", SSE_DEADLINE_ARG_DOC)],
+            extra_entries=[
+                ("deadline", SSE_DEADLINE_ARG_DOC),
+                (
+                    "idle_timeout",
+                    "seconds without incoming data before a transport timeout; "
+                    "0 disables it",
+                ),
+            ],
         )
     )
     lines.append(
         f"{INDENT}spec = operations.build_{operation.name}("
         f"{render_passthrough(operation)})"
+    )
+    lines.extend(
+        [
+            f"{INDENT}if not math.isfinite(idle_timeout) or idle_timeout < 0:",
+            f'{INDENT * 2}raise ValueError("idle_timeout must be finite "'
+            '"and non-negative")',
+            f"{INDENT}spec.read_timeout = idle_timeout or None",
+        ]
     )
     lines.append(f"{INDENT}spec.deadline = deadline")
     # The absolute monotonic deadline limits client-controlled work.
@@ -2165,16 +2191,8 @@ def emit_sse_method(operation: OperationDef, async_mode: bool) -> list[str]:
     # keepalive streams and resumed iteration.
     lines.append(f"{INDENT}if deadline is not None:")
     lines.append(
-        f"{INDENT * 2}spec.read_timeout = max(0.0, deadline - time.monotonic())"
-    )
-    lines.extend(
-        [
-            f"{INDENT}def reset_idle_deadline() -> None:",
-            f"{INDENT * 2}if _idle_timeout is not None:",
-            f"{INDENT * 3}spec.idle_deadline = time.monotonic() + _idle_timeout",
-            f"{INDENT * 3}spec.read_timeout = _idle_timeout",
-            f"{INDENT}reset_idle_deadline()",
-        ]
+        f"{INDENT * 2}spec.read_timeout = min(spec.read_timeout or math.inf, "
+        f"max(0.0, deadline - time.monotonic()))"
     )
     lines.append(f"{INDENT}self.log_request(spec)")
     lines.append(f"{INDENT}parser = SSEParser()")
@@ -2203,7 +2221,6 @@ def emit_sse_method(operation: OperationDef, async_mode: bool) -> list[str]:
     lines.append(f"{base + INDENT}if event is None:")
     lines.append(f"{base + INDENT * 2}continue")
     lines.append(f'{base + INDENT}self.log.debug("sse event: %r", event)')
-    lines.append(f"{base + INDENT}reset_idle_deadline()")
     lines.append(f"{base + INDENT}yield event")
     lines.append(
         f"{base + INDENT}if deadline is not None and time.monotonic() >= deadline:"

@@ -150,9 +150,9 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
         with normalize_errors():
             url = self.build_url(spec)
             headers = list(self.build_headers(spec))
-            connect_timeout = remaining_timeout(spec.stream_deadline, self.timeout)
+            connect_timeout = remaining_timeout(spec.deadline, self.timeout)
             read_timeout = remaining_timeout(
-                spec.stream_deadline,
+                spec.deadline,
                 spec.read_timeout
                 if spec.accept == "text/event-stream"
                 else self.timeout,
@@ -205,7 +205,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                         )
                 source = response.content.iter_chunked(CHUNK_SIZE)
                 while True:
-                    timeout = remaining_timeout(spec.stream_deadline, None)
+                    timeout = remaining_timeout(spec.deadline, None)
                     try:
                         if timeout is None:
                             chunk = await anext(source)
@@ -213,7 +213,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                             chunk = await asyncio.wait_for(anext(source), timeout)
                     except StopAsyncIteration:
                         return
-                    remaining_timeout(spec.stream_deadline, None)
+                    remaining_timeout(spec.deadline, None)
                     yield chunk
 
     async def close(self) -> None:

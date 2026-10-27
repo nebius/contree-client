@@ -197,24 +197,9 @@ class RequestSpec:
     # delay expiry until it returns.
     # None uses only the client's configured timeout.
     deadline: float | None = None
-    # SSE only: bound the idle gap between reads. None keeps the
-    # stream open indefinitely (the server sends keepalives); a
-    # deadline-driven follower sets its remaining budget here so a
-    # silent stream cannot outlive the caller's timeout
+    # SSE read inactivity limit. Any incoming data, including ping frames,
+    # renews this budget. None disables it; deadline still bounds the stream.
     read_timeout: float | None = None
-
-    # Reset only when a payload event arrives. Native total-request timers must
-    # use deadline, because their value is fixed when the request starts.
-    idle_deadline: float | None = None
-
-    @property
-    def stream_deadline(self) -> float | None:
-        """The next read must respect both the overall and event-idle limits."""
-        if self.idle_deadline is None:
-            return self.deadline
-        if self.deadline is None:
-            return self.idle_deadline
-        return min(self.deadline, self.idle_deadline)
 
 
 @dataclass

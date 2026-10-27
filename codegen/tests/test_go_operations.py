@@ -336,12 +336,12 @@ def test_rendered_surface_uses_each_response_contract() -> None:
     assert "func (c *Client) StreamArchiveRaw(" in source
     assert "rawStreamResponse(response, acceptStatuses(200))" in source
     assert "response, err := c.doRawStream(ctx, spec)" in source
-    assert "newEventStream(response, acceptAny2xx)" in source
+    assert "c.openEventStream(ctx, spec, acceptAny2xx, idleTimeout)" in source
     assert "func (c *Client) WatchEvents(" in source
     assert ") iter.Seq2[OperationEvent, error] {" in source
     assert "func (c *Client) openWatchEvents(" in source
     assert "return eventSequence(func() (*eventStream, error) {" in source
-    assert source.count("c.doStream(ctx, spec)") == 3
+    assert source.count("c.doStream(ctx, spec)") == 2
 
 
 def test_spawn_instance_reserves_the_plain_options_method_name() -> None:
@@ -411,6 +411,7 @@ _RUNTIME_STUB = r"""
         "iter"
         "net/http"
         "net/url"
+        "time"
     )
 
     type Optional[T any] struct {
@@ -567,7 +568,9 @@ _RUNTIME_STUB = r"""
     func locationResponse(*http.Response, statusPolicy, string) (string, error) {
         return "", nil
     }
-    func newEventStream(*http.Response, statusPolicy) (*eventStream, error) {
+    func (c *Client) openEventStream(
+        context.Context, requestSpec, statusPolicy, time.Duration,
+    ) (*eventStream, error) {
         return nil, nil
     }
     func eventSequence(

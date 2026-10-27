@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"math"
 	"time"
 )
 
@@ -17,6 +18,10 @@ type FollowOperationEventsOptions struct {
 	SPID        *int64
 	Since       *int64
 	LastEventID *int64
+
+	// IdleTimeout is the maximum gap between incoming SSE data in seconds.
+	// Nil uses 15 seconds. Zero disables the limit. Ping frames reset it.
+	IdleTimeout *float64
 }
 
 // operationEventFollower pulls operation events and reconnects interrupted
@@ -25,6 +30,7 @@ type operationEventFollower struct {
 	client      *Client
 	ctx         context.Context
 	operationID string
+	idleTimeout time.Duration
 
 	spid       int64
 	hasSPID    bool
@@ -38,10 +44,6 @@ type operationEventFollower struct {
 	draining      bool
 	drainAttempts int
 	allowDrainEOF bool
-
-	idleTimeout  time.Duration
-	idleTimer    *time.Timer
-	streamCancel context.CancelFunc
 
 	stream   *eventStream
 	event    *OperationEvent
@@ -87,10 +89,19 @@ func (c *Client) newOperationEventFollower(
 	if ctx == nil {
 		return nil, errors.New("contree: context must not be nil")
 	}
+	var idleSeconds *float64
+	if options != nil {
+		idleSeconds = options.IdleTimeout
+	}
+	idleTimeout, err := operationIdleTimeout(idleSeconds)
+	if err != nil {
+		return nil, err
+	}
 	follower := &operationEventFollower{
 		client:      c,
 		ctx:         ctx,
 		operationID: operationID,
+		idleTimeout: idleTimeout,
 	}
 	if options == nil {
 		return follower, nil
@@ -143,9 +154,6 @@ func (f *operationEventFollower) Next() bool {
 		event, streamErr := f.stream.Next()
 		f.captureLastEventID()
 		if event != nil {
-			if f.idleTimer != nil {
-				f.idleTimer.Reset(f.idleTimeout)
-			}
 			f.event = event
 			if event.Type == OperationEventTypeCompletion {
 				f.finish(nil)
@@ -217,12 +225,7 @@ func (f *operationEventFollower) openStream() error {
 		value := f.lastID
 		options.LastEventID = &value
 	}
-	streamContext := f.ctx
-	if f.idleTimeout > 0 && !f.draining {
-		streamContext, f.streamCancel = context.WithCancel(f.ctx)
-		f.idleTimer = time.AfterFunc(f.idleTimeout, f.streamCancel)
-	}
-	stream, err := f.client.openIterOperationEvents(streamContext, f.operationID, options)
+	stream, err := f.client.openIterOperationEvents(f.ctx, f.operationID, options, f.idleTimeout)
 	if err != nil {
 		_ = f.closeStream()
 		return err
@@ -331,11 +334,6 @@ func (c *Client) OperationTerminal(
 }
 
 func (f *operationEventFollower) retryableStreamError(err error) bool {
-	// The waiter cancels only the stream's child context at the idle limit.
-	// The original context still bounds the following status request.
-	if f.idleTimeout > 0 && f.ctx.Err() == nil && errors.Is(err, context.Canceled) {
-		return true
-	}
 	var statusError *APIStatusError
 	if errors.As(err, &statusError) && f.client.retry != nil {
 		return f.client.retry.retryableStatus(statusError.StatusCode)
@@ -366,14 +364,6 @@ func transientOperationProbeError(err error) bool {
 }
 
 func (f *operationEventFollower) closeStream() error {
-	if f.idleTimer != nil {
-		f.idleTimer.Stop()
-		f.idleTimer = nil
-	}
-	if f.streamCancel != nil {
-		f.streamCancel()
-		f.streamCancel = nil
-	}
 	if f.stream == nil {
 		return nil
 	}
@@ -397,6 +387,10 @@ func (f *operationEventFollower) finish(err error) {
 
 // WaitOperationOptions selects how WaitOperation observes completion.
 type WaitOperationOptions struct {
+	// IdleTimeout is the maximum gap between incoming SSE data in seconds.
+	// Nil uses 15 seconds. Zero disables the limit. Ping frames reset it.
+	IdleTimeout *float64
+
 	// FollowEvents defaults to nil: follow instance events and poll image imports.
 	// True forces events; false polls status without opening an event stream.
 	FollowEvents *bool
@@ -406,10 +400,10 @@ type WaitOperationOptions struct {
 // responses unchanged. By default it reads the operation kind, follows instance
 // events, and polls image imports every 500 milliseconds. An unknown kind uses
 // events. Supply at most one options value to select a mode explicitly.
-// After 500 milliseconds without a live payload event, the waiter closes the
-// stream before checking status. Payload events reset this interval; keepalives
-// do not. Retained reads use the context without the live idle limit. Without a
-// context deadline, a silent retained connection can wait indefinitely.
+// The event stream stays open until completion, EOF, a transport error, or
+// context cancellation, or an inactivity timeout. Ping frames keep it open.
+// IdleTimeout defaults to 15 seconds and resets on incoming data, including
+// ping frames. It never extends the overall context deadline.
 // A completion event still requires a terminal status response.
 // The context bounds the entire wait, including status reads and polling delays.
 func (c *Client) WaitOperation(
@@ -425,8 +419,13 @@ func (c *Client) WaitOperation(
 		return zero, errors.New("contree: WaitOperation accepts at most one options value")
 	}
 	var followEvents *bool
+	var idleTimeout *float64
 	if len(options) == 1 {
 		followEvents = options[0].FollowEvents
+		idleTimeout = options[0].IdleTimeout
+	}
+	if _, err := operationIdleTimeout(idleTimeout); err != nil {
+		return zero, err
 	}
 	var result OperationResponse
 	if followEvents == nil || !*followEvents {
@@ -442,12 +441,11 @@ func (c *Client) WaitOperation(
 		useEvents = *followEvents
 	}
 	if useEvents {
-		follower, err := c.newOperationEventFollower(ctx, operationID, nil)
+		follower, err := c.newOperationEventFollower(ctx, operationID, &FollowOperationEventsOptions{IdleTimeout: idleTimeout})
 		if err != nil {
 			return zero, err
 		}
 		defer follower.Close()
-		follower.idleTimeout = operationEventNoProgressDelay
 		for follower.Next() {
 		}
 		if err := follower.Err(); err != nil {
@@ -474,3 +472,19 @@ func (c *Client) WaitOperation(
 }
 
 var _ io.Closer = (*operationEventFollower)(nil)
+
+// operationIdleTimeout converts the public seconds value without overflowing a duration.
+func operationIdleTimeout(seconds *float64) (time.Duration, error) {
+	value := 15.0
+	if seconds != nil {
+		value = *seconds
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value >= float64(math.MaxInt64)/float64(time.Second) {
+		return 0, errors.New("contree: IdleTimeout must be finite, non-negative, and fit in time.Duration")
+	}
+	duration := time.Duration(value * float64(time.Second))
+	if value > 0 && duration == 0 {
+		duration = time.Nanosecond
+	}
+	return duration, nil
+}
