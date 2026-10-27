@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"reflect"
 	"strings"
@@ -86,7 +87,7 @@ func TestWaitOperationLiveEvents(t *testing.T) {
 						defer writers.Done()
 						_, _ = io.WriteString(writer, operationHelperEvent(0, "stdout", `{"value":"x","encoding":"ascii"}`))
 						for range 4 {
-							time.Sleep(time.Second)
+							time.Sleep(400 * time.Millisecond)
 							if _, err := io.WriteString(writer, ": ping\n\n"); err != nil {
 								return
 							}
@@ -99,7 +100,7 @@ func TestWaitOperationLiveEvents(t *testing.T) {
 							_ = writer.Close()
 						case "deadline":
 							for {
-								time.Sleep(time.Second)
+								time.Sleep(400 * time.Millisecond)
 								if _, err := io.WriteString(writer, ": ping\n\n"); err != nil {
 									return
 								}
@@ -109,7 +110,8 @@ func TestWaitOperationLiveEvents(t *testing.T) {
 					return operationHelperResponse(request, 200, body), nil
 				})
 				yes := true
-				result, err := client.WaitOperation(ctx, operationHelperID, WaitOperationOptions{FollowEvents: &yes})
+				idleTimeout := 0.75
+				result, err := client.WaitOperation(ctx, operationHelperID, WaitOperationOptions{FollowEvents: &yes, IdleTimeout: &idleTimeout})
 				want := []string{"events"}
 				if ending == "deadline" {
 					if !errors.Is(err, context.DeadlineExceeded) {
@@ -207,6 +209,101 @@ func TestWaitOperationDelayedRetainedEvents(t *testing.T) {
 					t.Fatalf("result = %#v, retained requests = %d", result, retainedRequests)
 				}
 			})
+		})
+	}
+}
+
+func TestWaitOperationIdleTimeout(t *testing.T) {
+	for _, value := range []float64{-1, 0.75, 0} {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var seconds *float64
+				duration := 15 * time.Second
+				if value >= 0 {
+					seconds = &value
+					duration = time.Duration(value * float64(time.Second))
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				var writers sync.WaitGroup
+				defer func() { cancel(); writers.Wait() }()
+				var body *operationHelperBody
+				var calls []string
+				var lastFrame time.Time
+				client := newOperationHelperClient(t, func(request *http.Request) (*http.Response, error) {
+					if body != nil && !body.closed.Load() {
+						t.Fatal("status probe preceded stream closure")
+					}
+					if !strings.HasSuffix(request.URL.Path, "/events") {
+						calls = append(calls, "status")
+						if duration > 0 && time.Since(lastFrame) != duration {
+							t.Fatalf("idle gap = %v, want %v", time.Since(lastFrame), duration)
+						}
+						return operationHelperJSONResponse(request, 200, `{"status":"SUCCESS"}`), nil
+					}
+					calls = append(calls, "events")
+					if len(calls) > 1 {
+						if request.Header.Get("Last-Event-Id") != "0" {
+							t.Fatalf("lost cursor: %v", request.Header)
+						}
+						return operationHelperJSONResponse(request, 200, operationHelperEvent(1, "completion", `{"status":"SUCCESS","duration_ms":1}`)), nil
+					}
+					reader, writer := io.Pipe()
+					body = &operationHelperBody{Reader: reader}
+					go func() { <-request.Context().Done(); _ = writer.CloseWithError(request.Context().Err()) }()
+					writers.Add(1)
+					go func() {
+						defer writers.Done()
+						_, _ = io.WriteString(writer, operationHelperEvent(0, "stdout", `{"value":"x","encoding":"ascii"}`))
+						gap := duration - time.Millisecond
+						if duration == 0 {
+							gap = 20 * time.Second
+						}
+						for _, frame := range []string{": ping\n\n", "\n\n"} {
+							time.Sleep(gap)
+							lastFrame = time.Now()
+							if _, err := io.WriteString(writer, frame); err != nil {
+								return
+							}
+						}
+						if duration == 0 {
+							_, _ = io.WriteString(writer, operationHelperEvent(1, "completion", `{"status":"SUCCESS","duration_ms":1}`))
+						}
+					}()
+					return operationHelperResponse(request, 200, body), nil
+				})
+				yes := true
+				result, err := client.WaitOperation(ctx, operationHelperID, WaitOperationOptions{FollowEvents: &yes, IdleTimeout: seconds})
+				requireMock(t, err)
+				if status, _ := result.Status.Value(); status != OperationStatusSuccess {
+					t.Fatalf("result = %#v", result)
+				}
+				want := []string{"events", "status", "events", "status"}
+				if duration == 0 {
+					want = []string{"events", "status"}
+				}
+				if !reflect.DeepEqual(calls, want) {
+					t.Fatalf("calls = %v, want %v", calls, want)
+				}
+			})
+		})
+	}
+}
+
+func TestOperationInvalidIdleTimeout(t *testing.T) {
+	for _, value := range []float64{-1, math.NaN(), math.Inf(1), math.MaxFloat64} {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			client := newOperationHelperClient(t, func(*http.Request) (*http.Response, error) {
+				t.Fatal("unexpected request")
+				return nil, nil
+			})
+			if _, err := client.WaitOperation(context.Background(), operationHelperID, WaitOperationOptions{IdleTimeout: &value}); err == nil {
+				t.Fatal("wait accepted invalid timeout")
+			}
+			for _, err := range client.FollowOperationEvents(context.Background(), operationHelperID, &FollowOperationEventsOptions{IdleTimeout: &value}) {
+				if err == nil {
+					t.Fatal("follow accepted invalid timeout")
+				}
+			}
 		})
 	}
 }

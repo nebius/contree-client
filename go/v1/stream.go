@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const maxSSEFrameBytes = 4 << 20
@@ -247,3 +248,66 @@ func (s *eventStream) resetFrame() {
 
 var _ error = (*SSEError)(nil)
 var _ io.Closer = (*eventStream)(nil)
+
+// streamIdleError distinguishes a stalled connection from caller cancellation.
+type streamIdleError struct{}
+
+func (*streamIdleError) Error() string   { return "SSE stream inactivity timeout" }
+func (*streamIdleError) Timeout() bool   { return true }
+func (*streamIdleError) Temporary() bool { return true }
+
+var errStreamIdle = &streamIdleError{}
+
+// idleStreamBody times each transport read before gzip and SSE decoding.
+// A ping or any other bytes complete a read and renew the inactivity budget.
+// No timer runs while the consumer processes a yielded event.
+type idleStreamBody struct {
+	io.ReadCloser
+	ctx     context.Context
+	cancel  context.CancelCauseFunc
+	timeout time.Duration
+}
+
+func (b *idleStreamBody) Read(data []byte) (int, error) {
+	timer := time.AfterFunc(b.timeout, func() { b.cancel(errStreamIdle) })
+	defer timer.Stop()
+	n, err := b.ReadCloser.Read(data)
+	if errors.Is(context.Cause(b.ctx), errStreamIdle) {
+		return n, errStreamIdle
+	}
+	return n, err
+}
+
+func (b *idleStreamBody) Close() error {
+	b.cancel(nil)
+	return b.ReadCloser.Close()
+}
+
+func (c *Client) openEventStream(ctx context.Context, spec requestSpec, policy statusPolicy, idleTimeout time.Duration) (*eventStream, error) {
+	if idleTimeout == 0 {
+		response, err := c.doStream(ctx, spec)
+		if err != nil {
+			return nil, err
+		}
+		return newEventStream(response, policy)
+	}
+	streamContext, cancel := context.WithCancelCause(ctx)
+	timer := time.AfterFunc(idleTimeout, func() { cancel(errStreamIdle) })
+	response, err := c.doStream(streamContext, spec)
+	timer.Stop()
+	if err != nil {
+		if errors.Is(context.Cause(streamContext), errStreamIdle) {
+			err = &APIConnectionError{Err: errStreamIdle, TimedOut: true}
+		}
+		cancel(nil)
+		return nil, err
+	}
+	if response != nil && response.Body != nil {
+		response.Body = &idleStreamBody{ReadCloser: response.Body, ctx: streamContext, cancel: cancel, timeout: idleTimeout}
+	}
+	stream, err := newEventStream(response, policy)
+	if err != nil {
+		cancel(nil)
+	}
+	return stream, err
+}

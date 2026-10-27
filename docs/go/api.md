@@ -205,10 +205,15 @@ kinds use events. A context deadline bounds the entire wait.
 
 After a completion event, it polls until the API returns a terminal status.
 The event stream stays open until completion, EOF, a transport error, or context
-cancellation. Gaps between payload events, including periods with only
-ping/keepalive frames, do not trigger status checks or reconnections.
-Live and retained reads use the original context. Without a context deadline,
-a silent connection can wait indefinitely.
+cancellation or an inactivity timeout. Gaps between payload events, including
+periods with only ping/keepalive frames, do not trigger status checks or
+reconnections.
+Live and retained reads use the original context. `WaitOperationOptions` and
+`FollowOperationEventsOptions` accept `IdleTimeout`, a `*float64` value in
+seconds. Nil uses 15 seconds; zero disables the limit. Any incoming SSE frame,
+including ping comments, renews this limit without extending the context
+deadline. When it expires, the client closes the stream before probing status
+and reconnecting.
 
 To force polling for any operation:
 

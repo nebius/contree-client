@@ -407,10 +407,12 @@ event data and corrupt compressed bodies, propagate without retry.
 
 After observing terminal status, the Python follower reads the retained log
 with `follow=False`, preserving the cursor, filters, and original deadline.
-Live and retained streams use the caller's overall timeout. Gaps between payload
-events, including periods with only ping/keepalive frames, do not trigger status
-checks or reconnections. Without a caller timeout, a silent connection can wait
-indefinitely.
+Live and retained streams use the caller's overall timeout. Both `wait_operation`
+and `follow_operation_events` accept `idle_timeout`, a float in seconds with a
+15.0 default. Any incoming SSE frame, including ping/keepalive comments, renews
+this inactivity limit. Set it to 0 to disable the limit. When it expires, the
+client closes the stream before checking status and reconnecting. It never
+extends the overall timeout.
 An interrupted read resumes from the last received event id. These drain
 attempts use the configured `RetryPolicy` statuses, delays, and `max_attempts`,
 or three attempts with the default delays when no policy is configured.

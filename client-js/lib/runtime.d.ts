@@ -30,6 +30,8 @@ export interface RequestSpec {
   redirect?: "manual" | "follow";
   /** absolute deadline in monotonic seconds; bounds transport waits */
   deadline?: number | null;
+  /** SSE read inactivity limit in seconds; null disables it */
+  readTimeout?: number | null;
 }
 
 export declare function retryDelays(delays?: number[]): Generator<number>;

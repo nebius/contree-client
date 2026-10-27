@@ -293,7 +293,8 @@ def test_stream_and_pagination_options_use_camel_case() -> None:
     assert "{ pageSize = 100, limit = null, ...filters }" in source
     assert "const page = response.resultItems ?? [];" in source
     assert (
-        "{ lastEventId = null, spid = null, since = null, timeout = null }"
+        "{ lastEventId = null, spid = null, since = null, "
+        "timeout = null, idleTimeout = 15 }"
     ) in source
     assert "lastEventId: lastId" in source
     declarations = render_client_dts(ir)

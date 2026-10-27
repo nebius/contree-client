@@ -91,10 +91,11 @@ terminal status, it reads retained events without follow mode. An unfiltered
 stream must include a completion event; a filtered or resumed stream can end
 without one. Incomplete retained reads use the configured retry limit, or three
 attempts when request retries are disabled. The context bounds all attempts.
-Live and retained streams use the original context. Gaps between payload events,
-including periods with only ping/keepalive frames, do not trigger status checks
-or reconnections. Without a context deadline, a silent connection can wait
-indefinitely.
+Live and retained streams use the original context. Both wait and follow options
+accept `IdleTimeout`, a `*float64` seconds value. Nil uses 15 seconds; zero
+disables the limit. Any SSE frame, including ping comments, renews this inactivity
+limit without extending the context deadline. A timeout closes the stream before
+status checks and reconnection.
 
 `WaitOperation` automatically follows instance events or polls image imports.
 Use `WaitOperationOptions.FollowEvents` to force events or polling. Failed and

@@ -711,7 +711,8 @@ class _OperationRenderer:
         lines.extend(
             _function_signature(
                 f"func (c *Client) {method_name}",
-                self.parameters(context=True),
+                self.parameters(context=True)
+                + (["idleTimeout time.Duration"] if event_opener else []),
                 result,
             )
         )
@@ -732,6 +733,17 @@ class _OperationRenderer:
                     "}",
                     f"return c.doJSON[{result_type}](ctx, spec, "
                     f"{self.response_policy()}{path})",
+                )
+            )
+            lines.extend(_indent(body))
+            lines.append("}")
+            return "\n".join(lines)
+        if event_opener:
+            body.extend(
+                (
+                    "}",
+                    f"return c.openEventStream(ctx, spec, "
+                    f"{self.response_policy()}, idleTimeout)",
                 )
             )
             lines.extend(_indent(body))
@@ -782,7 +794,7 @@ class _OperationRenderer:
         lines.extend(
             (
                 "\treturn eventSequence(func() (*eventStream, error) {",
-                f"\t\treturn c.open{self.method_name}({arguments})",
+                f"\t\treturn c.open{self.method_name}({arguments}, 0)",
                 "\t})",
                 "}",
             )

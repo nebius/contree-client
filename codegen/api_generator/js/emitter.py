@@ -819,13 +819,15 @@ def option_ts_entries(op: OperationDef) -> str:
     return " ".join(entries)
 
 
-def ts_params(op: OperationDef) -> str:
+def ts_params(op: OperationDef, *, stream_options: bool = False) -> str:
     parts = [
         f"{js_arg(argument.name)}: {argument_ts_type(argument)}"
         for argument in op.arguments
         if argument.required
     ]
     entries = option_ts_entries(op)
+    if stream_options:
+        entries += " deadline?: number | null; idleTimeout?: number;"
     if entries:
         parts.append(f"options?: {{ {entries} }}")
     return ", ".join(parts)
@@ -1214,17 +1216,16 @@ export class ContreeClient {{
     const deadline = spec.deadline ?? null; // monotonic seconds
     // the budget for the next transport wait: downloads use the
     // client timeout as an idle cap, bounded by the caller's absolute
-    // deadline; SSE is unbounded unless the caller set a deadline.
+    // deadline. SSE uses its configured inactivity limit instead.
     // Keepalive frames re-enter abortIn with a shrinking remainder, so
     // the bound stays absolute while the server keeps the stream warm.
     const nextBudget = () => {{
       const remaining = deadline === null ? null : deadline - monotonic();
-      if (sse || this.timeout === null) {{
+      const maximum = sse ? (spec.readTimeout ?? null) : this.timeout;
+      if (maximum === null) {{
         return remaining;
       }}
-      return remaining === null
-        ? this.timeout
-        : Math.min(this.timeout, remaining);
+      return remaining === null ? maximum : Math.min(maximum, remaining);
     }};
     const connectBudget = () => {{
       const remaining = deadline === null ? null : deadline - monotonic();
@@ -1314,6 +1315,11 @@ export class ContreeClient {{
         }}
         yield value;
       }}
+    }} catch (error) {{
+      if (spec.readTimeout != null && controller.signal.reason?.name === "TimeoutError") {{
+        throw controller.signal.reason;
+      }}
+      throw error;
     }} finally {{
       disarm();
       try {{
@@ -1371,8 +1377,11 @@ export class ContreeClient {{
   /** Wait using instance events or import status polling by default. */
   async waitOperation(
     operationId,
-    {{ timeout = null, followEvents = null }} = {{}},
+    {{ timeout = null, followEvents = null, idleTimeout = 15 }} = {{}},
   ) {{
+    if (!Number.isFinite(idleTimeout) || idleTimeout < 0) {{
+      throw new RangeError("idleTimeout must be finite and non-negative");
+    }}
     const deadline = timeout === null ? null : monotonic() + timeout;
     const readStatus = async () => {{
       const spec = operations.buildGetOperationStatus(operationId);
@@ -1403,7 +1412,7 @@ export class ContreeClient {{
     }}
     if (followEvents) {{
       const remaining = deadline === null ? null : Math.max(0, deadline - monotonic());
-      for await (const event of this.followOperationEvents(operationId, {{ timeout: remaining }})) {{
+      for await (const event of this.followOperationEvents(operationId, {{ timeout: remaining, idleTimeout }})) {{
         void event;
       }}
       result = await readStatus();
@@ -1426,9 +1435,12 @@ export class ContreeClient {{
    * reconnect from the last event id. */
   async *followOperationEvents(
     operationId,
-    {{ lastEventId = null, spid = null, since = null, timeout = null }} = {{}},
+    {{ lastEventId = null, spid = null, since = null, timeout = null, idleTimeout = 15 }} = {{}},
   ) {{
     let lastId = lastEventId;
+    if (!Number.isFinite(idleTimeout) || idleTimeout < 0) {{
+      throw new RangeError("idleTimeout must be finite and non-negative");
+    }}
     const deadline = timeout === null ? null : monotonic() + timeout;
     const checkDeadline = () => {{
       if (deadline !== null && monotonic() >= deadline) {{
@@ -1448,6 +1460,7 @@ export class ContreeClient {{
           since,
           lastEventId: lastId,
           deadline,
+          idleTimeout,
         }})) {{
           lastId = event.id;
           yield event;
@@ -1618,6 +1631,11 @@ def render_client_method(op: OperationDef) -> list[str]:
             f"    if (options.deadline != null) {{{{\n"
             f"      spec.deadline = options.deadline;\n"
             f"    }}}}\n"
+            f"    const idleTimeout = options.idleTimeout ?? 0;\n"
+            f"    if (!Number.isFinite(idleTimeout) || idleTimeout < 0) {{\n"
+            f'      throw new RangeError("idleTimeout must be finite and non-negative");\n'
+            f"    }}\n"
+            f"    spec.readTimeout = idleTimeout || null;\n"
             f"    const parser = new SSEParser();\n"
             f"    let lastSeen = options.{camel(resume_argument)} ?? null;\n"
             f"    for await (const chunk of this.stream(spec)) {{\n"
@@ -1661,7 +1679,7 @@ def render_client_js(ir: SpecIR) -> str:
 
 def client_method_dts(op: OperationDef) -> list[str]:
     name = camel(op.name)
-    params = ts_params(op)
+    params = ts_params(op, stream_options=op.response.mode is ResponseMode.SSE)
     lines: list[str] = []
     mode = op.response.mode
     if mode not in (ResponseMode.SSE, ResponseMode.BYTE_STREAM):
@@ -1741,7 +1759,7 @@ export declare class ContreeClient {
   operationTerminal(operationId: string): Promise<boolean>;
   waitOperation(
     operationId: string,
-    options?: { timeout?: number | null; followEvents?: boolean | null },
+    options?: { timeout?: number | null; followEvents?: boolean | null; idleTimeout?: number },
   ): Promise<OperationResponse>;
   followOperationEvents(
     operationId: string,
@@ -1750,6 +1768,7 @@ export declare class ContreeClient {
       spid?: number | null;
       since?: number | null;
       timeout?: number | null;
+      idleTimeout?: number;
     },
   ): AsyncGenerator<OperationEvent>;
   resolveImage(ref: string): Promise<string>;
@@ -1993,6 +2012,8 @@ REFERENCE_HELPERS_RST = """\
    :param options.timeout: ``number | null`` — bounds the whole wait
       in seconds, idle streams included; expiry rejects with a
       ``TimeoutError`` ``DOMException``.
+   :param options.idleTimeout: ``number`` — seconds without incoming data before
+      reconnecting; default 15. Ping frames reset it. Set 0 to disable it.
    :returns: ``Promise<OperationResponse>``
 
 .. js:method:: ContreeClient.followOperationEvents(operationId, options?)
@@ -2009,6 +2030,8 @@ REFERENCE_HELPERS_RST = """\
    :param options.since: ``number | null``
    :param options.timeout: ``number | null`` — overall deadline in
       seconds; expiry throws a ``TimeoutError`` ``DOMException``.
+   :param options.idleTimeout: ``number`` — seconds without incoming data before
+      reconnecting; default 15. Ping frames reset it. Set 0 to disable it.
    :returns: ``AsyncGenerator<OperationEvent>``
 
 .. js:method:: ContreeClient.resolveImage(ref)

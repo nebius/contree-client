@@ -197,10 +197,8 @@ class RequestSpec:
     # delay expiry until it returns.
     # None uses only the client's configured timeout.
     deadline: float | None = None
-    # SSE only: bound the idle gap between reads. None keeps the
-    # stream open indefinitely (the server sends keepalives); a
-    # deadline-driven follower sets its remaining budget here so a
-    # silent stream cannot outlive the caller's timeout
+    # SSE read inactivity limit. Any incoming data, including ping frames,
+    # renews this budget. None disables it; deadline still bounds the stream.
     read_timeout: float | None = None
 
 

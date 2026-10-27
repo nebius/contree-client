@@ -9,6 +9,7 @@ import (
 	"iter"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // ListImagesOptions contains optional arguments for ListImages.
@@ -621,7 +622,7 @@ func (c *Client) IterOperationEvents(
 	options *IterOperationEventsOptions,
 ) iter.Seq2[OperationEvent, error] {
 	return eventSequence(func() (*eventStream, error) {
-		return c.openIterOperationEvents(ctx, operationID, options)
+		return c.openIterOperationEvents(ctx, operationID, options, 0)
 	})
 }
 
@@ -630,18 +631,14 @@ func (c *Client) openIterOperationEvents(
 	ctx context.Context,
 	operationID string,
 	options *IterOperationEventsOptions,
+	idleTimeout time.Duration,
 ) (*eventStream, error) {
 	spec, err := buildIterOperationEvents(operationID, options)
 	if err != nil {
 		var zero *eventStream
 		return zero, err
 	}
-	response, err := c.doStream(ctx, spec)
-	if err != nil {
-		var zero *eventStream
-		return zero, err
-	}
-	return newEventStream(response, acceptAny2xx)
+	return c.openEventStream(ctx, spec, acceptAny2xx, idleTimeout)
 }
 
 // OperationSubprocessCreateOptions contains optional arguments for OperationSubprocessCreate.

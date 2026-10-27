@@ -152,7 +152,7 @@ def test_disconnected_events_release_single_connection(
         for traffic in ("payload", "ping", "silent")
         for ending in ("completion", "deadline")
     ]
-    + [("ping", "disconnect")],
+    + [("ping", "disconnect"), ("ping", "idle")],
 )
 def test_event_progress_through_transport(
     invoke: Callable[..., Any],
@@ -223,7 +223,9 @@ def test_event_progress_through_transport(
                     }
                 )
                 sent += 1
-        if ending != "disconnect" and not release.is_set():
+        if ending == "idle":
+            release.wait(15)
+        elif ending != "disconnect" and not release.is_set():
             yield server.sse_frame({**server.EVENT_COMPLETION, "id": sent})
 
     def route(request: server.Captured, attempts: Any) -> server.Reply:
@@ -234,7 +236,7 @@ def test_event_progress_through_transport(
                 return server.Reply(
                     status=200, content_type="text/event-stream", stream_chunks=frames()
                 )
-            assert ending == "disconnect", "a healthy stream was reconnected"
+            assert ending in ("disconnect", "idle"), "a healthy stream was reconnected"
             assert request.headers.get("last-event-id") == str(sent - 1)
             return server.Reply(
                 status=200,
@@ -256,22 +258,27 @@ def test_event_progress_through_transport(
                     server.OPERATION_UUID,
                     follow_events=True,
                     timeout=1,
+                    idle_timeout=0.75 if traffic != "silent" else 0,
                 )
             assert probes == [], "status was requested while the SSE stream was open"
             assert peer_closed(), "the expired waiter left its stream open"
         else:
             result = invoke(
-                "wait_operation", server.OPERATION_UUID, follow_events=True, timeout=15
+                "wait_operation",
+                server.OPERATION_UUID,
+                follow_events=True,
+                timeout=15,
+                idle_timeout=0.75 if traffic != "silent" else 0,
             )
             assert str(result.status) == "SUCCESS"
-            expected = [(True, True)] * (2 if ending == "disconnect" else 1)
+            expected = [(True, True)] * (2 if ending in ("disconnect", "idle") else 1)
             assert probes == expected, (
                 "status probes must follow the progress phase and stream closure",
                 probes,
             )
             if traffic == "ping":
                 assert keepalives > 0
-        assert stream_calls == (2 if ending == "disconnect" else 1)
+        assert stream_calls == (2 if ending in ("disconnect", "idle") else 1)
         assert sent > 0
     finally:
         release.set()
@@ -356,3 +363,12 @@ def test_delayed_status_keeps_original_deadline(
             client.wait_operation(server.OPERATION_UUID, follow_events=True, timeout=1)
     assert deadlines == [101.0, 101.0]
     assert clock.now == 101.0
+
+
+@pytest.mark.parametrize("method", ["wait_operation", "follow_operation_events"])
+@pytest.mark.parametrize("idle_timeout", [-1.0, float("nan"), float("inf")])
+def test_invalid_idle_timeout(
+    invoke: Callable[..., Any], method: str, idle_timeout: float
+) -> None:
+    with pytest.raises(ValueError, match="idle_timeout"):
+        invoke(method, server.OPERATION_UUID, idle_timeout=idle_timeout)

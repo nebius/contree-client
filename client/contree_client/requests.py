@@ -149,8 +149,7 @@ class ContreeClient(base.ContreeSyncClient):
         url = self.build_url(spec)
         headers = dict(self.build_headers(spec))
         connect_timeout = remaining_timeout(spec.deadline, self.timeout)
-        # only SSE may idle (bounded by spec.read_timeout when a
-        # deadline is set); downloads must time out
+        # SSE uses its inactivity limit; downloads use the client timeout.
         read_timeout = remaining_timeout(
             spec.deadline,
             spec.read_timeout if spec.accept == "text/event-stream" else self.timeout,
