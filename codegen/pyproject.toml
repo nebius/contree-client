@@ -27,6 +27,7 @@ Documentation = "https://docs.tokenfactory.nebius.com/sandboxes/overview"
 dev = [
     "types-pyyaml",
     "ty>=0.0.58",
+    "docutils>=0.21",
 ]
 
 [tool.uv.build-backend]

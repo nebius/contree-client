@@ -76,6 +76,10 @@ documentation build succeeds on `master`. Pull requests build the site as an
 artifact without publishing it. To republish, run the `Tests` workflow manually
 on `master`. The build uses the repository's `CONTREE_SPEC` secret.
 
+`make docs-go` generates the Go reference from the committed package source
+with Go's `go/doc` package. The HTML and Mintlify builds include this step and
+require Go 1.27 or later. It does not require the OpenAPI specification.
+
 The root project is a `uv` workspace containing the generator and Python
 client. JavaScript development requires Node.js and npm. The Go module is in
 `go`, and its `v1` package requires Go 1.27 or later.

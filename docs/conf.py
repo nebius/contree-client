@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import tomllib
+from docutils import nodes
+from sphinx.application import Sphinx
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "client"))
@@ -34,6 +36,7 @@ mintlify_docs_json = {
     "name": "contree-client",
     "theme": "mint",
     "colors": {"primary": "#0d9373"},
+    "logo": {"light": "_static/logo.svg", "dark": "_static/logo.svg"},
 }
 
 source_suffix = {
@@ -67,6 +70,10 @@ myst_enable_extensions = [
 myst_heading_anchors = 3
 
 html_title = "contree-client"
+html_theme = "furo"
+html_static_path = ["_static"]
+html_logo = "_static/logo.svg"
+html_favicon = "_static/logo.svg"
 
 exclude_patterns = ["_build"]
 
@@ -149,5 +156,15 @@ def inject_field_docs(
     lines.append("")
 
 
+def render_mintlify_rubrics(app: Sphinx, doctree: nodes.document, docname: str) -> None:
+    """Keep API subheadings visible in the MDX writer, which lacks rubric support."""
+    if app.builder.name != "mintlify":
+        return
+    for rubric in list(doctree.findall(nodes.rubric)):
+        title = nodes.strong("", "", *rubric.children)
+        rubric.replace_self(nodes.paragraph("", "", title))
+
+
 def setup(app):  # type: ignore[no-untyped-def]
     app.connect("autodoc-process-docstring", inject_field_docs)
+    app.connect("doctree-resolved", render_mintlify_rubrics)

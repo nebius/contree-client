@@ -22,7 +22,7 @@ JS_GENERATED = \
 .PHONY: all generate generate-js generate-go js go lint lint-js lint-go \
     typecheck test test-python test-js test-go \
     test-live test-live-python test-live-js test-live-go \
-    coverage docs docs-mintlify \
+    coverage docs docs-mintlify docs-go \
     docs-view build build-go clean
 
 all: generate generate-js go lint lint-js typecheck test-python test-js
@@ -65,7 +65,7 @@ lint-js: generate-js
 	cd client-js && npx tsc --noEmit
 
 lint-go:
-	@test -z "$$(gofmt -l $(GO_PACKAGE)/*.go)"
+	@test -z "$$(gofmt -l $(GO_ROOT))"
 	cd $(GO_ROOT) && go vet ./...
 
 typecheck:
@@ -111,11 +111,16 @@ coverage: generate
 	    --cov=api_generator --cov=contree_client \
 	    --cov-report=term-missing
 
-docs: generate generate-js
+docs-go:
+	cd $(GO_ROOT) && go run ./internal/docgen -dir ./v1 \
+	    -import-path github.com/nebius/contree-client/go/v1 \
+	    -output ../docs/go/reference.md
+
+docs: generate generate-js docs-go
 	uv run sphinx-build -W -b html docs docs/_build/html
 
 # clean first: the mintlify builder does not remove stale .mdx pages
-docs-mintlify: generate generate-js
+docs-mintlify: generate generate-js docs-go
 	rm -rf docs/_build/mintlify
 	uv run sphinx-build -W -b mintlify docs docs/_build/mintlify
 
@@ -138,4 +143,4 @@ build-go:
 	cd $(GO_ROOT) && go build ./...
 
 clean:
-	rm -rf build dist $(GENERATED) $(JS_GENERATED)
+	rm -rf build dist $(GENERATED) $(JS_GENERATED) docs/go/reference.md

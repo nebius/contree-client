@@ -115,7 +115,7 @@ def wrap_doc_line(raw: str, width: int = 72) -> list[str]:
 def doc_block_lines(text: str, escape: bool = True) -> list[str]:
     """Wrap a description while preserving its original line structure."""
     lines: list[str] = []
-    raw_lines = sanitize_doc(text, escape=escape).strip().splitlines()
+    raw_lines = sanitize_doc(text, escape=False).strip().splitlines()
 
     def literal_block(body: list[str]) -> None:
         if lines and lines[-1]:
@@ -139,7 +139,13 @@ def doc_block_lines(text: str, escape: bool = True) -> list[str]:
             while index < len(raw_lines) and raw_lines[index].lstrip().startswith("|"):
                 table.append(raw_lines[index].strip())
                 index += 1
-            literal_block(table)
+            rendered = markdown_table_lines(table)
+            if rendered:
+                if lines and lines[-1]:
+                    lines.append("")
+                lines.extend(rendered)
+            else:
+                literal_block(table)
             continue
         if raw.lstrip().startswith("```"):
             fence: list[str] = []
@@ -152,8 +158,51 @@ def doc_block_lines(text: str, escape: bool = True) -> list[str]:
             index += 1
             literal_block(fence)
             continue
+        heading = re.fullmatch(r"\s{0,3}#{1,6}\s+(.+?)(?:\s+#+)?\s*", raw)
+        if heading:
+            if lines and lines[-1]:
+                lines.append("")
+            lines.extend([f".. rubric:: {heading.group(1)}", ""])
+            index += 1
+            continue
         lines.extend(wrap_doc_line(raw))
         index += 1
+    return [sanitize_doc(line) for line in lines] if escape else lines
+
+
+def markdown_table_lines(rows: list[str]) -> list[str]:
+    """Convert a Markdown pipe table to a reST list-table."""
+    cells: list[list[str]] = []
+    for row in rows:
+        parts = [""]
+        # Pipes inside literals and escaped pipes belong to the cell.
+        for token in re.findall(r"``[^`]*``|\\.|[^|`\\]+|.", row.strip()):
+            if token == "|":
+                parts.append("")
+            else:
+                parts[-1] += token.replace(r"\|", "|")
+        if row.strip().startswith("|"):
+            parts.pop(0)
+        if row.strip().endswith("|") and not parts[-1].strip():
+            parts.pop()
+        cells.append([part.strip() for part in parts])
+
+    if (
+        len(cells) < 2
+        or not cells[0]
+        or any(len(row) != len(cells[0]) for row in cells)
+        or not all(re.fullmatch(r":?-+:?", cell) for cell in cells[1])
+    ):
+        return []
+
+    lines = [".. list-table::", "   :header-rows: 1", ""]
+    for row in [cells[0], *cells[2:]]:
+        for index, cell in enumerate(row):
+            prefix = "   * - " if index == 0 else "     - "
+            wrapped = wrap_doc_line(cell, width=65)
+            lines.append(prefix + wrapped[0])
+            lines.extend("       " + part for part in wrapped[1:])
+    lines.append("")
     return lines
 
 
