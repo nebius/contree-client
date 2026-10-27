@@ -51,6 +51,9 @@ const (
 )
 
 var ErrClosed = "closed"
+var DefaultClient = Client{secret: "private-default"}
+var ExplicitClient Client = Client{secret: "private-explicit"}
+var PublicDefault = Optional[int]{Value: 42}
 type Alias = Client
 func (c *Client) private() {}
 type hidden struct{}
@@ -87,12 +90,18 @@ func ExampleNewClient() {
 		"// Endpoint is the API URL.", "Endpoint string",
 		"[NewClient](#go-newclient)", "[Client.Run](#go-client-run)",
 		"https://pkg.go.dev/context#Context", "**Example**", "fmt.Println(client.Endpoint)",
+		"var DefaultClient Client\n", "var ExplicitClient Client\n",
+		"var PublicDefault = Optional[int]{Value: 42}",
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Errorf("missing %q", fragment)
 		}
 	}
-	for _, hidden := range []string{"private-implementation", "secret string", "func (c *Client) private", "type hidden", "WrongPlatform"} {
+	for _, hidden := range []string{
+		"private-implementation", "private-default", "private-explicit",
+		"secret string", "func (c *Client) private", "type hidden", "WrongPlatform",
+		"Client{/* contains filtered", "Optional[int]{/* contains filtered",
+	} {
 		if strings.Contains(text, hidden) {
 			t.Errorf("unexpected private declaration %q", hidden)
 		}
@@ -113,6 +122,15 @@ func TestClientReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(page)
+	for _, declaration := range []string{
+		"var OpSpawnInstance Operation[InstanceSpawnResponse]",
+		"var OpOperationSubprocessCreate Operation[int64]",
+		"var OpOperationSubprocessKill Operation[struct{}]",
+	} {
+		if !strings.Contains(text, declaration+"\n") {
+			t.Errorf("missing typed variable declaration %s", declaration)
+		}
+	}
 	for _, name := range []string{
 		"Client", "Client.SpawnInstance", "Client.SpawnInstanceWithResponse",
 		"Client.ListImages", "Client.FollowOperationEvents", "Client.WaitOperation",
