@@ -147,7 +147,8 @@ def test_event_progress_through_transport(
             return False
         try:
             return stream_socket.recv(1, socket.MSG_PEEK) == b""
-        except ConnectionResetError:
+        except (ConnectionResetError, ConnectionAbortedError):
+            # Windows may report a closed connection as WSAECONNABORTED.
             return True
 
     def capture_socket(handler: server.Handler, reply: server.Reply) -> None:
