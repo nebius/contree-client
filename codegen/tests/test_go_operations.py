@@ -568,7 +568,9 @@ _RUNTIME_STUB = r"""
     func locationResponse(*http.Response, statusPolicy, string) (string, error) {
         return "", nil
     }
-    func (c *Client) openEventStream(context.Context, requestSpec, statusPolicy, time.Duration) (*eventStream, error) {
+    func (c *Client) openEventStream(
+        context.Context, requestSpec, statusPolicy, time.Duration,
+    ) (*eventStream, error) {
         return nil, nil
     }
     func eventSequence(
