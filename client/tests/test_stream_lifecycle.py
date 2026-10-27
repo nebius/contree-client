@@ -13,6 +13,7 @@ import importlib
 import io
 import json
 from collections.abc import AsyncIterator, Awaitable
+from contextlib import suppress
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
@@ -234,6 +235,78 @@ def test_httpx_async_stream_recomputes_deadline_before_each_read(
 
     asyncio.run(scenario())
     assert timeouts == [10.0, 6.0]
+
+
+@pytest.mark.parametrize("status", [200, 403])
+@pytest.mark.parametrize("wake_time", [109.999, 110.0])
+def test_httpx_async_deadline_normalizes_legacy_timeout(
+    generated_package: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    wake_time: float,
+) -> None:
+    module = importlib.import_module("contree_client.httpx")
+    runtime = importlib.import_module("contree_client.runtime")
+    clock = FakeClock(100.0)
+    monkeypatch.setattr(runtime, "monotonic", clock.monotonic)
+
+    class LegacyTimeoutError(Exception):
+        """Python 3.10 asyncio timeouts are not built-in TimeoutError instances."""
+
+    expired = LegacyTimeoutError("deadline timer fired")
+
+    async def scenario() -> None:
+        read_started = asyncio.Event()
+        release = asyncio.Event()
+        closed = asyncio.Event()
+
+        class PendingStream(httpx.AsyncByteStream):
+            async def __aiter__(self) -> AsyncIterator[bytes]:
+                read_started.set()
+                await release.wait()
+                yield b"unreachable"
+
+            async def aclose(self) -> None:
+                closed.set()
+
+        async def expire_read(awaitable: Awaitable[bytes], timeout: float) -> bytes:
+            assert timeout == 10.0
+            task = asyncio.ensure_future(awaitable)
+            await read_started.wait()
+            clock.now = wake_time
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+            raise expired
+
+        monkeypatch.setattr(
+            module,
+            "asyncio",
+            SimpleNamespace(wait_for=expire_read, TimeoutError=LegacyTimeoutError),
+        )
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(status, stream=PendingStream())
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as transport:
+            client = module.ContreeAsyncClient("token", httpx_client=transport)
+            source = client.stream(
+                runtime.RequestSpec(method="GET", path="/x", deadline=110.0)
+            )
+            try:
+                with pytest.raises(
+                    TimeoutError, match="request deadline exceeded"
+                ) as caught:
+                    await anext(source)
+                assert caught.value.__cause__ is expired
+                assert closed.is_set()
+            finally:
+                release.set()
+                await source.aclose()
+
+    asyncio.run(scenario())
 
 
 def test_archive_early_aclose_closes_transport_stream(

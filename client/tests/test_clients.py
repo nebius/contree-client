@@ -316,26 +316,17 @@ def test_iter_operation_events(
 
 
 def test_iter_operation_events_gzip_sync_flush_incremental(
-    invoke: Invoke,
+    invoke_before_eof: Invoke,
     stub_server: StubServer,
 ) -> None:
-    """Events must arrive before the stream ends.
-
-    The stub compresses each SSE frame with Z_SYNC_FLUSH and then keeps
-    the connection open; a client that buffers the whole gzip stream
-    (or reads until EOF) hangs for SSE_HANG_SECONDS and fails the
-    elapsed-time assertion.
-    """
-    start = time.monotonic()
-    events = invoke(
+    """Decode Z_SYNC_FLUSH frames while the server withholds EOF."""
+    events = invoke_before_eof(
         "iter_operation_events",
         stub.SLOW_OPERATION_UUID,
         follow=True,
         take=3,
     )
-    elapsed = time.monotonic() - start
     assert [event.type for event in events] == ["init", "spawn", "exit"]
-    assert elapsed < stub.SSE_HANG_SECONDS / 2
 
 
 def test_iter_operation_events_resume_header(
@@ -444,43 +435,31 @@ def test_inspect_image_archive_compressed_keeps_gzip(
 
 
 def test_inspect_image_archive_delivered_incrementally(
-    invoke: Invoke,
+    invoke_before_eof: Invoke,
     stub_server: StubServer,
 ) -> None:
-    """The archive must be a real stream, not a buffered body.
-
-    The slow route emits all chunks and then keeps the connection open
-    for SSE_HANG_SECONDS; taking the first chunk must not wait for
-    EOF. Closing the iterator early also exercises per-backend
-    connection cleanup.
-    """
-    start = time.monotonic()
-    chunks = invoke(
+    """Read an archive chunk and close the iterator before the server sends EOF."""
+    chunks = invoke_before_eof(
         "inspect_image_archive",
         stub.SLOW_IMAGE_UUID,
         "/etc",
         take=1,
     )
-    elapsed = time.monotonic() - start
     assert chunks and chunks[0]
-    assert elapsed < stub.SSE_HANG_SECONDS / 2
 
 
 def test_inspect_image_archive_compressed_is_incremental_too(
-    invoke: Invoke,
+    invoke_before_eof: Invoke,
     stub_server: StubServer,
 ) -> None:
-    start = time.monotonic()
-    chunks = invoke(
+    chunks = invoke_before_eof(
         "inspect_image_archive",
         stub.SLOW_IMAGE_UUID,
         "/etc",
         compressed=True,
         take=1,
     )
-    elapsed = time.monotonic() - start
     assert chunks and chunks[0]
-    assert elapsed < stub.SSE_HANG_SECONDS / 2
 
 
 def test_inspect_image_download_stream_matches_content(

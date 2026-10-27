@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import importlib
 import sys
+import threading
+from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -17,6 +20,7 @@ CLIENT_ROOT = Path(__file__).resolve().parent.parent
 if str(CLIENT_ROOT) not in sys.path:
     sys.path.insert(0, str(CLIENT_ROOT))
 
+from tests import stub_server as stub  # noqa: E402
 from tests.stub_server import StubServer  # noqa: E402
 
 TOKEN = "test-token"
@@ -166,6 +170,36 @@ def invoke(
     backend: str = request.param
     base_url = stub_server.base_url
     return make_invoke(backend, lambda: make_client(backend, base_url))
+
+
+@pytest.fixture
+def invoke_before_eof(
+    invoke: Callable[..., Any], monkeypatch: pytest.MonkeyPatch
+) -> Callable[..., Any]:
+    """Require streamed results while the server waits for an explicit EOF release."""
+    route = stub.route
+
+    def call(method: str, *args: Any, **kwargs: Any) -> Any:
+        release = threading.Event()
+
+        def gated_route(request: stub.Captured, attempts: Counter[str]) -> stub.Reply:
+            reply = route(request, attempts)
+            if reply.stream_chunks is not None:
+                reply.hang = 0.0
+                reply.stream_release = release
+            return reply
+
+        monkeypatch.setattr(stub, "route", gated_route)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            result = executor.submit(invoke, method, *args, **kwargs)
+            try:
+                # Only a deadlock watchdog: correctness depends on EOF staying
+                # blocked until the requested data reaches the consumer.
+                return result.result(timeout=15)
+            finally:
+                release.set()
+
+    return call
 
 
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)

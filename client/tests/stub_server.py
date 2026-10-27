@@ -289,6 +289,8 @@ class Reply:
     # real API behaviour
     stream_chunks: list[bytes] | None = None
     hang: float = 0.0
+    # Tests can hold EOF until the consumer has received streamed data.
+    stream_release: threading.Event | None = None
     # simulate a peer dying mid-transfer: the gzip trailer never comes
     truncate_gzip: bool = False
     # Valid HTTP framing with an invalid gzip body.
@@ -865,6 +867,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.write_chunk(chunk)
                 self.wfile.flush()
                 time.sleep(0.01)
+            if reply.stream_release is not None:
+                reply.stream_release.wait()
             if reply.hang:
                 time.sleep(reply.hang)
             if not reply.truncate_chunked:
