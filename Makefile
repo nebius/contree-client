@@ -100,10 +100,10 @@ test-live: generate generate-js
 test-live-python: generate
 	uv run pytest -c pyproject.toml -v client -m integration --timeout 300
 
-test-live-js: generate-js
+test-live-js: generate generate-js
 	uv run pytest -c pyproject.toml -v -rs client-js/test -m integration --timeout 300
 
-test-live-go:
+test-live-go: generate
 	uv run pytest -c pyproject.toml -v -rs go/tests -m integration --timeout 300
 
 coverage: generate

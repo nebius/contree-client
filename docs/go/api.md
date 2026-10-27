@@ -203,6 +203,10 @@ reads the operation kind, follows instance events, and polls image imports every
 500 milliseconds. It returns failed and cancelled responses unchanged. Unknown
 kinds use events. A context deadline bounds the entire wait.
 
+After a completion event, it polls until the API returns a terminal status.
+After 500 milliseconds without a payload event, it closes the stream before
+checking status. Payload events reset this interval; keepalives do not.
+
 To force polling for any operation:
 
 ```go

@@ -988,6 +988,7 @@ from .runtime import (
     RetryPolicy,
     SSEParser,
     body_start,
+    closing_iterator,
     decode_event_frame,
     encode_query,
     file_sha256,
@@ -1374,7 +1375,10 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
 
         ``follow_events=None`` follows instance events and polls image imports
         every 0.5 seconds. Use ``True`` to force events or ``False`` to force
-        polling. Return failed and cancelled responses unchanged.
+        polling. After 0.5 seconds without a payload event, close the stream
+        before checking status. Keepalives do not reset this interval.
+        After completion, poll until the status is terminal.
+        Return failed and cancelled responses unchanged.
         ``timeout`` covers the entire wait and raises :class:`TimeoutError`
         on expiry. Sync buffered reads can delay the exception until the
         response ends.
@@ -1391,12 +1395,12 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
                     None if deadline is None else max(0.0, deadline - time.monotonic())
                 )
                 for event in self.follow_operation_events(
-                    operation_id, timeout=remaining
+                    operation_id, timeout=remaining, _idle_timeout=TIGHT_LOOP_FLOOR
                 ):
                     self.log.debug(
                         "wait_operation: event %s %s", event.id, event.type
                     )
-                return self._read_operation_status(operation_id, deadline)
+                result = self._read_operation_status(operation_id, deadline)
 
             if result is None:
                 result = self._read_operation_status(operation_id, deadline)
@@ -1424,6 +1428,7 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
         spid: int | None = None,
         since: int | None = None,
         timeout: float | None = None,
+        _idle_timeout: float | None = None,
     ) -> Iterator[OperationEvent]:
         """Stream operation events with transparent reconnection.
 
@@ -1461,20 +1466,24 @@ SYNC_CLASS_HEADER = '''class ContreeSyncClient(ContreeClientBase, ABC):
             if terminal:
                 drain_attempts += 1
             try:
-                for event in self.iter_operation_events(
+                with closing_iterator(self.iter_operation_events(
                     operation_id,
                     follow=not terminal,
                     spid=spid,
                     since=since,
                     last_event_id=last_id,
                     deadline=deadline,
-                ):
-                    last_id = event.id
-                    yield event
-                    if event.type == "completion":
-                        return
-                    check_deadline()
-            except (APIConnectionError, APIStatusError) as exc:
+                    _idle_timeout=_idle_timeout,
+                )) as source:
+                    for event in source:
+                        last_id = event.id
+                        yield event
+                        if event.type == "completion":
+                            return
+                        check_deadline()
+            except (APIConnectionError, APIStatusError, TimeoutError) as exc:
+                if isinstance(exc, TimeoutError) and _idle_timeout is None:
+                    raise
                 check_deadline()
                 retryable = not isinstance(exc, APIStatusError) or (
                     policy.retryable_status(exc.status)
@@ -1780,7 +1789,10 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
 
         ``follow_events=None`` follows instance events and polls image imports
         every 0.5 seconds. Use ``True`` to force events or ``False`` to force
-        polling. Return failed and cancelled responses unchanged.
+        polling. After 0.5 seconds without a payload event, close the stream
+        before checking status. Keepalives do not reset this interval.
+        After completion, poll until the status is terminal.
+        Return failed and cancelled responses unchanged.
         ``timeout`` covers the entire wait and raises :class:`TimeoutError`
         on expiry.
         """
@@ -1796,12 +1808,12 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                     None if deadline is None else max(0.0, deadline - time.monotonic())
                 )
                 async for event in self.follow_operation_events(
-                    operation_id, timeout=remaining
+                    operation_id, timeout=remaining, _idle_timeout=TIGHT_LOOP_FLOOR
                 ):
                     self.log.debug(
                         "wait_operation: event %s %s", event.id, event.type
                     )
-                return await self._read_operation_status(operation_id, deadline)
+                result = await self._read_operation_status(operation_id, deadline)
 
             if result is None:
                 result = await self._read_operation_status(operation_id, deadline)
@@ -1829,6 +1841,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
         spid: int | None = None,
         since: int | None = None,
         timeout: float | None = None,
+        _idle_timeout: float | None = None,
     ) -> AsyncGenerator[OperationEvent, None]:
         """Stream operation events with transparent reconnection.
 
@@ -1874,6 +1887,7 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                         since=since,
                         last_event_id=last_id,
                         deadline=deadline,
+                        _idle_timeout=_idle_timeout,
                     )
                 ) as source:
                     async for event in source:
@@ -1882,7 +1896,9 @@ ASYNC_CLASS_HEADER = '''class ContreeAsyncClient(ContreeClientBase, ABC):
                         if event.type == "completion":
                             return
                         check_deadline()
-            except (APIConnectionError, APIStatusError) as exc:
+            except (APIConnectionError, APIStatusError, TimeoutError) as exc:
+                if isinstance(exc, TimeoutError) and _idle_timeout is None:
+                    raise
                 check_deadline()
                 retryable = not isinstance(exc, APIStatusError) or (
                     policy.retryable_status(exc.status)
@@ -2122,7 +2138,8 @@ def emit_sse_method(operation: OperationDef, async_mode: bool) -> list[str]:
     loop = "async for" if async_mode else "for"
     lines = [
         f"{prefix}def {operation.name}("
-        f"{method_signature(operation)}, deadline: float | None = None"
+        f"{method_signature(operation)}, deadline: float | None = None, "
+        f"_idle_timeout: float | None = None"
         f") -> {iterator}:",
     ]
     lines.extend(
@@ -2143,6 +2160,17 @@ def emit_sse_method(operation: OperationDef, async_mode: bool) -> list[str]:
     lines.append(
         f"{INDENT * 2}spec.read_timeout = max(0.0, deadline - time.monotonic())"
     )
+    lines.extend(
+        [
+            f"{INDENT}def reset_idle_deadline() -> None:",
+            f"{INDENT * 2}if _idle_timeout is not None:",
+            f"{INDENT * 3}idle_deadline = time.monotonic() + _idle_timeout",
+            f"{INDENT * 3}spec.deadline = (idle_deadline if deadline is None "
+            "else min(deadline, idle_deadline))",
+            f"{INDENT * 3}spec.read_timeout = _idle_timeout",
+            f"{INDENT}reset_idle_deadline()",
+        ]
+    )
     lines.append(f"{INDENT}self.log_request(spec)")
     lines.append(f"{INDENT}parser = SSEParser()")
     resume_argument = operation.response.resume_argument
@@ -2156,8 +2184,9 @@ def emit_sse_method(operation: OperationDef, async_mode: bool) -> list[str]:
         lines.append(f"{INDENT * 2}{loop} chunk in source:")
         base = INDENT * 3
     else:
-        lines.append(f"{INDENT}{loop} chunk in self.stream(spec):")
-        base = INDENT * 2
+        lines.append(f"{INDENT}with closing_iterator(self.stream(spec)) as source:")
+        lines.append(f"{INDENT * 2}{loop} chunk in source:")
+        base = INDENT * 3
     lines.append(f"{base}if deadline is not None and time.monotonic() >= deadline:")
     lines.append(
         f'{base + INDENT}raise TimeoutError(f"{operation.name} exceeded its deadline")'
@@ -2169,6 +2198,7 @@ def emit_sse_method(operation: OperationDef, async_mode: bool) -> list[str]:
     lines.append(f"{base + INDENT}if event is None:")
     lines.append(f"{base + INDENT * 2}continue")
     lines.append(f'{base + INDENT}self.log.debug("sse event: %r", event)')
+    lines.append(f"{base + INDENT}reset_idle_deadline()")
     lines.append(f"{base + INDENT}yield event")
     lines.append(
         f"{base + INDENT}if deadline is not None and time.monotonic() >= deadline:"

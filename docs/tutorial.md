@@ -513,6 +513,11 @@ events or polls image imports, then returns the terminal
 Failed and cancelled responses are returned unchanged. *timeout* covers the
 entire wait.
 
+In all three clients, a completion event is followed by status checks until the
+API returns a terminal status. If no payload event arrives for 0.5 seconds, the
+waiter closes the event stream before checking status. Payload events reset this
+idle interval; keepalives do not. These checks share the original wait deadline.
+
 JavaScript's `waitOperation()` uses the same selection with `followEvents: null`
 by default. Set `followEvents` to `true` or `false` to force events or polling.
 Its timeout covers the entire wait, including idle streams.
