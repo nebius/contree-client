@@ -39,10 +39,6 @@ type operationEventFollower struct {
 	drainAttempts int
 	allowDrainEOF bool
 
-	idleTimeout  time.Duration
-	idleTimer    *time.Timer
-	streamCancel context.CancelFunc
-
 	stream   *eventStream
 	event    *OperationEvent
 	err      error
@@ -143,9 +139,6 @@ func (f *operationEventFollower) Next() bool {
 		event, streamErr := f.stream.Next()
 		f.captureLastEventID()
 		if event != nil {
-			if f.idleTimer != nil {
-				f.idleTimer.Reset(f.idleTimeout)
-			}
 			f.event = event
 			if event.Type == OperationEventTypeCompletion {
 				f.finish(nil)
@@ -217,12 +210,7 @@ func (f *operationEventFollower) openStream() error {
 		value := f.lastID
 		options.LastEventID = &value
 	}
-	streamContext := f.ctx
-	if f.idleTimeout > 0 && !f.draining {
-		streamContext, f.streamCancel = context.WithCancel(f.ctx)
-		f.idleTimer = time.AfterFunc(f.idleTimeout, f.streamCancel)
-	}
-	stream, err := f.client.openIterOperationEvents(streamContext, f.operationID, options)
+	stream, err := f.client.openIterOperationEvents(f.ctx, f.operationID, options)
 	if err != nil {
 		_ = f.closeStream()
 		return err
@@ -331,11 +319,6 @@ func (c *Client) OperationTerminal(
 }
 
 func (f *operationEventFollower) retryableStreamError(err error) bool {
-	// The waiter cancels only the stream's child context at the idle limit.
-	// The original context still bounds the following status request.
-	if f.idleTimeout > 0 && f.ctx.Err() == nil && errors.Is(err, context.Canceled) {
-		return true
-	}
 	var statusError *APIStatusError
 	if errors.As(err, &statusError) && f.client.retry != nil {
 		return f.client.retry.retryableStatus(statusError.StatusCode)
@@ -366,14 +349,6 @@ func transientOperationProbeError(err error) bool {
 }
 
 func (f *operationEventFollower) closeStream() error {
-	if f.idleTimer != nil {
-		f.idleTimer.Stop()
-		f.idleTimer = nil
-	}
-	if f.streamCancel != nil {
-		f.streamCancel()
-		f.streamCancel = nil
-	}
 	if f.stream == nil {
 		return nil
 	}
@@ -406,10 +381,9 @@ type WaitOperationOptions struct {
 // responses unchanged. By default it reads the operation kind, follows instance
 // events, and polls image imports every 500 milliseconds. An unknown kind uses
 // events. Supply at most one options value to select a mode explicitly.
-// After 500 milliseconds without a live payload event, the waiter closes the
-// stream before checking status. Payload events reset this interval; keepalives
-// do not. Retained reads use the context without the live idle limit. Without a
-// context deadline, a silent retained connection can wait indefinitely.
+// The event stream stays open until completion, EOF, a transport error, or
+// context cancellation. Gaps between payload events do not trigger status reads.
+// Without a context deadline, a silent connection can wait indefinitely.
 // A completion event still requires a terminal status response.
 // The context bounds the entire wait, including status reads and polling delays.
 func (c *Client) WaitOperation(
@@ -447,7 +421,6 @@ func (c *Client) WaitOperation(
 			return zero, err
 		}
 		defer follower.Close()
-		follower.idleTimeout = operationEventNoProgressDelay
 		for follower.Next() {
 		}
 		if err := follower.Err(); err != nil {

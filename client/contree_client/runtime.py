@@ -203,19 +203,6 @@ class RequestSpec:
     # silent stream cannot outlive the caller's timeout
     read_timeout: float | None = None
 
-    # Reset only when a payload event arrives. Native total-request timers must
-    # use deadline, because their value is fixed when the request starts.
-    idle_deadline: float | None = None
-
-    @property
-    def stream_deadline(self) -> float | None:
-        """The next read must respect both the overall and event-idle limits."""
-        if self.idle_deadline is None:
-            return self.deadline
-        if self.deadline is None:
-            return self.idle_deadline
-        return min(self.deadline, self.idle_deadline)
-
 
 @dataclass
 class ResponseData:

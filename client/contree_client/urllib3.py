@@ -146,9 +146,9 @@ class ContreeClient(base.ContreeSyncClient):
             decode_content = auto_decompress
             url = self.build_url(spec)
             headers = self._request_headers(spec)
-            connect_timeout = remaining_timeout(spec.stream_deadline, self.timeout)
+            connect_timeout = remaining_timeout(spec.deadline, self.timeout)
             read_timeout = remaining_timeout(
-                spec.stream_deadline,
+                spec.deadline,
                 spec.read_timeout
                 if spec.accept == "text/event-stream"
                 else self.timeout,
@@ -197,7 +197,7 @@ class ContreeClient(base.ContreeSyncClient):
                             body,
                         )
                 for chunk in response.stream(CHUNK_SIZE, decode_content=decode_content):
-                    remaining_timeout(spec.stream_deadline, None)
+                    remaining_timeout(spec.deadline, None)
                     yield chunk
             finally:
                 # close before releasing: an aborted stream must not put a
