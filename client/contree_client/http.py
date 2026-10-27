@@ -336,9 +336,10 @@ class ContreeClient(base.ContreeSyncClient):
         auto_decompress: bool = True,
     ) -> Iterator[bytes]:
         with normalize_errors():
-            timeout = remaining_timeout(spec.deadline, self.timeout)
+            timeout = remaining_timeout(spec.stream_deadline, self.timeout)
             # a stream owns its socket until EOF: dedicated connection
             connection = self._connect()
+            response = None
             try:
                 connection.timeout = timeout
                 if connection.sock is not None:
@@ -361,7 +362,7 @@ class ContreeClient(base.ContreeSyncClient):
                     if spec.accept == "text/event-stream"
                     else self.timeout
                 )
-                timeout = remaining_timeout(spec.deadline, read_maximum)
+                timeout = remaining_timeout(spec.stream_deadline, read_maximum)
                 connection.timeout = timeout
                 if connection.sock is not None:
                     connection.sock.settimeout(timeout)
@@ -369,12 +370,12 @@ class ContreeClient(base.ContreeSyncClient):
                     response.getheader("Content-Encoding") if auto_decompress else None
                 )
                 while True:
-                    timeout = remaining_timeout(spec.deadline, read_maximum)
+                    timeout = remaining_timeout(spec.stream_deadline, read_maximum)
                     connection.timeout = timeout
                     if connection.sock is not None:
                         connection.sock.settimeout(timeout)
                     raw = response.read1(CHUNK_SIZE)
-                    remaining_timeout(spec.deadline, None)
+                    remaining_timeout(spec.stream_deadline, None)
                     if not raw:
                         tail = decoder.flush()
                         if tail:
@@ -384,6 +385,8 @@ class ContreeClient(base.ContreeSyncClient):
                     if chunk:
                         yield chunk
             finally:
+                if response is not None:
+                    response.close()
                 connection.close()
 
     def close(self) -> None:

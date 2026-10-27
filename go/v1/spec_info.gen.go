@@ -5,4 +5,4 @@ package contree
 const DefaultBaseURL = "https://api.tokenfactory.nebius.com/sandboxes"
 
 // SpecSHA256 identifies the exact OpenAPI input document.
-const SpecSHA256 = "2a1eb3e9ee8563d56812dc075b1f8089823e1918f072f9a02007d2bd78cdc365"
+const SpecSHA256 = "0542fe1844fdd205315854e9b6d4b61fa0d2c53302f95457beb328573102492c"

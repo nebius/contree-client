@@ -393,6 +393,12 @@ are staged with {class}`~contree_client.FileSpec` (mode accepts an int
 / number or the octal wire string), and cgroup limits ride in
 {class}`~contree_client.InstanceResourcesLimits`:
 
+`InstanceResourcesLimits` also accepts `cpu` and `memory_mib` (`memoryMib` in
+JavaScript, `CPU` and `MemoryMib` in Go). Subprocess creation accepts a separate
+`ProcessResourcesLimits` model through `resources_limits` / `resourcesLimits` /
+`ResourcesLimits`. Omitted or null process limits inherit the requested operation
+limits. Process limits cannot exceed the operation limits.
+
 ::::{tab-set}
 
 :::{tab-item} Python · sync
@@ -506,6 +512,11 @@ events or polls image imports, then returns the terminal
 {class}`~contree_client.OperationResponse`.
 Failed and cancelled responses are returned unchanged. *timeout* covers the
 entire wait.
+
+In all three clients, a completion event is followed by status checks until the
+API returns a terminal status. If no payload event arrives for 0.5 seconds, the
+waiter closes the event stream before checking status. Payload events reset this
+idle interval; keepalives do not. These checks share the original wait deadline.
 
 JavaScript's `waitOperation()` uses the same selection with `followEvents: null`
 by default. Set `followEvents` to `true` or `false` to force events or polling.
@@ -896,6 +907,8 @@ flushes them. Follow mode keeps the connection open while the operation runs.
 Payloads are discriminated by `event.type` —
 {class}`~contree_client.EventDataStream` for stdout/stderr,
 {class}`~contree_client.EventDataExit`,
+{class}`~contree_client.EventDataInspect` for guest RPC metadata,
+{class}`~contree_client.EventDataFileUpload` for file publication results,
 {class}`~contree_client.EventDataCompletion` and friends;
 {func}`~contree_client.decode_chunk` / `decodeChunk()` extracts raw bytes from
 a stream payload. The higher-level `follow_operation_events()` /

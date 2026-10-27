@@ -9,6 +9,7 @@ Wire names remain unchanged.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -284,6 +285,8 @@ export const EVENT_DATA_PARSERS = {{
 {parsers}
 }};
 
+const EVENT_DATA_REQUIRED_FIELDS = {required_fields};
+
 /** Decode a per-type event payload.
  *
  * Unknown event types and payloads that do not match the documented
@@ -294,8 +297,11 @@ export function parseEventData(eventType, data) {{
   if (data === null || typeof data !== "object" || Array.isArray(data)) {{
     return data;
   }}
+  if (!Object.hasOwn(EVENT_DATA_PARSERS, eventType)) {{
+    return data;
+  }}
   const cls = EVENT_DATA_PARSERS[eventType];
-  if (cls === undefined) {{
+  if (EVENT_DATA_REQUIRED_FIELDS[eventType].some((field) => !Object.hasOwn(data, field))) {{
     return data;
   }}
   try {{
@@ -410,6 +416,16 @@ def render_models_js(ir: SpecIR) -> str:
     parsers = "\n".join(
         f"  {event}: {type_ref.name}," for event, type_ref in ir.event_data_variants
     )
+    required_fields = {
+        event: [
+            field.wire_name
+            for model in ir.models
+            if model.name == type_ref.name
+            for field in model.fields
+            if field.required
+        ]
+        for event, type_ref in ir.event_data_variants
+    }
     parts = [
         HEADER,
         'import { base64ToBytes, bytesToBase64, bytesToText, parseDatetime, textToBytes } from "./runtime.js";',
@@ -428,7 +444,11 @@ def render_models_js(ir: SpecIR) -> str:
         ),
     ]
     parts.extend(render_class_js(cls) for cls in ir.models)
-    parts.append(MODELS_TAIL_JS.format(parsers=parsers).strip())
+    parts.append(
+        MODELS_TAIL_JS.format(
+            parsers=parsers, required_fields=json.dumps(required_fields)
+        ).strip()
+    )
     return "\n\n".join(parts) + "\n"
 
 
@@ -1191,14 +1211,14 @@ export class ContreeClient {{
       );
     }};
     const sse = spec.accept === "text/event-stream";
-    const deadline = spec.deadline ?? null; // monotonic seconds
+    const deadline = () => spec.deadline ?? null; // monotonic seconds
     // the budget for the next transport wait: downloads use the
     // client timeout as an idle cap, bounded by the caller's absolute
     // deadline; SSE is unbounded unless the caller set a deadline.
     // Keepalive frames re-enter abortIn with a shrinking remainder, so
     // the bound stays absolute while the server keeps the stream warm.
     const nextBudget = () => {{
-      const remaining = deadline === null ? null : deadline - monotonic();
+      const remaining = deadline() === null ? null : deadline() - monotonic();
       if (sse || this.timeout === null) {{
         return remaining;
       }}
@@ -1207,7 +1227,7 @@ export class ContreeClient {{
         : Math.min(this.timeout, remaining);
     }};
     const connectBudget = () => {{
-      const remaining = deadline === null ? null : deadline - monotonic();
+      const remaining = deadline() === null ? null : deadline() - monotonic();
       if (this.timeout === null) {{
         return remaining;
       }}
@@ -1236,7 +1256,7 @@ export class ContreeClient {{
     let attempts = 0;
     let response;
     for (;;) {{
-      if (deadline !== null && monotonic() >= deadline) {{
+      if (deadline() !== null && monotonic() >= deadline()) {{
         throw new DOMException("stream read timed out", "TimeoutError");
       }}
       attempts += 1;
@@ -1247,7 +1267,7 @@ export class ContreeClient {{
           this.buildUrl(spec),
           this._fetchOptions(spec, controller.signal),
         );
-        if (deadline !== null && monotonic() >= deadline) {{
+        if (deadline() !== null && monotonic() >= deadline()) {{
           throw new DOMException("stream read timed out", "TimeoutError");
         }}
         break;
@@ -1259,13 +1279,13 @@ export class ContreeClient {{
         if (
           !reconnectable ||
           (maxAttempts !== null && attempts >= maxAttempts) ||
-          (deadline !== null && monotonic() >= deadline)
+          (deadline() !== null && monotonic() >= deadline())
         ) {{
           throw error;
         }}
         let delay = delays === null ? 0 : delays.next().value;
-        if (deadline !== null) {{
-          delay = Math.min(delay, Math.max(0, deadline - monotonic()));
+        if (deadline() !== null) {{
+          delay = Math.min(delay, Math.max(0, deadline() - monotonic()));
         }}
         await sleep(delay);
       }}
@@ -1286,7 +1306,7 @@ export class ContreeClient {{
         // the timer covers only the transport wait, never the
         // consumer's processing of the yielded chunk
         disarm();
-        if (deadline !== null && monotonic() >= deadline) {{
+        if (deadline() !== null && monotonic() >= deadline()) {{
           throw new DOMException("stream read timed out", "TimeoutError");
         }}
         if (done) {{
@@ -1294,6 +1314,11 @@ export class ContreeClient {{
         }}
         yield value;
       }}
+    }} catch (error) {{
+      if (spec._idleTimeout != null && controller.signal.aborted && controller.signal.reason?.name === "TimeoutError") {{
+        throw controller.signal.reason;
+      }}
+      throw error;
     }} finally {{
       disarm();
       try {{
@@ -1383,10 +1408,10 @@ export class ContreeClient {{
     }}
     if (followEvents) {{
       const remaining = deadline === null ? null : Math.max(0, deadline - monotonic());
-      for await (const event of this.followOperationEvents(operationId, {{ timeout: remaining }})) {{
+      for await (const event of this.followOperationEvents(operationId, {{ timeout: remaining, _idleTimeout: TIGHT_LOOP_FLOOR }})) {{
         void event;
       }}
-      return await readStatus();
+      result = await readStatus();
     }}
     if (result === null) {{
       result = await readStatus();
@@ -1406,7 +1431,7 @@ export class ContreeClient {{
    * reconnect from the last event id. */
   async *followOperationEvents(
     operationId,
-    {{ lastEventId = null, spid = null, since = null, timeout = null }} = {{}},
+    {{ lastEventId = null, spid = null, since = null, timeout = null, _idleTimeout = null }} = {{}},
   ) {{
     let lastId = lastEventId;
     const deadline = timeout === null ? null : monotonic() + timeout;
@@ -1428,6 +1453,7 @@ export class ContreeClient {{
           since,
           lastEventId: lastId,
           deadline,
+          _idleTimeout,
         }})) {{
           lastId = event.id;
           yield event;
@@ -1598,6 +1624,13 @@ def render_client_method(op: OperationDef) -> list[str]:
             f"    if (options.deadline != null) {{{{\n"
             f"      spec.deadline = options.deadline;\n"
             f"    }}}}\n"
+            f"    const resetIdleDeadline = () => {{\n"
+            f"      if (options._idleTimeout != null) {{\n"
+            f"        spec._idleTimeout = options._idleTimeout;\n"
+            f"        spec.deadline = Math.min(options.deadline ?? Infinity, monotonic() + options._idleTimeout);\n"
+            f"      }}\n"
+            f"    }};\n"
+            f"    resetIdleDeadline();\n"
             f"    const parser = new SSEParser();\n"
             f"    let lastSeen = options.{camel(resume_argument)} ?? null;\n"
             f"    for await (const chunk of this.stream(spec)) {{\n"
@@ -1609,6 +1642,7 @@ def render_client_method(op: OperationDef) -> list[str]:
             f"        if (payload === null) {{\n"
             f"          continue;\n"
             f"        }}\n"
+            f"        resetIdleDeadline();\n"
             f"        yield {event_type.name}.fromWire(payload);\n"
             f"      }}\n"
             f"    }}\n"

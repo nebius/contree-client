@@ -347,7 +347,7 @@ jobs:
     name: Integration (live API, python + js + go)
     # One job for all three languages, Linux only, independent of the unit
     # matrices (runs in parallel with them). These tests perform WRITE
-    # operations (upload, spawn, cancel, one import) against the
+    # operations (upload, spawn, cancel) against the
     # endpoint in the CONTREE_URL secret - never point it at
     # production. The token allows only 8 concurrent runs and 1
     # concurrent import, so live runs are serialized repository-wide:
@@ -411,17 +411,17 @@ jobs:
       - name: Run Python integration tests
         if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
         run: >
-          uv run --no-project pytest -v -rs --tb=short --timeout 300
+          uv run --no-project pytest -c pyproject.toml -v -rs --tb=short --timeout 300
           -m integration client
 
       - name: Run JS integration tests
         if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
         run: >
-          uv run --no-project pytest -v -rs --tb=short --timeout 300
+          uv run --no-project pytest -c pyproject.toml -v -rs --tb=short --timeout 300
           -m integration client-js/test
 
       - name: Run Go integration tests
         if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
         run: >
-          uv run --no-project pytest -v -rs --tb=short --timeout 300
+          uv run --no-project pytest -c pyproject.toml -v -rs --tb=short --timeout 300
           -m integration go/tests

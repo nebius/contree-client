@@ -78,6 +78,79 @@ def test_sse_operation(ir: SpecIR) -> None:
     assert "last_event_id" in arg_names
 
 
+def test_event_discriminators_cover_schema(ir: SpecIR, spec_source: str) -> None:
+    spec = load_spec(spec_source)
+    variants = dict(ir.event_data_variants)
+    assert set(variants) == set(ir.event_type_values)
+    payloads = spec.schemas["OperationEvent"]["properties"]["data"]["oneOf"]
+    assert {variant.name for variant in variants.values()} == {
+        payload["$ref"].rsplit("/", 1)[-1] for payload in payloads
+    }
+    event = next(model for model in ir.models if model.name == "OperationEvent")
+    data = next(field for field in event.fields if field.name == "data")
+    assert data.discriminator is not None
+    assert data.discriminator.cases == ir.event_data_variants
+
+
+def test_live_instance_operations(ir: SpecIR) -> None:
+    for name, mode in (
+        ("inspect_instance_list", ResponseMode.JSON),
+        ("inspect_instance_grep", ResponseMode.JSON),
+        ("inspect_instance_download", ResponseMode.BYTES),
+        ("inspect_instance_archive", ResponseMode.BYTE_STREAM),
+        ("check_instance_file", ResponseMode.STATUS_BOOL),
+        ("check_instance_archive", ResponseMode.STATUS_BOOL),
+        ("apply_instance_file", ResponseMode.EMPTY),
+    ):
+        operation = op_by_name(ir, name)
+        assert operation.path.startswith("/operations/{operation_uuid}/")
+        assert operation.response.mode is mode
+        assert operation.arguments[0].name == "operation_uuid"
+        assert operation.arguments[0].required
+
+    upload = op_by_name(ir, "apply_instance_file")
+    assert upload.http_method == "POST"
+    assert not upload.request.idempotent
+    assert upload.response.success_statuses == (204,)
+    assert upload.request.body is not None
+    assert upload.request.body.kind is BodyKind.JSON_INLINE
+    assert {binding.wire_name for binding in upload.request.body.bindings} == {
+        "file_uuid",
+        "path",
+        "unpack",
+        "replace",
+        "merge",
+    }
+    arguments = {argument.name: argument for argument in upload.arguments}
+    assert arguments["file_uuid"].required
+    assert arguments["path"].required
+    for flag in ("unpack", "replace", "merge"):
+        assert arguments[flag].type.kind is TypeKind.BOOLEAN
+        assert arguments[flag].presence is ArgumentPresence.OMIT_IF_UNSET
+
+
+def test_resource_limit_types(ir: SpecIR) -> None:
+    models = {model.name: model for model in ir.models}
+    for name, nullable in (
+        ("ProcessResourcesLimits", True),
+        ("InstanceResourcesLimits", False),
+    ):
+        fields = {field.name: field for field in models[name].fields}
+        for limit in ("cpu", "memory_mib"):
+            assert fields[limit].type.kind is TypeKind.INTEGER
+            assert fields[limit].nullable is nullable
+            assert not fields[limit].required
+
+    for name, expected in (
+        ("ExecSpec", "ProcessResourcesLimits"),
+        ("InstanceSpawnRequest", "InstanceResourcesLimits"),
+    ):
+        field = next(
+            field for field in models[name].fields if field.name == "resources_limits"
+        )
+        assert field.type == TypeRef(TypeKind.MODEL, name=expected)
+
+
 def test_import_image_returns_uuid(ir: SpecIR) -> None:
     op = op_by_name(ir, "import_image")
     assert op.response.mode is ResponseMode.JSON

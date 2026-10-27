@@ -144,7 +144,7 @@ def test_terminal_probe_drains_retained_log(
     assert [event.id for event in events] == [0, 1, 2, 3]
     assert events[2].type == "exit"
     assert events[2].data.code == 7
-    assert events[3].data["status"] == status
+    assert events[3].data.status == status
     requests = [r for r in stub_server.captured if r.path.endswith("/events")]
     assert len(requests) >= 2
     assert "follow" not in requests[-1].query

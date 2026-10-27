@@ -148,6 +148,52 @@ var mockOperations = []mockOperation{
 		status: 204,
 	},
 	{
+		name:   "ApplyInstanceFile",
+		method: "POST",
+		path:   "/operations/{operation_uuid}/files",
+		mode:   "EMPTY",
+		status: 204,
+	},
+	{
+		name:    "InspectInstanceDownload",
+		method:  "GET",
+		path:    "/operations/{operation_uuid}/inspect/download",
+		mode:    "BYTES",
+		status:  200,
+		aliases: []string{"InspectInstanceDownloadStream"},
+	},
+	{
+		name:        "CheckInstanceFile",
+		method:      "HEAD",
+		path:        "/operations/{operation_uuid}/inspect/download",
+		mode:        "STATUS_BOOL",
+		status:      200,
+		falseStatus: 404,
+	},
+	{
+		name:   "InspectInstanceList",
+		method: "GET",
+		path:   "/operations/{operation_uuid}/inspect/list",
+		mode:   "JSON",
+		status: 200,
+	},
+	{
+		name:    "InspectInstanceArchive",
+		method:  "GET",
+		path:    "/operations/{operation_uuid}/inspect/archive",
+		mode:    "BYTE_STREAM",
+		status:  200,
+		aliases: []string{"InspectInstanceArchiveRaw"},
+	},
+	{
+		name:        "CheckInstanceArchive",
+		method:      "HEAD",
+		path:        "/operations/{operation_uuid}/inspect/archive",
+		mode:        "STATUS_BOOL",
+		status:      200,
+		falseStatus: 404,
+	},
+	{
 		name:   "InspectFindImageByTag",
 		method: "GET",
 		path:   "/inspect/",
@@ -198,6 +244,13 @@ var mockOperations = []mockOperation{
 		name:   "InspectImageList",
 		method: "GET",
 		path:   "/inspect/{image_uuid}/list",
+		mode:   "JSON",
+		status: 200,
+	},
+	{
+		name:   "InspectInstanceGrep",
+		method: "GET",
+		path:   "/operations/{operation_uuid}/inspect/grep",
 		mode:   "JSON",
 		status: 200,
 	},
@@ -268,6 +321,24 @@ var OpOperationSubprocessKill = Operation[struct{}]{name: "OperationSubprocessKi
 // OpOperationSubprocessStdin configures the mock result for OperationSubprocessStdin.
 var OpOperationSubprocessStdin = Operation[struct{}]{name: "OperationSubprocessStdin"}
 
+// OpApplyInstanceFile configures the mock result for ApplyInstanceFile.
+var OpApplyInstanceFile = Operation[struct{}]{name: "ApplyInstanceFile"}
+
+// OpInspectInstanceDownload configures the mock result for InspectInstanceDownload.
+var OpInspectInstanceDownload = Operation[[]byte]{name: "InspectInstanceDownload"}
+
+// OpCheckInstanceFile configures the mock result for CheckInstanceFile.
+var OpCheckInstanceFile = Operation[bool]{name: "CheckInstanceFile"}
+
+// OpInspectInstanceList configures the mock result for InspectInstanceList.
+var OpInspectInstanceList = Operation[DirectoryList]{name: "InspectInstanceList"}
+
+// OpInspectInstanceArchive configures the mock result for InspectInstanceArchive.
+var OpInspectInstanceArchive = Operation[[]byte]{name: "InspectInstanceArchive"}
+
+// OpCheckInstanceArchive configures the mock result for CheckInstanceArchive.
+var OpCheckInstanceArchive = Operation[bool]{name: "CheckInstanceArchive"}
+
 // OpInspectFindImageByTag configures the mock result for InspectFindImageByTag.
 var OpInspectFindImageByTag = Operation[string]{name: "InspectFindImageByTag"}
 
@@ -288,6 +359,9 @@ var OpCheckImageArchive = Operation[bool]{name: "CheckImageArchive"}
 
 // OpInspectImageList configures the mock result for InspectImageList.
 var OpInspectImageList = Operation[DirectoryList]{name: "InspectImageList"}
+
+// OpInspectInstanceGrep configures the mock result for InspectInstanceGrep.
+var OpInspectInstanceGrep = Operation[GrepResult]{name: "InspectInstanceGrep"}
 
 // OpInspectImageGrep configures the mock result for InspectImageGrep.
 var OpInspectImageGrep = Operation[GrepResult]{name: "InspectImageGrep"}

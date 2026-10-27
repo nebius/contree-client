@@ -21,6 +21,30 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "client"))
 
+
+@pytest.fixture(scope="session")
+def live_image_uuid() -> str:
+    """Resolve the shared Alpine base once without importing or changing tags."""
+    profiles = importlib.import_module("contree_client.profiles")
+    sync = importlib.import_module("contree_client.sync")
+    runtime = importlib.import_module("contree_client.runtime")
+    profile = profiles.from_env()
+    if profile is None:
+        try:
+            profile = profiles.resolve_profile()
+        except profiles.ProfileError as error:
+            pytest.skip(f"no live API credentials: {error}")
+
+    with sync.ContreeClient.from_profile(
+        profile, retry=runtime.RetryPolicy()
+    ) as client:
+        image_uuid = client.resolve_image("tag:alpine:latest")
+        assert client.check_image_file(image_uuid, "/bin/sh"), (
+            "alpine:latest has no /bin/sh"
+        )
+        return image_uuid
+
+
 OPERATION_ID = "87654321-9abc-baba-deda-0123456789ab"
 IMAGE_UUID = "12345678-9abc-baba-deda-0123456789ab"
 FILE_UUID = "a9165a5d-5c86-4bd8-8ee4-ae46c19cf45d"

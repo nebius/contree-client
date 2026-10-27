@@ -20,6 +20,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   ContreeClient,
   ClosableStreamRepr,
+  EventDataInspect,
+  EventDataFileUpload,
+  InstanceResourcesLimits,
   OperationStatus,
   TERMINAL_STATUSES,
   profiles,
@@ -79,19 +82,8 @@ async function waitRunning(operationId) {
 }
 
 async function pickSampleImage() {
-  const images = (await client.listImages({ tagged: true, limit: 100 })).images;
-  const busybox = images.find((item) => item.tag?.includes("busybox"));
-  if (busybox) {
-    return busybox;
-  }
-
-  for (const candidate of images) {
-    if (await client.checkImageFile(String(candidate.uuid), "/etc/passwd")) {
-      return candidate;
-    }
-  }
-
-  return images[0];
+  assert.ok(SAMPLE_IMAGE_UUID, "the session image fixture is required");
+  return { uuid: SAMPLE_IMAGE_UUID };
 }
 
 async function run(permissions) {
@@ -109,19 +101,31 @@ try {
 
 
 @pytest.fixture
-def live_js(jsrun: Callable[[str], str]) -> Callable[[str], None]:
+def live_js(jsrun: Callable[[str], str]) -> Callable[..., None]:
     if not (os.environ.get("CONTREE_TOKEN") or os.environ.get("NEBIUS_API_KEY")):
         pytest.skip("JS live tests require CONTREE_TOKEN or NEBIUS_API_KEY")
     if not os.environ.get("CONTREE_URL"):
         pytest.fail("JS live tests require an explicit CONTREE_URL")
 
-    def run(source: str) -> None:
-        program = COMMON.replace("CLIENT_MODULE", json.dumps(CLIENT_MODULE)).replace(
-            "SCENARIO", source
+    def run(source: str, *, image_uuid: str | None = None) -> None:
+        program = (
+            COMMON.replace("CLIENT_MODULE", json.dumps(CLIENT_MODULE))
+            .replace("SCENARIO", source)
+            .replace("SAMPLE_IMAGE_UUID", json.dumps(image_uuid))
         )
         result = json.loads(jsrun(program))
         if result["skip"]:
             pytest.skip(result["skip"])
+
+    return run
+
+
+@pytest.fixture
+def live_js_image(
+    live_js: Callable[..., None], live_image_uuid: str
+) -> Callable[[str], None]:
+    def run(source: str) -> None:
+        live_js(source, image_uuid=live_image_uuid)
 
     return run
 
@@ -137,7 +141,8 @@ def test_js_whoami(live_js: Callable[[str], None]) -> None:
 def test_js_lists(live_js: Callable[[str], None]) -> None:
     live_js(r"""
   const images = (await client.listImages({ tagged: true, limit: 100 })).images;
-  assert.ok(Array.isArray(images) && images.length > 0);
+  assert.ok(Array.isArray(images));
+  for (const image of images) assert.ok(image.uuid);
 
   for await (const summary of client.iterOperations({ pageSize: 20, limit: 20 })) {
     assert.ok(summary.uuid);
@@ -145,8 +150,8 @@ def test_js_lists(live_js: Callable[[str], None]) -> None:
     """)
 
 
-def test_js_grep(live_js: Callable[[str], None]) -> None:
-    live_js(r"""
+def test_js_grep(live_js_image: Callable[[str], None]) -> None:
+    live_js_image(r"""
   const image = await pickSampleImage();
   if (
     !image ||
@@ -172,8 +177,8 @@ def test_js_grep(live_js: Callable[[str], None]) -> None:
     """)
 
 
-def test_js_spawn_wait_and_events(live_js: Callable[[str], None]) -> None:
-    live_js(r"""
+def test_js_spawn_wait_and_events(live_js_image: Callable[[str], None]) -> None:
+    live_js_image(r"""
   if (!permissions.spawn_disposable && !permissions.spawn) {
     return "token lacks spawn permissions";
   }
@@ -196,8 +201,8 @@ def test_js_spawn_wait_and_events(live_js: Callable[[str], None]) -> None:
     """)
 
 
-def test_js_subprocess_stdin_and_kill(live_js: Callable[[str], None]) -> None:
-    live_js(r"""
+def test_js_subprocess_stdin_and_kill(live_js_image: Callable[[str], None]) -> None:
+    live_js_image(r"""
   if (!permissions.spawn_disposable && !permissions.spawn) {
     return "token lacks spawn permissions";
   }
@@ -258,6 +263,162 @@ def test_js_subprocess_stdin_and_kill(live_js: Callable[[str], None]) -> None:
           throw error;
         }
       }
+    }
+  }
+    """)
+
+
+def test_js_live_instance_files_and_events(
+    live_js_image: Callable[[str], None],
+) -> None:
+    live_js_image(r"""
+  if (!permissions.spawn_disposable || !permissions.cancel) {
+    return "token lacks disposable spawn or cancel permission";
+  }
+  const image = await pickSampleImage();
+  const marker = `ready-${randomUUID()}`;
+  const payload = Buffer.from(`live-file-${randomUUID()}\n`);
+  const spawned = await client.spawnInstance(
+    `echo ${marker}; read line`,
+    String(image.uuid),
+    {
+      shell: true,
+      disposable: true,
+      timeout: 180,
+      stdin: new ClosableStreamRepr({ value: "", close: false }),
+      resourcesLimits: new InstanceResourcesLimits({ cpu: 2, memoryMib: 256 }),
+    },
+  );
+  const id = spawned.uuid;
+
+  try {
+    let ready = false;
+    let output = "";
+    for await (const event of client.followOperationEvents(id, {
+      timeout: 60,
+    })) {
+      if (event.type === "stdout") {
+        output += event.data.asText();
+        if (output.includes(marker)) {
+          ready = true;
+          break;
+        }
+      }
+    }
+    assert.ok(ready, "instance exited before readiness");
+
+    const uploaded = await client.uploadFile(payload);
+    const path = "/tmp/client-live/input.txt";
+    await client.applyInstanceFile(id, uploaded.uuid, path, {
+      unpack: false,
+      replace: false,
+      merge: false,
+    });
+    assert.equal(await client.checkInstanceFile(id, path), true);
+    assert.equal(await client.checkInstanceFile(id, `${path}.missing`), false);
+    assert.equal(
+      await client.checkInstanceArchive(id, "/tmp/client-live"),
+      true,
+    );
+    assert.equal(
+      await client.checkInstanceArchive(id, "/tmp/client-live-missing"),
+      false,
+    );
+    const listing = await client.inspectInstanceList(id, "/tmp/client-live");
+    assert.ok(
+      listing.files.some((file) => file.path.split("/").at(-1) === "input.txt"),
+    );
+    assert.deepEqual(
+      Buffer.from(await client.inspectInstanceDownload(id, path)),
+      payload,
+    );
+
+    const chunks = [];
+    for await (const chunk of client.inspectInstanceDownloadStream(id, path))
+      chunks.push(chunk);
+    assert.deepEqual(Buffer.concat(chunks), payload);
+    const grep = await client.inspectInstanceGrep(id, "live-file", {
+      path: [path],
+      glob: ["*.txt"],
+    });
+    assert.ok(
+      grep.matches.some((match) =>
+        match.lineText.includes(payload.toString().trim()),
+      ),
+    );
+
+    const archive = [];
+    for await (const chunk of client.inspectInstanceArchive(
+      id,
+      "/tmp/client-live",
+    ))
+      archive.push(chunk);
+    assert.ok(Buffer.concat(archive).includes(payload));
+
+    const replacement = Buffer.from(`replacement-${randomUUID()}\n`);
+    const second = await client.uploadFile(replacement);
+    await client.applyInstanceFile(id, second.uuid, path, { replace: true });
+    assert.deepEqual(
+      Buffer.from(await client.inspectInstanceDownload(id, path)),
+      replacement,
+    );
+
+    await client.operationSubprocessStdin(id, 1, "done\n", { close: true });
+    const finished = await client.waitOperation(id, { timeout: 60 });
+    assert.equal(finished.status, OperationStatus.SUCCESS);
+    const events = [];
+    for await (const event of client.iterOperationEvents(id))
+      events.push(event);
+    const inspections = events.filter((event) => event.type === "inspect");
+    assert.ok(inspections.length > 0);
+    assert.ok(
+      inspections.every(
+        (event) => event.spid === 0 && event.data instanceof EventDataInspect,
+      ),
+    );
+    for (const method of ["upload", "list", "open", "archive", "grep"]) {
+      assert.ok(
+        inspections.some((event) => event.data.method === method),
+        method,
+      );
+    }
+    const requests = new Set(
+      inspections
+        .filter((event) => event.data.phase === "started")
+        .map((event) => event.data.requestId),
+    );
+    const results = new Set(
+      inspections
+        .filter((event) => event.data.phase === "completed")
+        .map((event) => event.data.requestId),
+    );
+    assert.deepEqual(results, requests);
+    const uploads = events
+      .filter((event) => event.type === "file_upload")
+      .map((event) => event.data);
+    assert.equal(uploads.length, 2);
+    assert.ok(
+      uploads.every(
+        (data) =>
+          data instanceof EventDataFileUpload &&
+          data.status === "success" &&
+          data.error === null,
+      ),
+    );
+    assert.deepEqual(
+      new Set(uploads.map((data) => data.fileUuid)),
+      new Set([uploaded.uuid, second.uuid]),
+    );
+    assert.deepEqual(
+      uploads.map((data) => data.bytes),
+      [payload.length, replacement.length],
+    );
+  } finally {
+    const status = (await client.getOperationStatus(id, { inflight: true }))
+      .status;
+    if (!TERMINAL_STATUSES.has(status)) {
+      await client.cancelOperation(id);
+      await client.waitOperation(id, { timeout: 60, followEvents: false });
     }
   }
     """)

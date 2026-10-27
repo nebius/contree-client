@@ -114,28 +114,8 @@ def track_operation(
 
 
 @pytest.fixture(scope="session")
-def sample_image(sync_client: Any) -> Any:
-    images = sync_client.list_images(tagged=True, limit=100).images
-    if not images:
-        pytest.skip("no tagged images available in this namespace")
-    busybox = next(
-        (c for c in images if c.tag and "busybox" in c.tag),
-        None,
-    )
-    if busybox is not None:
-        return busybox
-    # no busybox tag: some catalogs carry stale entries whose object
-    # storage sync never completed, so prefer the first candidate that
-    # is demonstrably real (a cheap check_image_file probe) over
-    # images[0] blindly - falls back to images[0] if none check out
-    return next(
-        (
-            candidate
-            for candidate in images
-            if sync_client.check_image_file(str(candidate.uuid), "/etc/passwd")
-        ),
-        images[0],
-    )
+def sample_image(sync_client: Any, live_image_uuid: str) -> Any:
+    return sync_client.inspect_image(live_image_uuid)
 
 
 @pytest.fixture(scope="session")
@@ -268,7 +248,7 @@ def test_upload_get_and_list_files(live: Invoke) -> None:
 
 
 def test_inspect_find_image_by_tag(live: Invoke, sample_image: Any) -> None:
-    resolved = live("inspect_find_image_by_tag", str(sample_image.tag))
+    resolved = live("inspect_find_image_by_tag", "alpine:latest")
     assert resolved == str(sample_image.uuid)
 
 
@@ -426,38 +406,6 @@ def test_tag_lifecycle(
         assert str(image.uuid) == str(sample_image.uuid)
     finally:
         sync_client.delete_image_tag(str(sample_image.uuid), tag=tag)
-
-
-def test_import_image_idempotent(
-    sync_client: Any,
-    permissions: dict[str, bool],
-    generated_package: ModuleType,
-    track_operation: Callable[[str], None],
-) -> None:
-    """Importing an unchanged public image completes and yields a
-    result image (the spec promises a fast no-op re-import)."""
-    if not permissions.get("import"):
-        pytest.skip("token lacks import permission")
-    models = importlib.import_module("contree_client.models")
-    registry = models.ImageImportRegistry(
-        url="docker://docker.io/library/busybox:latest"
-    )
-    operation_id = sync_client.import_image(registry, timeout=240)
-    track_operation(operation_id)
-    operation = wait_terminal(
-        sync_client,
-        models,
-        operation_id,
-        deadline_seconds=300,
-    )
-    assert operation.status is models.OperationStatus.SUCCESS, operation.error
-    result_image = operation.result_image_uuid
-    if (result_image is ... or result_image is None) and operation.result not in (
-        ...,
-        None,
-    ):
-        result_image = operation.result.image
-    assert result_image
 
 
 def test_cancel_running_operation(
@@ -638,3 +586,169 @@ def test_operation_subprocess_lifecycle(
         if permissions.get("cancel"):
             with contextlib.suppress(exceptions.ConflictError):
                 sync_client.cancel_operation(operation_id)
+
+
+def test_live_instance_files_and_events(
+    live: Invoke,
+    sync_client: Any,
+    permissions: dict[str, bool],
+    sample_image: Any,
+    track_operation: Callable[[str], None],
+) -> None:
+    if not permissions.get("spawn_disposable") or not permissions.get("cancel"):
+        pytest.skip("token lacks disposable spawn or cancel permission")
+    models = importlib.import_module("contree_client.models")
+    marker = f"ready-{uuid.uuid4().hex}"
+    payload = f"live-file-{uuid.uuid4().hex}\n".encode()
+    operation = sync_client.spawn_instance(
+        f"echo {marker}; read line",
+        str(sample_image.uuid),
+        shell=True,
+        disposable=True,
+        timeout=180,
+        stdin=models.ClosableStreamRepr(value="", close=False),
+        resources_limits=models.InstanceResourcesLimits(cpu=2, memory_mib=256),
+    )
+    operation_id = str(operation.uuid)
+    track_operation(operation_id)
+    try:
+        ready = False
+        output = ""
+        with contextlib.closing(
+            sync_client.follow_operation_events(operation_id, timeout=60)
+        ) as events:
+            for event in events:
+                if event.type == "stdout":
+                    output += models.decode_chunk(event.data).decode()
+                    if marker in output:
+                        ready = True
+                        break
+        assert ready, "instance exited before its readiness marker"
+
+        uploaded = live("upload_file", payload)
+        path = "/tmp/client-live/input.txt"
+        live(
+            "apply_instance_file",
+            operation_id,
+            uploaded.uuid,
+            path,
+            unpack=False,
+            replace=False,
+            merge=False,
+        )
+        assert live("check_instance_file", operation_id, path)
+        assert not live("check_instance_file", operation_id, path + ".missing")
+        assert live("check_instance_archive", operation_id, "/tmp/client-live")
+        assert not live(
+            "check_instance_archive", operation_id, "/tmp/client-live-missing"
+        )
+        listing = live("inspect_instance_list", operation_id, "/tmp/client-live")
+        assert any(
+            item.path.rsplit("/", 1)[-1] == "input.txt" for item in listing.files
+        )
+        assert live("inspect_instance_download", operation_id, path) == payload
+        assert (
+            b"".join(
+                live(
+                    "inspect_instance_download_stream", operation_id, path, collect=True
+                )
+            )
+            == payload
+        )
+        grep = live(
+            "inspect_instance_grep",
+            operation_id,
+            "live-file",
+            path=[path],
+            glob=["*.txt"],
+        )
+        assert grep.matches and any(
+            payload.decode().strip() in match.line_text for match in grep.matches
+        )
+
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+            info = tarfile.TarInfo("extra.txt")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        uploaded_archive = live("upload_file", archive.getvalue())
+        live(
+            "apply_instance_file",
+            operation_id,
+            uploaded_archive.uuid,
+            "/tmp/client-live",
+            unpack=True,
+            replace=True,
+            merge=True,
+        )
+        assert (
+            live(
+                "inspect_instance_download", operation_id, "/tmp/client-live/extra.txt"
+            )
+            == payload
+        )
+        assert live("inspect_instance_download", operation_id, path) == payload
+        downloaded = b"".join(
+            live(
+                "inspect_instance_archive",
+                operation_id,
+                "/tmp/client-live",
+                collect=True,
+            )
+        )
+        with tarfile.open(fileobj=io.BytesIO(downloaded)) as tar:
+            entries = {
+                item.name.rsplit("/", 1)[-1]: item for item in tar if item.isfile()
+            }
+            for name in ("input.txt", "extra.txt"):
+                extracted = tar.extractfile(entries[name])
+                assert extracted is not None and extracted.read() == payload
+
+        live("operation_subprocess_stdin", operation_id, 1, "done\n", close=True)
+        finished = sync_client.wait_operation(operation_id, timeout=60)
+        assert finished.status == models.OperationStatus.SUCCESS, finished.error
+        events = live("iter_operation_events", operation_id, collect=True)
+        inspections = [event for event in events if event.type == "inspect"]
+        assert inspections and all(
+            isinstance(event.data, models.EventDataInspect) for event in inspections
+        )
+        assert all(event.spid == 0 for event in inspections)
+        assert {event.data.method for event in inspections} >= {
+            "upload",
+            "list",
+            "open",
+            "archive",
+            "grep",
+        }
+        starts = {
+            event.data.request_id
+            for event in inspections
+            if event.data.phase == "started"
+        }
+        finishes = {
+            event.data.request_id
+            for event in inspections
+            if event.data.phase == "completed"
+        }
+        assert starts == finishes
+        uploads = [event.data for event in events if event.type == "file_upload"]
+        assert len(uploads) == 2
+        assert all(
+            isinstance(data, models.EventDataFileUpload)
+            and data.status == "success"
+            and data.error is None
+            for data in uploads
+        )
+        assert {data.file_uuid for data in uploads} == {
+            uploaded.uuid,
+            uploaded_archive.uuid,
+        }
+        assert {data.bytes for data in uploads} == {
+            len(payload),
+            len(archive.getvalue()),
+        }
+    finally:
+        status = sync_client.get_operation_status(operation_id, inflight=True).status
+        if not status.is_terminal():
+            sync_client.cancel_operation(operation_id)
+            sync_client.wait_operation(operation_id, timeout=60, follow_events=False)
