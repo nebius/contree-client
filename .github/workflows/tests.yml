@@ -5,6 +5,7 @@ on:
     branches: [master, main]
   pull_request:
     branches: [master, main]
+  workflow_dispatch:
 
 env:
   DEFAULT_PYTHON: "3.14"
@@ -271,6 +272,8 @@ jobs:
     name: Documentation
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     env:
       CONTREE_SPEC: ${{ secrets.CONTREE_SPEC }}
     steps:
@@ -300,6 +303,39 @@ jobs:
         # generates from the spec itself
         if: env.CONTREE_SPEC != ''
         run: make docs docs-mintlify
+
+      - name: Require the specification for publication
+        if: github.ref == 'refs/heads/master'
+        run: test -n "$CONTREE_SPEC"
+
+      - name: Upload GitHub Pages artifact
+        if: env.CONTREE_SPEC != ''
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: docs/_build/html
+
+  pages:
+    name: Publish documentation
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    needs: docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Deploy documentation
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
   integration:
     name: Integration (live API, python + js + go)

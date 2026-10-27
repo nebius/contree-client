@@ -7,7 +7,7 @@ Source and build tooling for the Contree API clients:
 - [Go client](go/v1) — versioned package in the `go` module
 - [Client parity](docs/parity.md) — implemented behavior and remaining work
 - `codegen/` — OpenAPI generator
-- `docs/` — documentation
+- [Documentation](https://nebius.github.io/contree-client/) — tutorials and API reference
 
 ## Architecture
 
@@ -70,6 +70,11 @@ make build    # build the Python and npm distributions
 make go       # regenerate, lint, and test the Go module
 make test-go  # test committed Go sources without the specification
 ```
+
+GitHub Actions publishes the HTML documentation to GitHub Pages after the
+documentation build succeeds on `master`. Pull requests build the site as an
+artifact without publishing it. To republish, run the `Tests` workflow manually
+on `master`. The build uses the repository's `CONTREE_SPEC` secret.
 
 The root project is a `uv` workspace containing the generator and Python
 client. JavaScript development requires Node.js and npm. The Go module is in
