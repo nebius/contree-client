@@ -49,27 +49,8 @@ func noError(err error) {
 }
 
 func image(ctx context.Context, c *contree.Client) string {
-    limit := int64(100)
-    response := must(c.ListImages(ctx, &contree.ListImagesOptions{Tagged: true, Limit: &limit}))
-
-    images, _ := response.Images.Value()
-
-    for _, item := range images {
-        tag, _ := item.Tag.Value()
-        id, _ := item.UUID.Value()
-        if strings.Contains(tag, "busybox") && id != "" {
-            return id
-        }
-    }
-
-    for _, item := range images {
-        id, _ := item.UUID.Value()
-        if id != "" && must(c.CheckImageFile(ctx, id, "/bin/sh")) {
-            return id
-        }
-    }
-
-    return ""
+    check(SAMPLE_IMAGE_UUID != "", "the session image fixture is required")
+    return SAMPLE_IMAGE_UUID
 }
 
 func spawn(ctx context.Context, c *contree.Client, command, image string, options contree.SpawnInstanceOptions) string {
@@ -150,11 +131,25 @@ def live_go(gorun: Callable[[str], str]) -> Callable[..., None]:
     if not os.environ.get("CONTREE_URL"):
         pytest.fail("Go live tests require an explicit CONTREE_URL")
 
-    def run(source: str, *, imports: str = "") -> None:
-        program = COMMON.replace("EXTRA_IMPORTS", imports).replace("SCENARIO", source)
+    def run(source: str, *, imports: str = "", image_uuid: str = "") -> None:
+        program = (
+            COMMON.replace("EXTRA_IMPORTS", imports)
+            .replace("SCENARIO", source)
+            .replace("SAMPLE_IMAGE_UUID", json.dumps(image_uuid))
+        )
         result = json.loads(gorun(program))
         if result["skip"]:
             pytest.skip(result["skip"])
+
+    return run
+
+
+@pytest.fixture
+def live_go_image(
+    live_go: Callable[..., None], live_image_uuid: str
+) -> Callable[..., None]:
+    def run(source: str, *, imports: str = "") -> None:
+        live_go(source, imports=imports, image_uuid=live_image_uuid)
 
     return run
 
@@ -202,8 +197,8 @@ def test_go_upload_and_dedup(live_go: Callable[..., None]) -> None:
     )
 
 
-def test_go_inspect_download_and_archive(live_go: Callable[..., None]) -> None:
-    live_go(
+def test_go_inspect_download_and_archive(live_go_image: Callable[..., None]) -> None:
+    live_go_image(
         r"""
     id := image(ctx, c)
     if id == "" {
@@ -266,8 +261,8 @@ SPAWN_SETUP = r"""
 """
 
 
-def test_go_spawn_follow_wait_and_replay(live_go: Callable[..., None]) -> None:
-    live_go(
+def test_go_spawn_follow_wait_and_replay(live_go_image: Callable[..., None]) -> None:
+    live_go_image(
         SPAWN_SETUP
         + r"""
 
@@ -306,8 +301,8 @@ def test_go_spawn_follow_wait_and_replay(live_go: Callable[..., None]) -> None:
     )
 
 
-def test_go_cancel(live_go: Callable[..., None]) -> None:
-    live_go(
+def test_go_cancel(live_go_image: Callable[..., None]) -> None:
+    live_go_image(
         SPAWN_SETUP
         + r"""
     id := spawn(ctx, c, "sleep 120", imageID, contree.SpawnInstanceOptions{
@@ -326,8 +321,8 @@ def test_go_cancel(live_go: Callable[..., None]) -> None:
     )
 
 
-def test_go_preserve_cwd(live_go: Callable[..., None]) -> None:
-    live_go(
+def test_go_preserve_cwd(live_go_image: Callable[..., None]) -> None:
+    live_go_image(
         SPAWN_SETUP
         + r"""
     if !permissions["spawn"] {
@@ -359,4 +354,132 @@ def test_go_preserve_cwd(live_go: Callable[..., None]) -> None:
     success(result)
     check(strings.TrimSpace(stdout(result)) == "/tmp", "result image did not preserve cwd")
     """
+    )
+
+
+def test_go_live_instance_files_and_events(live_go_image: Callable[..., None]) -> None:
+    live_go_image(
+        SPAWN_SETUP
+        + r"""
+
+    if !permissions["spawn_disposable"] {
+        return "token lacks disposable spawn permission"
+    }
+
+    marker := fmt.Sprintf("ready-%d", time.Now().UnixNano())
+    payload := []byte(fmt.Sprintf("live-file-%d\n", time.Now().UnixNano()))
+    id := spawn(ctx, c, "echo "+marker+"; read line", imageID, contree.SpawnInstanceOptions{
+        Shell: true, Disposable: true, Timeout: 180 * time.Second,
+        Stdin:           &contree.ClosableStreamRepr{Value: "", Close: contree.Some(false)},
+        ResourcesLimits: &contree.InstanceResourcesLimits{CPU: contree.Some(int64(2)), MemoryMib: contree.Some(int64(256))},
+    })
+    defer cleanup(c, id)
+
+    ready := false
+    var output strings.Builder
+    for event, err := range c.FollowOperationEvents(ctx, id, nil) {
+        noError(err)
+        if event.Type == contree.OperationEventTypeStdout {
+            output.Write(contree.DecodeChunk(event.Data))
+            if strings.Contains(output.String(), marker) {
+                ready = true
+                break
+            }
+        }
+    }
+    check(ready, "instance exited before readiness")
+
+    uploaded := must(c.UploadFile(ctx, bytes.NewReader(payload)))
+    path := "/tmp/client-live/input.txt"
+    noError(c.ApplyInstanceFile(ctx, id, uploaded.UUID, path, &contree.ApplyInstanceFileOptions{
+        Unpack: contree.Some(false), Replace: contree.Some(false), Merge: contree.Some(false),
+    }))
+    check(must(c.CheckInstanceFile(ctx, id, path)), "uploaded file does not exist")
+    check(!must(c.CheckInstanceFile(ctx, id, path+".missing")), "missing file exists")
+    check(must(c.CheckInstanceArchive(ctx, id, "/tmp/client-live")), "directory cannot be archived")
+    check(!must(c.CheckInstanceArchive(ctx, id, "/tmp/client-live-missing")), "missing archive exists")
+
+    listing := must(c.InspectInstanceList(ctx, id, "/tmp/client-live"))
+    found := false
+    for _, file := range listing.Files {
+        if strings.HasSuffix(file.Path, "input.txt") {
+            found = true
+        }
+    }
+    check(found, "list omitted uploaded file")
+    check(bytes.Equal(must(c.InspectInstanceDownload(ctx, id, path)), payload), "download differs")
+
+    stream := must(c.InspectInstanceDownloadStream(ctx, id, path))
+    downloaded, err := io.ReadAll(stream)
+    noError(stream.Close())
+    noError(err)
+    check(bytes.Equal(downloaded, payload), "streamed download differs")
+
+    paths := []string{path}
+    globs := []string{"*.txt"}
+    grep := must(c.InspectInstanceGrep(ctx, id, []string{"live-file"}, &contree.InspectInstanceGrepOptions{Path: &paths, Glob: &globs}))
+    check(len(grep.Matches) > 0 && strings.Contains(grep.Matches[0].LineText, strings.TrimSpace(string(payload))), "grep missed content")
+
+    archive := must(c.InspectInstanceArchive(ctx, id, "/tmp/client-live"))
+    reader := tar.NewReader(archive)
+    found = false
+    for {
+        header, err := reader.Next()
+        if err == io.EOF {
+            break
+        }
+        noError(err)
+        if strings.HasSuffix(header.Name, "input.txt") {
+            check(bytes.Equal(must(io.ReadAll(reader)), payload), "archive content differs")
+            found = true
+        }
+    }
+    noError(archive.Close())
+    check(found, "archive omitted input.txt")
+
+    replacement := []byte(fmt.Sprintf("replacement-%d\n", time.Now().UnixNano()))
+    second := must(c.UploadFile(ctx, bytes.NewReader(replacement)))
+    noError(c.ApplyInstanceFile(ctx, id, second.UUID, path, &contree.ApplyInstanceFileOptions{Replace: contree.Some(true)}))
+    check(bytes.Equal(must(c.InspectInstanceDownload(ctx, id, path)), replacement), "replacement differs")
+
+    noError(c.OperationSubprocessStdin(ctx, id, 1, "done\n", &contree.OperationSubprocessStdinOptions{Close: contree.Some(true)}))
+    success(must(c.WaitOperation(ctx, id)))
+
+    methods := map[string]bool{}
+    started := map[string]bool{}
+    completed := map[string]bool{}
+    uploads := map[string]int64{}
+    for event, err := range c.IterOperationEvents(ctx, id, nil) {
+        noError(err)
+        switch event.Type {
+        case contree.OperationEventTypeInspect:
+            data, ok := event.Data.(contree.EventDataInspect)
+            check(ok, fmt.Sprintf("inspect payload type %T", event.Data))
+            spid, present := event.Spid.Value()
+            check(present && spid == 0, "inspect event is not operation-scoped")
+            methods[data.Method] = true
+            if data.Phase == "started" {
+                started[data.RequestID] = true
+            }
+            if data.Phase == "completed" {
+                completed[data.RequestID] = true
+            }
+        case contree.OperationEventTypeFileUpload:
+            data, ok := event.Data.(contree.EventDataFileUpload)
+            check(ok, fmt.Sprintf("upload payload type %T", event.Data))
+            check(data.Status == "success" && data.Error == nil, "upload event reports failure")
+            uploads[data.FileUUID] = data.Bytes
+        }
+    }
+    for _, method := range []string{"upload", "list", "open", "archive", "grep"} {
+        check(methods[method], "missing inspect method "+method)
+    }
+    check(len(started) == len(completed), "inspect request/result counts differ")
+    for requestID := range started {
+        check(completed[requestID], "inspect result missing")
+    }
+    check(len(uploads) == 2 && uploads[uploaded.UUID] == int64(len(payload)) && uploads[second.UUID] == int64(len(replacement)), "file_upload events differ from transferred files")
+
+    """,
+        imports='"archive/tar"; "bytes"; "io"',
     )
