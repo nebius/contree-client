@@ -21,7 +21,6 @@ import (
     "encoding/json"
     "fmt"
     "os"
-    "strings"
     "time"
     EXTRA_IMPORTS
 
@@ -193,7 +192,7 @@ def test_go_upload_and_dedup(live_go: Callable[..., None]) -> None:
     existing := must(c.EnsureFile(ctx, strings.NewReader(payload), nil))
     check(existing.UUID == uploaded.UUID, "EnsureFile did not reuse the uploaded file")
     """,
-        imports='"crypto/sha256"',
+        imports='"crypto/sha256"; "strings"',
     )
 
 
@@ -297,7 +296,8 @@ def test_go_spawn_follow_wait_and_replay(live_go_image: Callable[..., None]) -> 
         }
     }
     check(last == "completion" && strings.Contains(output.String(), marker), "retained SSE lost output or completion")
-    """
+    """,
+        imports='"strings"',
     )
 
 
@@ -353,7 +353,8 @@ def test_go_preserve_cwd(live_go_image: Callable[..., None]) -> None:
     result := must(c.WaitOperation(ctx, second))
     success(result)
     check(strings.TrimSpace(stdout(result)) == "/tmp", "result image did not preserve cwd")
-    """
+    """,
+        imports='"strings"',
     )
 
 
@@ -481,5 +482,5 @@ def test_go_live_instance_files_and_events(live_go_image: Callable[..., None]) -
     check(len(uploads) == 2 && uploads[uploaded.UUID] == int64(len(payload)) && uploads[second.UUID] == int64(len(replacement)), "file_upload events differ from transferred files")
 
     """,
-        imports='"archive/tar"; "bytes"; "io"',
+        imports='"archive/tar"; "bytes"; "io"; "strings"',
     )
