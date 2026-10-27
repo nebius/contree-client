@@ -254,6 +254,9 @@ generated operation with `Mock`, `MockError`, `MockStream`, or `MockHTTP`.
 
 See [Testing Go code](testing.md) for complete examples.
 
+See the [Go API reference](reference.md) for every exported type, function,
+and method, generated from the Go source and its doc comments.
+
 The package API is also available through
 [pkg.go.dev](https://pkg.go.dev/github.com/nebius/contree-client/go/v1) after
 the first Go module release.

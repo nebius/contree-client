@@ -187,6 +187,7 @@ js/testing
 :maxdepth: 2
 
 go/api
+go/reference
 go/testing
 ```
 
