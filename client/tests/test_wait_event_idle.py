@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import select
+import socket
 import threading
 from collections.abc import Callable, Iterator
 from types import SimpleNamespace
@@ -114,84 +115,129 @@ def test_silent_events_release_single_connection(
     assert silent_events == ["events", "status", "events", "status"]
 
 
-@pytest.mark.parametrize("asynchronous", [False, True])
-def test_event_progress_resets_idle_deadline(
-    monkeypatch: pytest.MonkeyPatch, asynchronous: bool
+@pytest.mark.parametrize("ending", ["pause", "keepalive", "deadline"])
+def test_event_progress_through_transport(
+    invoke: Callable[..., Any],
+    stub_server: server.StubServer,
+    monkeypatch: pytest.MonkeyPatch,
+    ending: str,
 ) -> None:
-    # Advance a fake clock through several idle intervals. Payload events reset
-    # the idle deadline; keepalives do not. Status reads require a closed stream.
-    clock = SimpleNamespace(now=100.0)
-    monkeypatch.setattr(
-        base, "time", SimpleNamespace(monotonic=lambda: clock.now, sleep=lambda _: None)
-    )
-    calls = []
-    deadlines = []
-    closed = threading.Event()
+    """Exercise native adapter timers and sockets, including compressed SSE."""
+    progress_done = threading.Event()
+    release = threading.Event()
+    stream_finished = threading.Event()
+    idle_interval = base.TIGHT_LOOP_FLOOR
+    # The producer runs across several native idle intervals. This timer drives
+    # server output; assertions use protocol phases and socket state, not elapsed
+    # durations. Mocking stream() or its clock would bypass aiohttp's total timer.
+    progress_timer = threading.Timer(3 * idle_interval, progress_done.set)
+    stream_socket: socket.socket | None = None
+    probes: list[tuple[bool, bool]] = []
+    keepalives = 0
+    sent = 0
+    stream_calls = 0
+    send_stream = server.Handler.send_stream
 
-    def chunks(spec: Any) -> Iterator[bytes]:
-        calls.append("events")
+    def peer_closed() -> bool:
+        assert stream_socket is not None
+        if stream_socket.fileno() < 0:
+            return True
+        readable, _, _ = select.select([stream_socket], [], [], 0)
+        if not readable:
+            return False
         try:
-            if calls == ["events"]:
-                for event_id in range(4):
-                    assert spec.deadline == pytest.approx(clock.now + 0.5)
-                    clock.now += 0.4
-                    yield server.sse_frame(
-                        {
-                            **server.EVENT_COMPLETION,
-                            "id": event_id,
-                            "type": "stdout",
-                            "data": {"value": "x", "encoding": "ascii"},
-                        }
-                    )
-                    assert calls == ["events"]
-                clock.now += 0.5
-                # A real transport rejects the next read at this deadline.
-                assert spec.deadline == pytest.approx(clock.now)
-                raise TimeoutError("idle")
-            yield server.sse_frame(server.EVENT_COMPLETION)
+            return stream_socket.recv(1, socket.MSG_PEEK) == b""
+        except ConnectionResetError:
+            return True
+
+    def capture_socket(handler: server.Handler, reply: server.Reply) -> None:
+        nonlocal stream_socket
+        if stream_socket is not None:
+            send_stream(handler, reply)
+            return
+        # Keep our observation socket valid when the handler thread exits.
+        # EOF on this duplicate proves that the client closed its side.
+        stream_socket = handler.connection.dup()
+        try:
+            send_stream(handler, reply)
         finally:
-            closed.set()
+            stream_finished.set()
 
-    def response(spec: Any) -> Any:
-        assert closed.is_set()
-        calls.append("status")
-        deadlines.append(spec.deadline)
-        return base.ResponseData(
-            200, {}, json.dumps(server.OPERATION_RESPONSE).encode()
-        )
-
-    if asynchronous:
-
-        async def async_chunks(self: Any, spec: Any, **kwargs: Any) -> Any:
-            for chunk in chunks(spec):
-                yield chunk
-
-        async def async_response(self: Any, spec: Any) -> Any:
-            return response(spec)
-
-        monkeypatch.setattr(ContreeAsyncClient, "stream", async_chunks)
-        monkeypatch.setattr(ContreeAsyncClient, "request", async_response)
-
-        async def run() -> Any:
-            client = ContreeAsyncClient("test")
-            try:
-                return await client.wait_operation(
-                    server.OPERATION_UUID, timeout=10, follow_events=True
-                )
-            finally:
-                await client.close()
-
-        result = asyncio.run(run())
-    else:
-        monkeypatch.setattr(ContreeClient, "stream", lambda self, spec: chunks(spec))
-        monkeypatch.setattr(ContreeClient, "request", lambda self, spec: response(spec))
-        with ContreeClient("test") as client:
-            result = client.wait_operation(
-                server.OPERATION_UUID, timeout=10, follow_events=True
+    def frames() -> Iterator[bytes]:
+        nonlocal keepalives, sent
+        progress_timer.start()
+        while not progress_done.is_set() and not release.is_set():
+            yield server.sse_frame(
+                {
+                    **server.EVENT_COMPLETION,
+                    "id": sent,
+                    "type": "stdout",
+                    "data": {"value": "x", "encoding": "ascii"},
+                }
             )
-    assert str(result.status) == "SUCCESS"
-    assert calls == ["events", "status", "events", "status"]
-    assert deadlines == [110.0, 110.0]
+            sent += 1
+        if ending == "deadline":
+            # A waiter that renews its overall deadline would reach completion
+            # and return success instead of raising TimeoutError.
+            yield server.sse_frame({**server.EVENT_COMPLETION, "id": sent})
+        elif ending == "keepalive":
+            while not release.is_set():
+                keepalives += 1
+                yield b": keepalive\n\n"
+        else:
+            release.wait(15)  # Deadlock watchdog; the server does not send EOF.
+
+    def route(request: server.Captured, attempts: Any) -> server.Reply:
+        nonlocal stream_calls
+        if request.path.endswith("/events"):
+            stream_calls += 1
+            if stream_calls == 1:
+                return server.Reply(
+                    status=200, content_type="text/event-stream", stream_chunks=frames()
+                )
+            return server.Reply(
+                status=200,
+                content_type="text/event-stream",
+                stream_chunks=[
+                    server.sse_frame({**server.EVENT_COMPLETION, "id": sent})
+                ],
+            )
+        probes.append((progress_done.is_set(), peer_closed()))
+        return server.json_reply(200, server.OPERATION_RESPONSE)
+
+    monkeypatch.setattr(server.Handler, "send_stream", capture_socket)
+    monkeypatch.setattr(server, "route", route)
+    try:
+        if ending == "deadline":
+            with pytest.raises(TimeoutError, match=server.OPERATION_UUID):
+                invoke(
+                    "wait_operation",
+                    server.OPERATION_UUID,
+                    follow_events=True,
+                    timeout=2 * idle_interval,
+                )
+            assert probes == [], "status was requested while payload events progressed"
+            assert peer_closed(), "the expired waiter left its stream open"
+        else:
+            result = invoke(
+                "wait_operation", server.OPERATION_UUID, follow_events=True, timeout=15
+            )
+            assert str(result.status) == "SUCCESS"
+            assert probes == [(True, True), (True, True)], (
+                "status probes must follow the progress phase and stream closure",
+                probes,
+            )
+            if ending == "keepalive":
+                assert keepalives > 0
+        assert sent > 0
+    finally:
+        release.set()
+        progress_timer.cancel()
+        try:
+            assert stream_finished.wait(15), "server stream did not shut down"
+        finally:
+            if stream_socket is not None:
+                stream_socket.close()
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])

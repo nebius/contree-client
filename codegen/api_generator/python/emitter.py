@@ -2164,9 +2164,7 @@ def emit_sse_method(operation: OperationDef, async_mode: bool) -> list[str]:
         [
             f"{INDENT}def reset_idle_deadline() -> None:",
             f"{INDENT * 2}if _idle_timeout is not None:",
-            f"{INDENT * 3}idle_deadline = time.monotonic() + _idle_timeout",
-            f"{INDENT * 3}spec.deadline = (idle_deadline if deadline is None "
-            "else min(deadline, idle_deadline))",
+            f"{INDENT * 3}spec.idle_deadline = time.monotonic() + _idle_timeout",
             f"{INDENT * 3}spec.read_timeout = _idle_timeout",
             f"{INDENT}reset_idle_deadline()",
         ]

@@ -148,11 +148,11 @@ class ContreeClient(base.ContreeSyncClient):
     def _open_stream(self, spec: RequestSpec) -> requests.Response:
         url = self.build_url(spec)
         headers = dict(self.build_headers(spec))
-        connect_timeout = remaining_timeout(spec.deadline, self.timeout)
+        connect_timeout = remaining_timeout(spec.stream_deadline, self.timeout)
         # only SSE may idle (bounded by spec.read_timeout when a
         # deadline is set); downloads must time out
         read_timeout = remaining_timeout(
-            spec.deadline,
+            spec.stream_deadline,
             spec.read_timeout if spec.accept == "text/event-stream" else self.timeout,
         )
         timeout: tuple[float | None, float | None] | Urllib3Timeout | None
@@ -211,7 +211,7 @@ class ContreeClient(base.ContreeSyncClient):
                     # the underlying urllib3 response for the wire bytes
                     chunks = response.raw.stream(CHUNK_SIZE, decode_content=False)
                 for chunk in chunks:
-                    remaining_timeout(spec.deadline, None)
+                    remaining_timeout(spec.stream_deadline, None)
                     yield chunk
 
     def close(self) -> None:

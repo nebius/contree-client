@@ -13,6 +13,7 @@ import tarfile
 import threading
 import time
 import zlib
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -287,7 +288,7 @@ class Reply:
     # chunked streaming mode (SSE frames, archives): every chunk is
     # gzip-compressed incrementally with Z_SYNC_FLUSH, mirroring the
     # real API behaviour
-    stream_chunks: list[bytes] | None = None
+    stream_chunks: Iterable[bytes] | None = None
     hang: float = 0.0
     # Tests can hold EOF until the consumer has received streamed data.
     stream_release: threading.Event | None = None

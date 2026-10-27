@@ -124,9 +124,9 @@ class ContreeClient(base.ContreeSyncClient):
     ) -> Iterator[bytes]:
         with normalize_errors():
             url = self.build_url(spec)
-            timeout = remaining_timeout(spec.deadline, self.timeout)
+            timeout = remaining_timeout(spec.stream_deadline, self.timeout)
             read_timeout = remaining_timeout(
-                spec.deadline,
+                spec.stream_deadline,
                 spec.read_timeout
                 if spec.accept == "text/event-stream"
                 else self.timeout,
@@ -162,9 +162,9 @@ class ContreeClient(base.ContreeSyncClient):
                     response.iter_bytes() if auto_decompress else response.iter_raw()
                 )
                 for chunk in chunks:
-                    remaining_timeout(spec.deadline, None)
+                    remaining_timeout(spec.stream_deadline, None)
                     yield chunk
-                    remaining_timeout(spec.deadline, None)
+                    remaining_timeout(spec.stream_deadline, None)
 
     def close(self) -> None:
         if self.__owns_client:
@@ -245,9 +245,9 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
     ) -> AsyncGenerator[bytes, None]:
         with normalize_errors():
             url = self.build_url(spec)
-            timeout = remaining_timeout(spec.deadline, self.timeout)
+            timeout = remaining_timeout(spec.stream_deadline, self.timeout)
             read_timeout = remaining_timeout(
-                spec.deadline,
+                spec.stream_deadline,
                 spec.read_timeout
                 if spec.accept == "text/event-stream"
                 else self.timeout,
@@ -276,7 +276,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                         try:
                             body = await asyncio.wait_for(
                                 response.aread(),
-                                timeout=remaining_timeout(spec.deadline, None),
+                                timeout=remaining_timeout(spec.stream_deadline, None),
                             )
                         except asyncio.TimeoutError as exc:
                             raise TimeoutError(REQUEST_DEADLINE_MESSAGE) from exc
@@ -289,7 +289,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                     response.aiter_bytes() if auto_decompress else response.aiter_raw()
                 )
                 while True:
-                    timeout = remaining_timeout(spec.deadline, None)
+                    timeout = remaining_timeout(spec.stream_deadline, None)
                     try:
                         if timeout is None:
                             chunk = await anext(source)
@@ -304,7 +304,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                         # coarse event-loop clock can fire before monotonic()
                         # reaches the deadline, so do not recheck the clock.
                         raise TimeoutError(REQUEST_DEADLINE_MESSAGE) from exc
-                    remaining_timeout(spec.deadline, None)
+                    remaining_timeout(spec.stream_deadline, None)
                     yield chunk
 
     async def close(self) -> None:
