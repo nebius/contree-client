@@ -19,6 +19,16 @@ function frame(id, type = "completion") {
   );
 }
 
+function enableTimers(t) {
+  // Node 18 uses the original array-based MockTimers API.
+  const timers = ["setTimeout"];
+  t.mock.timers.enable(
+    Number(process.versions.node.split(".")[0]) < 20
+      ? timers
+      : { apis: timers },
+  );
+}
+
 function deferred() {
   let resolve;
   const promise = new Promise((done) => {
@@ -28,48 +38,53 @@ function deferred() {
 }
 
 for (const outcome of ["SUCCESS", "FAILED", "CANCELLED", null]) {
-  test(`completion waits for ${outcome} status`, async (t) => {
-    t.mock.timers.enable({ apis: ["setTimeout"] });
-    let clock = 100_000;
-    t.mock.method(performance, "now", () => clock);
-    const polled = deferred();
-    const reads = [];
-    const client = new ContreeClient("test", {
-      fetch: async (url) => {
-        if (url.includes("/events")) return new Response(frame(0));
-        const status = reads.length ? outcome : "EXECUTING";
-        reads.push(status);
-        return new Response(JSON.stringify({ status }));
-      },
-    });
-    const sleep = globalThis.setTimeout;
-    t.mock.method(globalThis, "setTimeout", (fn, ms, ...args) => {
-      const timer = sleep(fn, ms, ...args);
-      if (ms === 500 && reads.length) polled.resolve();
-      return timer;
-    });
-    const result = client.waitOperation(operationId, {
-      followEvents: true,
-      timeout: 10,
-    });
-    await polled.promise;
-    if (outcome === null) {
-      const failure = assert.rejects(result, { name: "TimeoutError" });
-      clock += 10_000;
-      t.mock.timers.tick(10_000);
-      await failure;
-      assert.deepEqual(reads, ["EXECUTING"]);
-    } else {
-      clock += 500;
-      t.mock.timers.tick(500);
-      assert.equal((await result).status, outcome);
-      assert.deepEqual(reads, ["EXECUTING", outcome]);
-    }
-  });
+  test(
+    outcome === null
+      ? "delayed status keeps the original deadline"
+      : `completion waits for ${outcome} status`,
+    async (t) => {
+      enableTimers(t);
+      let clock = 100_000;
+      t.mock.method(performance, "now", () => clock);
+      const polled = deferred();
+      const reads = [];
+      const client = new ContreeClient("test", {
+        fetch: async (url) => {
+          if (url.includes("/events")) return new Response(frame(0));
+          const status = reads.length ? outcome : "EXECUTING";
+          reads.push(status);
+          return new Response(JSON.stringify({ status }));
+        },
+      });
+      const sleep = globalThis.setTimeout;
+      t.mock.method(globalThis, "setTimeout", (fn, ms, ...args) => {
+        const timer = sleep(fn, ms, ...args);
+        if (ms === 500 && reads.length) polled.resolve();
+        return timer;
+      });
+      const result = client.waitOperation(operationId, {
+        followEvents: true,
+        timeout: 10,
+      });
+      await polled.promise;
+      if (outcome === null) {
+        const failure = assert.rejects(result, { name: "TimeoutError" });
+        clock += 10_000;
+        t.mock.timers.tick(10_000);
+        await failure;
+        assert.deepEqual(reads, ["EXECUTING"]);
+      } else {
+        clock += 500;
+        t.mock.timers.tick(500);
+        assert.equal((await result).status, outcome);
+        assert.deepEqual(reads, ["EXECUTING", outcome]);
+      }
+    },
+  );
 }
 
 test("event progress postpones status probes; keepalives do not", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableTimers(t);
   let clock = 100_000;
   t.mock.method(performance, "now", () => clock);
   let requested = deferred();
