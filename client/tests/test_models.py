@@ -251,6 +251,85 @@ def test_parse_event_data_all_service_types(models: ModuleType) -> None:
     assert completion.result_image_uuid is None
 
 
+def test_live_instance_event_payloads(models: ModuleType) -> None:
+    cases = [
+        (
+            "inspect",
+            models.EventDataInspect,
+            {
+                "request_id": "rpc-1",
+                "method": "upload",
+                "phase": "started",
+                "params": {
+                    "path": "/workspace",
+                    "file_uuid": "file-1",
+                    "unpack": True,
+                    "replace": True,
+                    "merge": False,
+                },
+            },
+        ),
+        (
+            "inspect",
+            models.EventDataInspect,
+            {
+                "request_id": "rpc-1",
+                "method": "upload",
+                "phase": "completed",
+                "status": "success",
+                "error": None,
+                "handle": "upload-1",
+            },
+        ),
+        (
+            "file_upload",
+            models.EventDataFileUpload,
+            {
+                "handle": "upload-1",
+                "file_uuid": "file-1",
+                "path": "/workspace",
+                "unpack": True,
+                "replace": True,
+                "merge": False,
+                "bytes": 512,
+                "status": "success",
+                "error": None,
+            },
+        ),
+    ]
+    for event_type, expected, payload in cases:
+        event = models.OperationEvent.from_dict(
+            {
+                "id": 1,
+                "ts": "2026-10-27T12:00:00Z",
+                "spid": 0,
+                "type": event_type,
+                "data": payload,
+            }
+        )
+        assert isinstance(event.data, expected)
+        assert event.to_dict()["data"] == payload
+        if "params" in payload:
+            assert isinstance(event.data.params, models.EventInspectParameters)
+            assert event.data.params.merge is False
+
+    assert models.parse_event_data("file_upload", {"handle": "incomplete"}) == {
+        "handle": "incomplete"
+    }
+
+
+def test_process_resource_limits_roundtrip(models: ModuleType) -> None:
+    for limits in (
+        {},
+        {"cpu": None, "memory_mib": None},
+        {"cpu": 1, "memory_mib": 256},
+    ):
+        wire = {"command": "/bin/true", "resources_limits": limits}
+        model = models.ExecSpec.from_dict(wire)
+        assert isinstance(model.resources_limits, models.ProcessResourcesLimits)
+        assert model.to_dict() == wire
+
+
 def test_image_import_metadata_roundtrip(models: ModuleType) -> None:
     metadata = models.ImageImportMetadata.from_dict(
         {

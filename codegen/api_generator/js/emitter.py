@@ -9,6 +9,7 @@ Wire names remain unchanged.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -284,6 +285,8 @@ export const EVENT_DATA_PARSERS = {{
 {parsers}
 }};
 
+const EVENT_DATA_REQUIRED_FIELDS = {required_fields};
+
 /** Decode a per-type event payload.
  *
  * Unknown event types and payloads that do not match the documented
@@ -294,8 +297,11 @@ export function parseEventData(eventType, data) {{
   if (data === null || typeof data !== "object" || Array.isArray(data)) {{
     return data;
   }}
+  if (!Object.hasOwn(EVENT_DATA_PARSERS, eventType)) {{
+    return data;
+  }}
   const cls = EVENT_DATA_PARSERS[eventType];
-  if (cls === undefined) {{
+  if (EVENT_DATA_REQUIRED_FIELDS[eventType].some((field) => !Object.hasOwn(data, field))) {{
     return data;
   }}
   try {{
@@ -410,6 +416,16 @@ def render_models_js(ir: SpecIR) -> str:
     parsers = "\n".join(
         f"  {event}: {type_ref.name}," for event, type_ref in ir.event_data_variants
     )
+    required_fields = {
+        event: [
+            field.wire_name
+            for model in ir.models
+            if model.name == type_ref.name
+            for field in model.fields
+            if field.required
+        ]
+        for event, type_ref in ir.event_data_variants
+    }
     parts = [
         HEADER,
         'import { base64ToBytes, bytesToBase64, bytesToText, parseDatetime, textToBytes } from "./runtime.js";',
@@ -428,7 +444,11 @@ def render_models_js(ir: SpecIR) -> str:
         ),
     ]
     parts.extend(render_class_js(cls) for cls in ir.models)
-    parts.append(MODELS_TAIL_JS.format(parsers=parsers).strip())
+    parts.append(
+        MODELS_TAIL_JS.format(
+            parsers=parsers, required_fields=json.dumps(required_fields)
+        ).strip()
+    )
     return "\n\n".join(parts) + "\n"
 
 

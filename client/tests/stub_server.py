@@ -228,13 +228,12 @@ BROKEN_SSE_FRAMES = [
 EVENT_COMPLETION = {
     "id": 3,
     "ts": "2026-06-08T20:00:00.20Z",
-    "spid": 0,
     "type": "completion",
     "data": {
         "status": "SUCCESS",
         "error": None,
-        "duration": 1.5,
-        "result_image": IMAGE_UUID,
+        "duration_ms": 1500,
+        "result_image_uuid": IMAGE_UUID,
     },
 }
 

@@ -393,6 +393,12 @@ are staged with {class}`~contree_client.FileSpec` (mode accepts an int
 / number or the octal wire string), and cgroup limits ride in
 {class}`~contree_client.InstanceResourcesLimits`:
 
+`InstanceResourcesLimits` also accepts `cpu` and `memory_mib` (`memoryMib` in
+JavaScript, `CPU` and `MemoryMib` in Go). Subprocess creation accepts a separate
+`ProcessResourcesLimits` model through `resources_limits` / `resourcesLimits` /
+`ResourcesLimits`. Omitted or null process limits inherit the requested operation
+limits. Process limits cannot exceed the operation limits.
+
 ::::{tab-set}
 
 :::{tab-item} Python · sync
@@ -896,6 +902,8 @@ flushes them. Follow mode keeps the connection open while the operation runs.
 Payloads are discriminated by `event.type` —
 {class}`~contree_client.EventDataStream` for stdout/stderr,
 {class}`~contree_client.EventDataExit`,
+{class}`~contree_client.EventDataInspect` for guest RPC metadata,
+{class}`~contree_client.EventDataFileUpload` for file publication results,
 {class}`~contree_client.EventDataCompletion` and friends;
 {func}`~contree_client.decode_chunk` / `decodeChunk()` extracts raw bytes from
 a stream payload. The higher-level `follow_operation_events()` /

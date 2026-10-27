@@ -646,6 +646,7 @@ func (c *Client) openIterOperationEvents(
 
 // OperationSubprocessCreateOptions contains optional arguments for OperationSubprocessCreate.
 type OperationSubprocessCreateOptions struct {
+	ResourcesLimits  Optional[ProcessResourcesLimits]
 	Args             Optional[[]string]
 	Shell            Optional[bool]
 	Env              Optional[map[string]string]
@@ -665,6 +666,7 @@ func buildOperationSubprocessCreate(
 		Command: command,
 	}
 	if options != nil {
+		payload.ResourcesLimits = options.ResourcesLimits
 		payload.Args = options.Args
 		payload.Shell = options.Shell
 		payload.Env = options.Env
@@ -822,6 +824,278 @@ func (c *Client) OperationSubprocessStdin(
 		return err
 	}
 	return emptyResponse(response, acceptAny2xx)
+}
+
+// ApplyInstanceFileOptions contains optional arguments for ApplyInstanceFile.
+type ApplyInstanceFileOptions struct {
+	Unpack  Optional[bool]
+	Replace Optional[bool]
+	Merge   Optional[bool]
+}
+
+func buildApplyInstanceFile(
+	operationUUID string,
+	fileUUID string,
+	path string,
+	options *ApplyInstanceFileOptions,
+) (requestSpec, error) {
+	payload := map[string]any{
+		"file_uuid": fileUUID,
+		"path":      path,
+	}
+	if options != nil && options.Unpack.IsSet() {
+		payload["unpack"] = options.Unpack
+	}
+	if options != nil && options.Replace.IsSet() {
+		payload["replace"] = options.Replace
+	}
+	if options != nil && options.Merge.IsSet() {
+		payload["merge"] = options.Merge
+	}
+	body, err := jsonBody(payload)
+	if err != nil {
+		return requestSpec{}, err
+	}
+	requestPath := "/operations/" + quotePath(operationUUID) + "/files"
+	return requestSpec{
+		method:      "POST",
+		path:        requestPath,
+		body:        body,
+		contentType: "application/json",
+		idempotent:  false,
+	}, nil
+}
+
+// ApplyInstanceFile calls POST /operations/{operation_uuid}/files.
+func (c *Client) ApplyInstanceFile(
+	ctx context.Context,
+	operationUUID string,
+	fileUUID string,
+	path string,
+	options *ApplyInstanceFileOptions,
+) error {
+	spec, err := buildApplyInstanceFile(operationUUID, fileUUID, path, options)
+	if err != nil {
+		return err
+	}
+	response, err := c.do(ctx, spec)
+	if err != nil {
+		return err
+	}
+	return emptyResponse(response, acceptAny2xx)
+}
+
+func buildInspectInstanceDownload(
+	operationUUID string,
+	path string,
+) (requestSpec, error) {
+	query := make(url.Values)
+	if err := addQueryValue(query, "path", path, false); err != nil {
+		return requestSpec{}, err
+	}
+	requestPath := "/operations/" + quotePath(operationUUID) + "/inspect/download"
+	return requestSpec{
+		method:     "GET",
+		path:       requestPath,
+		query:      query,
+		idempotent: true,
+	}, nil
+}
+
+// InspectInstanceDownload calls GET /operations/{operation_uuid}/inspect/download.
+func (c *Client) InspectInstanceDownload(
+	ctx context.Context,
+	operationUUID string,
+	path string,
+) ([]byte, error) {
+	spec, err := buildInspectInstanceDownload(operationUUID, path)
+	if err != nil {
+		var zero []byte
+		return zero, err
+	}
+	response, err := c.do(ctx, spec)
+	if err != nil {
+		var zero []byte
+		return zero, err
+	}
+	return byteResponse(response, acceptAny2xx)
+}
+
+// InspectInstanceDownloadStream streams the response body from InspectInstanceDownload.
+func (c *Client) InspectInstanceDownloadStream(
+	ctx context.Context,
+	operationUUID string,
+	path string,
+) (io.ReadCloser, error) {
+	spec, err := buildInspectInstanceDownload(operationUUID, path)
+	if err != nil {
+		var zero io.ReadCloser
+		return zero, err
+	}
+	response, err := c.doStream(ctx, spec)
+	if err != nil {
+		var zero io.ReadCloser
+		return zero, err
+	}
+	return streamResponse(response, acceptAny2xx)
+}
+
+func buildCheckInstanceFile(
+	operationUUID string,
+	path string,
+) (requestSpec, error) {
+	query := make(url.Values)
+	if err := addQueryValue(query, "path", path, false); err != nil {
+		return requestSpec{}, err
+	}
+	requestPath := "/operations/" + quotePath(operationUUID) + "/inspect/download"
+	return requestSpec{
+		method:     "HEAD",
+		path:       requestPath,
+		query:      query,
+		idempotent: true,
+	}, nil
+}
+
+// CheckInstanceFile calls HEAD /operations/{operation_uuid}/inspect/download.
+func (c *Client) CheckInstanceFile(
+	ctx context.Context,
+	operationUUID string,
+	path string,
+) (bool, error) {
+	spec, err := buildCheckInstanceFile(operationUUID, path)
+	if err != nil {
+		var zero bool
+		return zero, err
+	}
+	response, err := c.do(ctx, spec)
+	if err != nil {
+		var zero bool
+		return zero, err
+	}
+	return booleanResponse(response, acceptAny2xx, 404)
+}
+
+func buildInspectInstanceList(
+	operationUUID string,
+	path string,
+) (requestSpec, error) {
+	query := make(url.Values)
+	if err := addQueryValue(query, "path", path, false); err != nil {
+		return requestSpec{}, err
+	}
+	requestPath := "/operations/" + quotePath(operationUUID) + "/inspect/list"
+	return requestSpec{
+		method:     "GET",
+		path:       requestPath,
+		query:      query,
+		idempotent: true,
+	}, nil
+}
+
+// InspectInstanceList calls GET /operations/{operation_uuid}/inspect/list.
+func (c *Client) InspectInstanceList(
+	ctx context.Context,
+	operationUUID string,
+	path string,
+) (DirectoryList, error) {
+	spec, err := buildInspectInstanceList(operationUUID, path)
+	if err != nil {
+		var zero DirectoryList
+		return zero, err
+	}
+	return c.doJSON[DirectoryList](ctx, spec, acceptAny2xx)
+}
+
+func buildInspectInstanceArchive(
+	operationUUID string,
+	path string,
+) (requestSpec, error) {
+	query := make(url.Values)
+	if err := addQueryValue(query, "path", path, false); err != nil {
+		return requestSpec{}, err
+	}
+	requestPath := "/operations/" + quotePath(operationUUID) + "/inspect/archive"
+	return requestSpec{
+		method:     "GET",
+		path:       requestPath,
+		query:      query,
+		idempotent: true,
+	}, nil
+}
+
+// InspectInstanceArchive calls GET /operations/{operation_uuid}/inspect/archive.
+func (c *Client) InspectInstanceArchive(
+	ctx context.Context,
+	operationUUID string,
+	path string,
+) (io.ReadCloser, error) {
+	spec, err := buildInspectInstanceArchive(operationUUID, path)
+	if err != nil {
+		var zero io.ReadCloser
+		return zero, err
+	}
+	response, err := c.doStream(ctx, spec)
+	if err != nil {
+		var zero io.ReadCloser
+		return zero, err
+	}
+	return streamResponse(response, acceptAny2xx)
+}
+
+// InspectInstanceArchiveRaw streams the encoded response body from InspectInstanceArchive.
+func (c *Client) InspectInstanceArchiveRaw(
+	ctx context.Context,
+	operationUUID string,
+	path string,
+) (io.ReadCloser, error) {
+	spec, err := buildInspectInstanceArchive(operationUUID, path)
+	if err != nil {
+		var zero io.ReadCloser
+		return zero, err
+	}
+	response, err := c.doRawStream(ctx, spec)
+	if err != nil {
+		var zero io.ReadCloser
+		return zero, err
+	}
+	return rawStreamResponse(response, acceptAny2xx)
+}
+
+func buildCheckInstanceArchive(
+	operationUUID string,
+	path string,
+) (requestSpec, error) {
+	query := make(url.Values)
+	if err := addQueryValue(query, "path", path, false); err != nil {
+		return requestSpec{}, err
+	}
+	requestPath := "/operations/" + quotePath(operationUUID) + "/inspect/archive"
+	return requestSpec{
+		method:     "HEAD",
+		path:       requestPath,
+		query:      query,
+		idempotent: true,
+	}, nil
+}
+
+// CheckInstanceArchive calls HEAD /operations/{operation_uuid}/inspect/archive.
+func (c *Client) CheckInstanceArchive(
+	ctx context.Context,
+	operationUUID string,
+	path string,
+) (bool, error) {
+	spec, err := buildCheckInstanceArchive(operationUUID, path)
+	if err != nil {
+		var zero bool
+		return zero, err
+	}
+	response, err := c.do(ctx, spec)
+	if err != nil {
+		var zero bool
+		return zero, err
+	}
+	return booleanResponse(response, acceptAny2xx, 404)
 }
 
 func buildInspectFindImageByTag(
@@ -1093,6 +1367,85 @@ func (c *Client) InspectImageList(
 		return zero, err
 	}
 	return c.doJSON[DirectoryList](ctx, spec, acceptAny2xx)
+}
+
+// InspectInstanceGrepOptions contains optional arguments for InspectInstanceGrep.
+type InspectInstanceGrepOptions struct {
+	Path     *[]string
+	Glob     *[]string
+	MaxCount *int64
+	MaxTotal *int64
+	Case     *string
+	Before   *int64
+	After    *int64
+}
+
+func buildInspectInstanceGrep(
+	operationUUID string,
+	pattern []string,
+	options *InspectInstanceGrepOptions,
+) (requestSpec, error) {
+	query := make(url.Values)
+	if err := addQueryValue(query, "pattern", pattern, true); err != nil {
+		return requestSpec{}, err
+	}
+	if options != nil && options.Path != nil {
+		if err := addQueryValue(query, "path", *options.Path, true); err != nil {
+			return requestSpec{}, err
+		}
+	}
+	if options != nil && options.Glob != nil {
+		if err := addQueryValue(query, "glob", *options.Glob, true); err != nil {
+			return requestSpec{}, err
+		}
+	}
+	if options != nil && options.MaxCount != nil {
+		if err := addQueryValue(query, "max_count", *options.MaxCount, false); err != nil {
+			return requestSpec{}, err
+		}
+	}
+	if options != nil && options.MaxTotal != nil {
+		if err := addQueryValue(query, "max_total", *options.MaxTotal, false); err != nil {
+			return requestSpec{}, err
+		}
+	}
+	if options != nil && options.Case != nil {
+		if err := addQueryValue(query, "case", *options.Case, false); err != nil {
+			return requestSpec{}, err
+		}
+	}
+	if options != nil && options.Before != nil {
+		if err := addQueryValue(query, "before", *options.Before, false); err != nil {
+			return requestSpec{}, err
+		}
+	}
+	if options != nil && options.After != nil {
+		if err := addQueryValue(query, "after", *options.After, false); err != nil {
+			return requestSpec{}, err
+		}
+	}
+	requestPath := "/operations/" + quotePath(operationUUID) + "/inspect/grep"
+	return requestSpec{
+		method:     "GET",
+		path:       requestPath,
+		query:      query,
+		idempotent: true,
+	}, nil
+}
+
+// InspectInstanceGrep calls GET /operations/{operation_uuid}/inspect/grep.
+func (c *Client) InspectInstanceGrep(
+	ctx context.Context,
+	operationUUID string,
+	pattern []string,
+	options *InspectInstanceGrepOptions,
+) (GrepResult, error) {
+	spec, err := buildInspectInstanceGrep(operationUUID, pattern, options)
+	if err != nil {
+		var zero GrepResult
+		return zero, err
+	}
+	return c.doJSON[GrepResult](ctx, spec, acceptAny2xx)
 }
 
 // InspectImageGrepOptions contains optional arguments for InspectImageGrep.

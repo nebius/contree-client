@@ -154,6 +154,8 @@ EVENT_DATA_VARIANTS = (
     ("size_cap", model_ref("EventDataSizeCap")),
     ("network", model_ref("EventDataNetwork")),
     ("shutdown", model_ref("EventDataShutdown")),
+    ("inspect", model_ref("EventDataInspect")),
+    ("file_upload", model_ref("EventDataFileUpload")),
     ("completion", model_ref("EventDataCompletion")),
 )
 

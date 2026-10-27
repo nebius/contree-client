@@ -247,6 +247,8 @@ const (
 	OperationEventTypeSizeCap    OperationEventType = "size_cap"
 	OperationEventTypeNetwork    OperationEventType = "network"
 	OperationEventTypeShutdown   OperationEventType = "shutdown"
+	OperationEventTypeInspect    OperationEventType = "inspect"
+	OperationEventTypeFileUpload OperationEventType = "file_upload"
 	OperationEventTypeCompletion OperationEventType = "completion"
 )
 
@@ -282,6 +284,66 @@ const OperationResponseKindImageImport = "image_import"
 
 // OperationResponseKindInstance is a documented OperationResponseKind value.
 const OperationResponseKindInstance = "instance"
+
+// EventDataInspectMethodStat is a documented EventDataInspectMethod value.
+const EventDataInspectMethodStat = "stat"
+
+// EventDataInspectMethodList is a documented EventDataInspectMethod value.
+const EventDataInspectMethodList = "list"
+
+// EventDataInspectMethodOpen is a documented EventDataInspectMethod value.
+const EventDataInspectMethodOpen = "open"
+
+// EventDataInspectMethodArchive is a documented EventDataInspectMethod value.
+const EventDataInspectMethodArchive = "archive"
+
+// EventDataInspectMethodGrep is a documented EventDataInspectMethod value.
+const EventDataInspectMethodGrep = "grep"
+
+// EventDataInspectMethodRead is a documented EventDataInspectMethod value.
+const EventDataInspectMethodRead = "read"
+
+// EventDataInspectMethodClose is a documented EventDataInspectMethod value.
+const EventDataInspectMethodClose = "close"
+
+// EventDataInspectMethodUpload is a documented EventDataInspectMethod value.
+const EventDataInspectMethodUpload = "upload"
+
+// EventDataInspectMethodWrite is a documented EventDataInspectMethod value.
+const EventDataInspectMethodWrite = "write"
+
+// EventDataInspectMethodFinish is a documented EventDataInspectMethod value.
+const EventDataInspectMethodFinish = "finish"
+
+// EventDataInspectPhaseStarted is a documented EventDataInspectPhase value.
+const EventDataInspectPhaseStarted = "started"
+
+// EventDataInspectPhaseCompleted is a documented EventDataInspectPhase value.
+const EventDataInspectPhaseCompleted = "completed"
+
+// EventDataInspectStatusSuccess is a documented EventDataInspectStatus value.
+const EventDataInspectStatusSuccess = "success"
+
+// EventDataInspectStatusError is a documented EventDataInspectStatus value.
+const EventDataInspectStatusError = "error"
+
+// EventDataInspectStatusCancelled is a documented EventDataInspectStatus value.
+const EventDataInspectStatusCancelled = "cancelled"
+
+// EventDataInspectStatusTimeout is a documented EventDataInspectStatus value.
+const EventDataInspectStatusTimeout = "timeout"
+
+// EventDataFileUploadStatusSuccess is a documented EventDataFileUploadStatus value.
+const EventDataFileUploadStatusSuccess = "success"
+
+// EventDataFileUploadStatusError is a documented EventDataFileUploadStatus value.
+const EventDataFileUploadStatusError = "error"
+
+// EventDataFileUploadStatusCancelled is a documented EventDataFileUploadStatus value.
+const EventDataFileUploadStatusCancelled = "cancelled"
+
+// EventDataFileUploadStatusTimeout is a documented EventDataFileUploadStatus value.
+const EventDataFileUploadStatusTimeout = "timeout"
 
 // EventDataStreamEncodingAscii is a documented EventDataStreamEncoding value.
 const EventDataStreamEncodingAscii = "ascii"
@@ -321,6 +383,15 @@ const OperationSubprocessStdinEncodingAscii = "ascii"
 
 // OperationSubprocessStdinEncodingBase64 is a documented OperationSubprocessStdinEncoding value.
 const OperationSubprocessStdinEncodingBase64 = "base64"
+
+// InspectInstanceGrepCaseSensitive is a documented InspectInstanceGrepCase value.
+const InspectInstanceGrepCaseSensitive = "sensitive"
+
+// InspectInstanceGrepCaseInsensitive is a documented InspectInstanceGrepCase value.
+const InspectInstanceGrepCaseInsensitive = "insensitive"
+
+// InspectInstanceGrepCaseSmart is a documented InspectInstanceGrepCase value.
+const InspectInstanceGrepCaseSmart = "smart"
 
 // InspectImageGrepCaseSensitive is a documented InspectImageGrepCase value.
 const InspectImageGrepCaseSensitive = "sensitive"
@@ -1537,12 +1608,24 @@ func (m *ClosableStreamRepr) UnmarshalJSON(data []byte) error {
 
 // InstanceResourcesLimits is generated from the InstanceResourcesLimits schema.
 type InstanceResourcesLimits struct {
+	CPU           Optional[int64] `json:"cpu"`
+	MemoryMib     Optional[int64] `json:"memory_mib"`
 	MaxLayerBytes Optional[int64] `json:"max_layer_bytes"`
 }
 
 // MarshalJSON encodes InstanceResourcesLimits with exact wire names.
 func (m InstanceResourcesLimits) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 1)
+	object := make(map[string]json.RawMessage, 3)
+	if m.CPU.IsSet() {
+		if err := putJSONField(object, "cpu", m.CPU); err != nil {
+			return nil, fmt.Errorf("marshal InstanceResourcesLimits.cpu: %w", err)
+		}
+	}
+	if m.MemoryMib.IsSet() {
+		if err := putJSONField(object, "memory_mib", m.MemoryMib); err != nil {
+			return nil, fmt.Errorf("marshal InstanceResourcesLimits.memory_mib: %w", err)
+		}
+	}
 	if m.MaxLayerBytes.IsSet() {
 		if err := putJSONField(object, "max_layer_bytes", m.MaxLayerBytes); err != nil {
 			return nil, fmt.Errorf("marshal InstanceResourcesLimits.max_layer_bytes: %w", err)
@@ -1564,10 +1647,73 @@ func (m *InstanceResourcesLimits) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("InstanceResourcesLimits must be a JSON object")
 	}
 	var decoded InstanceResourcesLimits
+	rawCPU, ok := object["cpu"]
+	if ok {
+		if err := json.Unmarshal(rawCPU, &decoded.CPU); err != nil {
+			return fmt.Errorf("unmarshal InstanceResourcesLimits.cpu: %w", err)
+		}
+	}
+	rawMemoryMib, ok := object["memory_mib"]
+	if ok {
+		if err := json.Unmarshal(rawMemoryMib, &decoded.MemoryMib); err != nil {
+			return fmt.Errorf("unmarshal InstanceResourcesLimits.memory_mib: %w", err)
+		}
+	}
 	rawMaxLayerBytes, ok := object["max_layer_bytes"]
 	if ok {
 		if err := json.Unmarshal(rawMaxLayerBytes, &decoded.MaxLayerBytes); err != nil {
 			return fmt.Errorf("unmarshal InstanceResourcesLimits.max_layer_bytes: %w", err)
+		}
+	}
+	*m = decoded
+	return nil
+}
+
+// ProcessResourcesLimits is generated from the ProcessResourcesLimits schema.
+type ProcessResourcesLimits struct {
+	CPU       Optional[int64] `json:"cpu"`
+	MemoryMib Optional[int64] `json:"memory_mib"`
+}
+
+// MarshalJSON encodes ProcessResourcesLimits with exact wire names.
+func (m ProcessResourcesLimits) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 2)
+	if m.CPU.IsSet() {
+		if err := putJSONField(object, "cpu", m.CPU); err != nil {
+			return nil, fmt.Errorf("marshal ProcessResourcesLimits.cpu: %w", err)
+		}
+	}
+	if m.MemoryMib.IsSet() {
+		if err := putJSONField(object, "memory_mib", m.MemoryMib); err != nil {
+			return nil, fmt.Errorf("marshal ProcessResourcesLimits.memory_mib: %w", err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes ProcessResourcesLimits and checks required fields.
+func (m *ProcessResourcesLimits) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal ProcessResourcesLimits into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal ProcessResourcesLimits: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("ProcessResourcesLimits must be a JSON object")
+	}
+	var decoded ProcessResourcesLimits
+	rawCPU, ok := object["cpu"]
+	if ok {
+		if err := json.Unmarshal(rawCPU, &decoded.CPU); err != nil {
+			return fmt.Errorf("unmarshal ProcessResourcesLimits.cpu: %w", err)
+		}
+	}
+	rawMemoryMib, ok := object["memory_mib"]
+	if ok {
+		if err := json.Unmarshal(rawMemoryMib, &decoded.MemoryMib); err != nil {
+			return fmt.Errorf("unmarshal ProcessResourcesLimits.memory_mib: %w", err)
 		}
 	}
 	*m = decoded
@@ -1615,20 +1761,26 @@ func (m *InstanceNetworking) UnmarshalJSON(data []byte) error {
 
 // ExecSpec is generated from the ExecSpec schema.
 type ExecSpec struct {
-	Command          string                       `json:"command"`
-	Args             Optional[[]string]           `json:"args"`
-	Shell            Optional[bool]               `json:"shell"`
-	Env              Optional[map[string]string]  `json:"env"`
-	Cwd              Optional[string]             `json:"cwd"`
-	UID              Optional[int64]              `json:"uid"`
-	GID              Optional[int64]              `json:"gid"`
-	Stdin            Optional[ClosableStreamRepr] `json:"stdin"`
-	TruncateOutputAt Optional[int64]              `json:"truncate_output_at"`
+	ResourcesLimits  Optional[ProcessResourcesLimits] `json:"resources_limits"`
+	Command          string                           `json:"command"`
+	Args             Optional[[]string]               `json:"args"`
+	Shell            Optional[bool]                   `json:"shell"`
+	Env              Optional[map[string]string]      `json:"env"`
+	Cwd              Optional[string]                 `json:"cwd"`
+	UID              Optional[int64]                  `json:"uid"`
+	GID              Optional[int64]                  `json:"gid"`
+	Stdin            Optional[ClosableStreamRepr]     `json:"stdin"`
+	TruncateOutputAt Optional[int64]                  `json:"truncate_output_at"`
 }
 
 // MarshalJSON encodes ExecSpec with exact wire names.
 func (m ExecSpec) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 9)
+	object := make(map[string]json.RawMessage, 10)
+	if m.ResourcesLimits.IsSet() {
+		if err := putJSONField(object, "resources_limits", m.ResourcesLimits); err != nil {
+			return nil, fmt.Errorf("marshal ExecSpec.resources_limits: %w", err)
+		}
+	}
 	if err := putJSONField(object, "command", m.Command); err != nil {
 		return nil, fmt.Errorf("marshal ExecSpec.command: %w", err)
 	}
@@ -1688,6 +1840,12 @@ func (m *ExecSpec) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("ExecSpec must be a JSON object")
 	}
 	var decoded ExecSpec
+	rawResourcesLimits, ok := object["resources_limits"]
+	if ok {
+		if err := json.Unmarshal(rawResourcesLimits, &decoded.ResourcesLimits); err != nil {
+			return fmt.Errorf("unmarshal ExecSpec.resources_limits: %w", err)
+		}
+	}
 	rawCommand, ok := object["command"]
 	if !ok {
 		return fmt.Errorf("missing required field command")
@@ -2323,11 +2481,12 @@ type InstanceResultState struct {
 	Signal    Optional[int64] `json:"signal"`
 	Stopped   Optional[bool]  `json:"stopped"`
 	TimedOut  Optional[bool]  `json:"timed_out"`
+	OomKilled Optional[bool]  `json:"oom_killed"`
 }
 
 // MarshalJSON encodes InstanceResultState with exact wire names.
 func (m InstanceResultState) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 7)
+	object := make(map[string]json.RawMessage, 8)
 	if m.Continued.IsSet() {
 		if err := putJSONField(object, "continued", m.Continued); err != nil {
 			return nil, fmt.Errorf("marshal InstanceResultState.continued: %w", err)
@@ -2361,6 +2520,11 @@ func (m InstanceResultState) MarshalJSON() ([]byte, error) {
 	if m.TimedOut.IsSet() {
 		if err := putJSONField(object, "timed_out", m.TimedOut); err != nil {
 			return nil, fmt.Errorf("marshal InstanceResultState.timed_out: %w", err)
+		}
+	}
+	if m.OomKilled.IsSet() {
+		if err := putJSONField(object, "oom_killed", m.OomKilled); err != nil {
+			return nil, fmt.Errorf("marshal InstanceResultState.oom_killed: %w", err)
 		}
 	}
 	return json.Marshal(object)
@@ -2419,6 +2583,12 @@ func (m *InstanceResultState) UnmarshalJSON(data []byte) error {
 	if ok {
 		if err := json.Unmarshal(rawTimedOut, &decoded.TimedOut); err != nil {
 			return fmt.Errorf("unmarshal InstanceResultState.timed_out: %w", err)
+		}
+	}
+	rawOomKilled, ok := object["oom_killed"]
+	if ok {
+		if err := json.Unmarshal(rawOomKilled, &decoded.OomKilled); err != nil {
+			return fmt.Errorf("unmarshal InstanceResultState.oom_killed: %w", err)
 		}
 	}
 	*m = decoded
@@ -3981,6 +4151,20 @@ func decodeOperationEventData(kind string, raw json.RawMessage) (EventData, erro
 		} else {
 			break
 		}
+	case "inspect":
+		var value EventDataInspect
+		if err := json.Unmarshal(raw, &value); err == nil {
+			return value, nil
+		} else {
+			break
+		}
+	case "file_upload":
+		var value EventDataFileUpload
+		if err := json.Unmarshal(raw, &value); err == nil {
+			return value, nil
+		} else {
+			break
+		}
 	case "completion":
 		var value EventDataCompletion
 		if err := json.Unmarshal(raw, &value); err == nil {
@@ -3994,6 +4178,551 @@ func decodeOperationEventData(kind string, raw json.RawMessage) (EventData, erro
 		return nil, err
 	}
 	return value, nil
+}
+
+// EventInspectParametersOptions is generated from the EventInspectParametersOptions schema.
+type EventInspectParametersOptions struct {
+	Patterns *[]string `json:"patterns"`
+	Globs    *[]string `json:"globs"`
+	Case     string    `json:"case"`
+	MaxCount int64     `json:"max_count"`
+	MaxTotal int64     `json:"max_total"`
+	Before   int64     `json:"before"`
+	After    int64     `json:"after"`
+}
+
+// MarshalJSON encodes EventInspectParametersOptions with exact wire names.
+func (m EventInspectParametersOptions) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 7)
+	if err := putJSONField(object, "patterns", m.Patterns); err != nil {
+		return nil, fmt.Errorf("marshal EventInspectParametersOptions.patterns: %w", err)
+	}
+	if err := putJSONField(object, "globs", m.Globs); err != nil {
+		return nil, fmt.Errorf("marshal EventInspectParametersOptions.globs: %w", err)
+	}
+	if err := putJSONField(object, "case", m.Case); err != nil {
+		return nil, fmt.Errorf("marshal EventInspectParametersOptions.case: %w", err)
+	}
+	if err := putJSONField(object, "max_count", m.MaxCount); err != nil {
+		return nil, fmt.Errorf("marshal EventInspectParametersOptions.max_count: %w", err)
+	}
+	if err := putJSONField(object, "max_total", m.MaxTotal); err != nil {
+		return nil, fmt.Errorf("marshal EventInspectParametersOptions.max_total: %w", err)
+	}
+	if err := putJSONField(object, "before", m.Before); err != nil {
+		return nil, fmt.Errorf("marshal EventInspectParametersOptions.before: %w", err)
+	}
+	if err := putJSONField(object, "after", m.After); err != nil {
+		return nil, fmt.Errorf("marshal EventInspectParametersOptions.after: %w", err)
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes EventInspectParametersOptions and checks required fields.
+func (m *EventInspectParametersOptions) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal EventInspectParametersOptions into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal EventInspectParametersOptions: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("EventInspectParametersOptions must be a JSON object")
+	}
+	var decoded EventInspectParametersOptions
+	rawPatterns, ok := object["patterns"]
+	if !ok {
+		return fmt.Errorf("missing required field patterns")
+	}
+	if err := json.Unmarshal(rawPatterns, &decoded.Patterns); err != nil {
+		return fmt.Errorf("unmarshal EventInspectParametersOptions.patterns: %w", err)
+	}
+	rawGlobs, ok := object["globs"]
+	if !ok {
+		return fmt.Errorf("missing required field globs")
+	}
+	if err := json.Unmarshal(rawGlobs, &decoded.Globs); err != nil {
+		return fmt.Errorf("unmarshal EventInspectParametersOptions.globs: %w", err)
+	}
+	rawCase, ok := object["case"]
+	if !ok {
+		return fmt.Errorf("missing required field case")
+	}
+	if isJSONNull(rawCase) {
+		return fmt.Errorf("field case must not be null")
+	}
+	if err := json.Unmarshal(rawCase, &decoded.Case); err != nil {
+		return fmt.Errorf("unmarshal EventInspectParametersOptions.case: %w", err)
+	}
+	rawMaxCount, ok := object["max_count"]
+	if !ok {
+		return fmt.Errorf("missing required field max_count")
+	}
+	if isJSONNull(rawMaxCount) {
+		return fmt.Errorf("field max_count must not be null")
+	}
+	if err := json.Unmarshal(rawMaxCount, &decoded.MaxCount); err != nil {
+		return fmt.Errorf("unmarshal EventInspectParametersOptions.max_count: %w", err)
+	}
+	rawMaxTotal, ok := object["max_total"]
+	if !ok {
+		return fmt.Errorf("missing required field max_total")
+	}
+	if isJSONNull(rawMaxTotal) {
+		return fmt.Errorf("field max_total must not be null")
+	}
+	if err := json.Unmarshal(rawMaxTotal, &decoded.MaxTotal); err != nil {
+		return fmt.Errorf("unmarshal EventInspectParametersOptions.max_total: %w", err)
+	}
+	rawBefore, ok := object["before"]
+	if !ok {
+		return fmt.Errorf("missing required field before")
+	}
+	if isJSONNull(rawBefore) {
+		return fmt.Errorf("field before must not be null")
+	}
+	if err := json.Unmarshal(rawBefore, &decoded.Before); err != nil {
+		return fmt.Errorf("unmarshal EventInspectParametersOptions.before: %w", err)
+	}
+	rawAfter, ok := object["after"]
+	if !ok {
+		return fmt.Errorf("missing required field after")
+	}
+	if isJSONNull(rawAfter) {
+		return fmt.Errorf("field after must not be null")
+	}
+	if err := json.Unmarshal(rawAfter, &decoded.After); err != nil {
+		return fmt.Errorf("unmarshal EventInspectParametersOptions.after: %w", err)
+	}
+	*m = decoded
+	return nil
+}
+
+// EventInspectParameters is generated from the EventInspectParameters schema.
+type EventInspectParameters struct {
+	Path     Optional[string]                        `json:"path"`
+	FileUUID Optional[string]                        `json:"file_uuid"`
+	Unpack   Optional[bool]                          `json:"unpack"`
+	Replace  Optional[bool]                          `json:"replace"`
+	Merge    Optional[bool]                          `json:"merge"`
+	Handle   Optional[string]                        `json:"handle"`
+	Offset   Optional[int64]                         `json:"offset"`
+	Size     Optional[int64]                         `json:"size"`
+	Options  Optional[EventInspectParametersOptions] `json:"options"`
+}
+
+// MarshalJSON encodes EventInspectParameters with exact wire names.
+func (m EventInspectParameters) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 9)
+	if m.Path.IsSet() {
+		if err := putJSONField(object, "path", m.Path); err != nil {
+			return nil, fmt.Errorf("marshal EventInspectParameters.path: %w", err)
+		}
+	}
+	if m.FileUUID.IsSet() {
+		if err := putJSONField(object, "file_uuid", m.FileUUID); err != nil {
+			return nil, fmt.Errorf("marshal EventInspectParameters.file_uuid: %w", err)
+		}
+	}
+	if m.Unpack.IsSet() {
+		if err := putJSONField(object, "unpack", m.Unpack); err != nil {
+			return nil, fmt.Errorf("marshal EventInspectParameters.unpack: %w", err)
+		}
+	}
+	if m.Replace.IsSet() {
+		if err := putJSONField(object, "replace", m.Replace); err != nil {
+			return nil, fmt.Errorf("marshal EventInspectParameters.replace: %w", err)
+		}
+	}
+	if m.Merge.IsSet() {
+		if err := putJSONField(object, "merge", m.Merge); err != nil {
+			return nil, fmt.Errorf("marshal EventInspectParameters.merge: %w", err)
+		}
+	}
+	if m.Handle.IsSet() {
+		if err := putJSONField(object, "handle", m.Handle); err != nil {
+			return nil, fmt.Errorf("marshal EventInspectParameters.handle: %w", err)
+		}
+	}
+	if m.Offset.IsSet() {
+		if err := putJSONField(object, "offset", m.Offset); err != nil {
+			return nil, fmt.Errorf("marshal EventInspectParameters.offset: %w", err)
+		}
+	}
+	if m.Size.IsSet() {
+		if err := putJSONField(object, "size", m.Size); err != nil {
+			return nil, fmt.Errorf("marshal EventInspectParameters.size: %w", err)
+		}
+	}
+	if m.Options.IsSet() {
+		if err := putJSONField(object, "options", m.Options); err != nil {
+			return nil, fmt.Errorf("marshal EventInspectParameters.options: %w", err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes EventInspectParameters and checks required fields.
+func (m *EventInspectParameters) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal EventInspectParameters into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal EventInspectParameters: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("EventInspectParameters must be a JSON object")
+	}
+	var decoded EventInspectParameters
+	rawPath, ok := object["path"]
+	if ok {
+		if err := json.Unmarshal(rawPath, &decoded.Path); err != nil {
+			return fmt.Errorf("unmarshal EventInspectParameters.path: %w", err)
+		}
+	}
+	rawFileUUID, ok := object["file_uuid"]
+	if ok {
+		if err := json.Unmarshal(rawFileUUID, &decoded.FileUUID); err != nil {
+			return fmt.Errorf("unmarshal EventInspectParameters.file_uuid: %w", err)
+		}
+	}
+	rawUnpack, ok := object["unpack"]
+	if ok {
+		if err := json.Unmarshal(rawUnpack, &decoded.Unpack); err != nil {
+			return fmt.Errorf("unmarshal EventInspectParameters.unpack: %w", err)
+		}
+	}
+	rawReplace, ok := object["replace"]
+	if ok {
+		if err := json.Unmarshal(rawReplace, &decoded.Replace); err != nil {
+			return fmt.Errorf("unmarshal EventInspectParameters.replace: %w", err)
+		}
+	}
+	rawMerge, ok := object["merge"]
+	if ok {
+		if err := json.Unmarshal(rawMerge, &decoded.Merge); err != nil {
+			return fmt.Errorf("unmarshal EventInspectParameters.merge: %w", err)
+		}
+	}
+	rawHandle, ok := object["handle"]
+	if ok {
+		if err := json.Unmarshal(rawHandle, &decoded.Handle); err != nil {
+			return fmt.Errorf("unmarshal EventInspectParameters.handle: %w", err)
+		}
+	}
+	rawOffset, ok := object["offset"]
+	if ok {
+		if err := json.Unmarshal(rawOffset, &decoded.Offset); err != nil {
+			return fmt.Errorf("unmarshal EventInspectParameters.offset: %w", err)
+		}
+	}
+	rawSize, ok := object["size"]
+	if ok {
+		if err := json.Unmarshal(rawSize, &decoded.Size); err != nil {
+			return fmt.Errorf("unmarshal EventInspectParameters.size: %w", err)
+		}
+	}
+	rawOptions, ok := object["options"]
+	if ok {
+		if err := json.Unmarshal(rawOptions, &decoded.Options); err != nil {
+			return fmt.Errorf("unmarshal EventInspectParameters.options: %w", err)
+		}
+	}
+	*m = decoded
+	return nil
+}
+
+// EventDataInspect is generated from the EventDataInspect schema.
+type EventDataInspect struct {
+	RequestID string                           `json:"request_id"`
+	Method    string                           `json:"method"`
+	Phase     string                           `json:"phase"`
+	Params    Optional[EventInspectParameters] `json:"params"`
+	Status    Optional[string]                 `json:"status"`
+	Error     Optional[string]                 `json:"error"`
+	Handle    Optional[string]                 `json:"handle"`
+	Bytes     Optional[int64]                  `json:"bytes"`
+	Eof       Optional[bool]                   `json:"eof"`
+}
+
+// MarshalJSON encodes EventDataInspect with exact wire names.
+func (m EventDataInspect) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 9)
+	if err := putJSONField(object, "request_id", m.RequestID); err != nil {
+		return nil, fmt.Errorf("marshal EventDataInspect.request_id: %w", err)
+	}
+	if err := putJSONField(object, "method", m.Method); err != nil {
+		return nil, fmt.Errorf("marshal EventDataInspect.method: %w", err)
+	}
+	if err := putJSONField(object, "phase", m.Phase); err != nil {
+		return nil, fmt.Errorf("marshal EventDataInspect.phase: %w", err)
+	}
+	if m.Params.IsSet() {
+		if err := putJSONField(object, "params", m.Params); err != nil {
+			return nil, fmt.Errorf("marshal EventDataInspect.params: %w", err)
+		}
+	}
+	if m.Status.IsSet() {
+		if err := putJSONField(object, "status", m.Status); err != nil {
+			return nil, fmt.Errorf("marshal EventDataInspect.status: %w", err)
+		}
+	}
+	if m.Error.IsSet() {
+		if err := putJSONField(object, "error", m.Error); err != nil {
+			return nil, fmt.Errorf("marshal EventDataInspect.error: %w", err)
+		}
+	}
+	if m.Handle.IsSet() {
+		if err := putJSONField(object, "handle", m.Handle); err != nil {
+			return nil, fmt.Errorf("marshal EventDataInspect.handle: %w", err)
+		}
+	}
+	if m.Bytes.IsSet() {
+		if err := putJSONField(object, "bytes", m.Bytes); err != nil {
+			return nil, fmt.Errorf("marshal EventDataInspect.bytes: %w", err)
+		}
+	}
+	if m.Eof.IsSet() {
+		if err := putJSONField(object, "eof", m.Eof); err != nil {
+			return nil, fmt.Errorf("marshal EventDataInspect.eof: %w", err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes EventDataInspect and checks required fields.
+func (m *EventDataInspect) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal EventDataInspect into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal EventDataInspect: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("EventDataInspect must be a JSON object")
+	}
+	var decoded EventDataInspect
+	rawRequestID, ok := object["request_id"]
+	if !ok {
+		return fmt.Errorf("missing required field request_id")
+	}
+	if isJSONNull(rawRequestID) {
+		return fmt.Errorf("field request_id must not be null")
+	}
+	if err := json.Unmarshal(rawRequestID, &decoded.RequestID); err != nil {
+		return fmt.Errorf("unmarshal EventDataInspect.request_id: %w", err)
+	}
+	rawMethod, ok := object["method"]
+	if !ok {
+		return fmt.Errorf("missing required field method")
+	}
+	if isJSONNull(rawMethod) {
+		return fmt.Errorf("field method must not be null")
+	}
+	if err := json.Unmarshal(rawMethod, &decoded.Method); err != nil {
+		return fmt.Errorf("unmarshal EventDataInspect.method: %w", err)
+	}
+	rawPhase, ok := object["phase"]
+	if !ok {
+		return fmt.Errorf("missing required field phase")
+	}
+	if isJSONNull(rawPhase) {
+		return fmt.Errorf("field phase must not be null")
+	}
+	if err := json.Unmarshal(rawPhase, &decoded.Phase); err != nil {
+		return fmt.Errorf("unmarshal EventDataInspect.phase: %w", err)
+	}
+	rawParams, ok := object["params"]
+	if ok {
+		if err := json.Unmarshal(rawParams, &decoded.Params); err != nil {
+			return fmt.Errorf("unmarshal EventDataInspect.params: %w", err)
+		}
+	}
+	rawStatus, ok := object["status"]
+	if ok {
+		if err := json.Unmarshal(rawStatus, &decoded.Status); err != nil {
+			return fmt.Errorf("unmarshal EventDataInspect.status: %w", err)
+		}
+	}
+	rawError, ok := object["error"]
+	if ok {
+		if err := json.Unmarshal(rawError, &decoded.Error); err != nil {
+			return fmt.Errorf("unmarshal EventDataInspect.error: %w", err)
+		}
+	}
+	rawHandle, ok := object["handle"]
+	if ok {
+		if err := json.Unmarshal(rawHandle, &decoded.Handle); err != nil {
+			return fmt.Errorf("unmarshal EventDataInspect.handle: %w", err)
+		}
+	}
+	rawBytes, ok := object["bytes"]
+	if ok {
+		if err := json.Unmarshal(rawBytes, &decoded.Bytes); err != nil {
+			return fmt.Errorf("unmarshal EventDataInspect.bytes: %w", err)
+		}
+	}
+	rawEof, ok := object["eof"]
+	if ok {
+		if err := json.Unmarshal(rawEof, &decoded.Eof); err != nil {
+			return fmt.Errorf("unmarshal EventDataInspect.eof: %w", err)
+		}
+	}
+	*m = decoded
+	return nil
+}
+
+// EventDataFileUpload is generated from the EventDataFileUpload schema.
+type EventDataFileUpload struct {
+	Handle   string  `json:"handle"`
+	FileUUID string  `json:"file_uuid"`
+	Path     string  `json:"path"`
+	Unpack   bool    `json:"unpack"`
+	Replace  bool    `json:"replace"`
+	Merge    bool    `json:"merge"`
+	Bytes    int64   `json:"bytes"`
+	Status   string  `json:"status"`
+	Error    *string `json:"error"`
+}
+
+// MarshalJSON encodes EventDataFileUpload with exact wire names.
+func (m EventDataFileUpload) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 9)
+	if err := putJSONField(object, "handle", m.Handle); err != nil {
+		return nil, fmt.Errorf("marshal EventDataFileUpload.handle: %w", err)
+	}
+	if err := putJSONField(object, "file_uuid", m.FileUUID); err != nil {
+		return nil, fmt.Errorf("marshal EventDataFileUpload.file_uuid: %w", err)
+	}
+	if err := putJSONField(object, "path", m.Path); err != nil {
+		return nil, fmt.Errorf("marshal EventDataFileUpload.path: %w", err)
+	}
+	if err := putJSONField(object, "unpack", m.Unpack); err != nil {
+		return nil, fmt.Errorf("marshal EventDataFileUpload.unpack: %w", err)
+	}
+	if err := putJSONField(object, "replace", m.Replace); err != nil {
+		return nil, fmt.Errorf("marshal EventDataFileUpload.replace: %w", err)
+	}
+	if err := putJSONField(object, "merge", m.Merge); err != nil {
+		return nil, fmt.Errorf("marshal EventDataFileUpload.merge: %w", err)
+	}
+	if err := putJSONField(object, "bytes", m.Bytes); err != nil {
+		return nil, fmt.Errorf("marshal EventDataFileUpload.bytes: %w", err)
+	}
+	if err := putJSONField(object, "status", m.Status); err != nil {
+		return nil, fmt.Errorf("marshal EventDataFileUpload.status: %w", err)
+	}
+	if err := putJSONField(object, "error", m.Error); err != nil {
+		return nil, fmt.Errorf("marshal EventDataFileUpload.error: %w", err)
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes EventDataFileUpload and checks required fields.
+func (m *EventDataFileUpload) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal EventDataFileUpload into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal EventDataFileUpload: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("EventDataFileUpload must be a JSON object")
+	}
+	var decoded EventDataFileUpload
+	rawHandle, ok := object["handle"]
+	if !ok {
+		return fmt.Errorf("missing required field handle")
+	}
+	if isJSONNull(rawHandle) {
+		return fmt.Errorf("field handle must not be null")
+	}
+	if err := json.Unmarshal(rawHandle, &decoded.Handle); err != nil {
+		return fmt.Errorf("unmarshal EventDataFileUpload.handle: %w", err)
+	}
+	rawFileUUID, ok := object["file_uuid"]
+	if !ok {
+		return fmt.Errorf("missing required field file_uuid")
+	}
+	if isJSONNull(rawFileUUID) {
+		return fmt.Errorf("field file_uuid must not be null")
+	}
+	if err := json.Unmarshal(rawFileUUID, &decoded.FileUUID); err != nil {
+		return fmt.Errorf("unmarshal EventDataFileUpload.file_uuid: %w", err)
+	}
+	rawPath, ok := object["path"]
+	if !ok {
+		return fmt.Errorf("missing required field path")
+	}
+	if isJSONNull(rawPath) {
+		return fmt.Errorf("field path must not be null")
+	}
+	if err := json.Unmarshal(rawPath, &decoded.Path); err != nil {
+		return fmt.Errorf("unmarshal EventDataFileUpload.path: %w", err)
+	}
+	rawUnpack, ok := object["unpack"]
+	if !ok {
+		return fmt.Errorf("missing required field unpack")
+	}
+	if isJSONNull(rawUnpack) {
+		return fmt.Errorf("field unpack must not be null")
+	}
+	if err := json.Unmarshal(rawUnpack, &decoded.Unpack); err != nil {
+		return fmt.Errorf("unmarshal EventDataFileUpload.unpack: %w", err)
+	}
+	rawReplace, ok := object["replace"]
+	if !ok {
+		return fmt.Errorf("missing required field replace")
+	}
+	if isJSONNull(rawReplace) {
+		return fmt.Errorf("field replace must not be null")
+	}
+	if err := json.Unmarshal(rawReplace, &decoded.Replace); err != nil {
+		return fmt.Errorf("unmarshal EventDataFileUpload.replace: %w", err)
+	}
+	rawMerge, ok := object["merge"]
+	if !ok {
+		return fmt.Errorf("missing required field merge")
+	}
+	if isJSONNull(rawMerge) {
+		return fmt.Errorf("field merge must not be null")
+	}
+	if err := json.Unmarshal(rawMerge, &decoded.Merge); err != nil {
+		return fmt.Errorf("unmarshal EventDataFileUpload.merge: %w", err)
+	}
+	rawBytes, ok := object["bytes"]
+	if !ok {
+		return fmt.Errorf("missing required field bytes")
+	}
+	if isJSONNull(rawBytes) {
+		return fmt.Errorf("field bytes must not be null")
+	}
+	if err := json.Unmarshal(rawBytes, &decoded.Bytes); err != nil {
+		return fmt.Errorf("unmarshal EventDataFileUpload.bytes: %w", err)
+	}
+	rawStatus, ok := object["status"]
+	if !ok {
+		return fmt.Errorf("missing required field status")
+	}
+	if isJSONNull(rawStatus) {
+		return fmt.Errorf("field status must not be null")
+	}
+	if err := json.Unmarshal(rawStatus, &decoded.Status); err != nil {
+		return fmt.Errorf("unmarshal EventDataFileUpload.status: %w", err)
+	}
+	rawError, ok := object["error"]
+	if !ok {
+		return fmt.Errorf("missing required field error")
+	}
+	if err := json.Unmarshal(rawError, &decoded.Error); err != nil {
+		return fmt.Errorf("unmarshal EventDataFileUpload.error: %w", err)
+	}
+	*m = decoded
+	return nil
 }
 
 // EventDataInit is generated from the EventDataInit schema.
@@ -4129,21 +4858,33 @@ func (m *EventDataInit) UnmarshalJSON(data []byte) error {
 
 // EventDataSpawn is generated from the EventDataSpawn schema.
 type EventDataSpawn struct {
-	Pid        int64                       `json:"pid"`
-	Command    string                      `json:"command"`
-	Args       []string                    `json:"args"`
-	Shell      bool                        `json:"shell"`
-	Cwd        string                      `json:"cwd"`
-	UID        int64                       `json:"uid"`
-	GID        int64                       `json:"gid"`
-	Timeout    int64                       `json:"timeout"`
-	TruncateAt int64                       `json:"truncate_at"`
-	Env        Optional[map[string]string] `json:"env"`
+	ResourcesLimits Optional[ProcessResourcesLimits] `json:"resources_limits"`
+	CPUAffinity     Optional[[]int64]                `json:"cpu_affinity"`
+	Pid             int64                            `json:"pid"`
+	Command         string                           `json:"command"`
+	Args            []string                         `json:"args"`
+	Shell           bool                             `json:"shell"`
+	Cwd             string                           `json:"cwd"`
+	UID             int64                            `json:"uid"`
+	GID             int64                            `json:"gid"`
+	Timeout         int64                            `json:"timeout"`
+	TruncateAt      int64                            `json:"truncate_at"`
+	Env             Optional[map[string]string]      `json:"env"`
 }
 
 // MarshalJSON encodes EventDataSpawn with exact wire names.
 func (m EventDataSpawn) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 10)
+	object := make(map[string]json.RawMessage, 12)
+	if m.ResourcesLimits.IsSet() {
+		if err := putJSONField(object, "resources_limits", m.ResourcesLimits); err != nil {
+			return nil, fmt.Errorf("marshal EventDataSpawn.resources_limits: %w", err)
+		}
+	}
+	if m.CPUAffinity.IsSet() {
+		if err := putJSONField(object, "cpu_affinity", m.CPUAffinity); err != nil {
+			return nil, fmt.Errorf("marshal EventDataSpawn.cpu_affinity: %w", err)
+		}
+	}
 	if err := putJSONField(object, "pid", m.Pid); err != nil {
 		return nil, fmt.Errorf("marshal EventDataSpawn.pid: %w", err)
 	}
@@ -4195,6 +4936,18 @@ func (m *EventDataSpawn) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("EventDataSpawn must be a JSON object")
 	}
 	var decoded EventDataSpawn
+	rawResourcesLimits, ok := object["resources_limits"]
+	if ok {
+		if err := json.Unmarshal(rawResourcesLimits, &decoded.ResourcesLimits); err != nil {
+			return fmt.Errorf("unmarshal EventDataSpawn.resources_limits: %w", err)
+		}
+	}
+	rawCPUAffinity, ok := object["cpu_affinity"]
+	if ok {
+		if err := json.Unmarshal(rawCPUAffinity, &decoded.CPUAffinity); err != nil {
+			return fmt.Errorf("unmarshal EventDataSpawn.cpu_affinity: %w", err)
+		}
+	}
 	rawPid, ok := object["pid"]
 	if !ok {
 		return fmt.Errorf("missing required field pid")
@@ -4644,6 +5397,7 @@ func (m *EventResources) UnmarshalJSON(data []byte) error {
 
 // EventDataExit is generated from the EventDataExit schema.
 type EventDataExit struct {
+	OomKilled  Optional[bool] `json:"oom_killed"`
 	Pid        int64          `json:"pid"`
 	Code       int64          `json:"code"`
 	Signal     int64          `json:"signal"`
@@ -4655,7 +5409,12 @@ type EventDataExit struct {
 
 // MarshalJSON encodes EventDataExit with exact wire names.
 func (m EventDataExit) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 7)
+	object := make(map[string]json.RawMessage, 8)
+	if m.OomKilled.IsSet() {
+		if err := putJSONField(object, "oom_killed", m.OomKilled); err != nil {
+			return nil, fmt.Errorf("marshal EventDataExit.oom_killed: %w", err)
+		}
+	}
 	if err := putJSONField(object, "pid", m.Pid); err != nil {
 		return nil, fmt.Errorf("marshal EventDataExit.pid: %w", err)
 	}
@@ -4695,6 +5454,12 @@ func (m *EventDataExit) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("EventDataExit must be a JSON object")
 	}
 	var decoded EventDataExit
+	rawOomKilled, ok := object["oom_killed"]
+	if ok {
+		if err := json.Unmarshal(rawOomKilled, &decoded.OomKilled); err != nil {
+			return fmt.Errorf("unmarshal EventDataExit.oom_killed: %w", err)
+		}
+	}
 	rawPid, ok := object["pid"]
 	if !ok {
 		return fmt.Errorf("missing required field pid")
@@ -5266,16 +6031,18 @@ func (m *EventDataShutdown) UnmarshalJSON(data []byte) error {
 
 // EventDataCompletion is generated from the EventDataCompletion schema.
 type EventDataCompletion struct {
-	Status          OperationStatus  `json:"status"`
-	ResultImageUUID Optional[string] `json:"result_image_uuid"`
-	Error           Optional[string] `json:"error"`
-	DurationMs      int64            `json:"duration_ms"`
-	ImageSizeBytes  Optional[int64]  `json:"image_size_bytes"`
+	Status          OperationStatus   `json:"status"`
+	ResultImageUUID Optional[string]  `json:"result_image_uuid"`
+	Error           Optional[string]  `json:"error"`
+	DurationMs      int64             `json:"duration_ms"`
+	ImageSizeBytes  Optional[int64]   `json:"image_size_bytes"`
+	ConsumedCPU     Optional[float64] `json:"consumed_cpu"`
+	ConsumedMemory  Optional[int64]   `json:"consumed_memory"`
 }
 
 // MarshalJSON encodes EventDataCompletion with exact wire names.
 func (m EventDataCompletion) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 5)
+	object := make(map[string]json.RawMessage, 7)
 	if err := putJSONField(object, "status", m.Status); err != nil {
 		return nil, fmt.Errorf("marshal EventDataCompletion.status: %w", err)
 	}
@@ -5295,6 +6062,16 @@ func (m EventDataCompletion) MarshalJSON() ([]byte, error) {
 	if m.ImageSizeBytes.IsSet() {
 		if err := putJSONField(object, "image_size_bytes", m.ImageSizeBytes); err != nil {
 			return nil, fmt.Errorf("marshal EventDataCompletion.image_size_bytes: %w", err)
+		}
+	}
+	if m.ConsumedCPU.IsSet() {
+		if err := putJSONField(object, "consumed_cpu", m.ConsumedCPU); err != nil {
+			return nil, fmt.Errorf("marshal EventDataCompletion.consumed_cpu: %w", err)
+		}
+	}
+	if m.ConsumedMemory.IsSet() {
+		if err := putJSONField(object, "consumed_memory", m.ConsumedMemory); err != nil {
+			return nil, fmt.Errorf("marshal EventDataCompletion.consumed_memory: %w", err)
 		}
 	}
 	return json.Marshal(object)
@@ -5349,6 +6126,18 @@ func (m *EventDataCompletion) UnmarshalJSON(data []byte) error {
 	if ok {
 		if err := json.Unmarshal(rawImageSizeBytes, &decoded.ImageSizeBytes); err != nil {
 			return fmt.Errorf("unmarshal EventDataCompletion.image_size_bytes: %w", err)
+		}
+	}
+	rawConsumedCPU, ok := object["consumed_cpu"]
+	if ok {
+		if err := json.Unmarshal(rawConsumedCPU, &decoded.ConsumedCPU); err != nil {
+			return fmt.Errorf("unmarshal EventDataCompletion.consumed_cpu: %w", err)
+		}
+	}
+	rawConsumedMemory, ok := object["consumed_memory"]
+	if ok {
+		if err := json.Unmarshal(rawConsumedMemory, &decoded.ConsumedMemory); err != nil {
+			return fmt.Errorf("unmarshal EventDataCompletion.consumed_memory: %w", err)
 		}
 	}
 	*m = decoded
