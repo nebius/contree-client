@@ -2037,7 +2037,8 @@ REFERENCE_HELPERS_RST = """\
    :js:meth:`ContreeClient.iterOperationEvents` with ``follow: true``
    and transparent reconnection: network drops, transport timeouts,
    in-band ``sse_error`` frames and retryable statuses (410/425/5xx)
-   resume from the last received event id; other API errors propagate.
+   resume from the last received event id. Non-retryable HTTP statuses stop
+   recovery and raise ``APIConnectionError`` with the status error as its cause.
    After terminal status, reads retained events with ``follow: false``, keeping
    the cursor, filters, original deadline, and inactivity timeout. An unfiltered
    log must include ``completion``. A filtered or explicitly resumed log may end
