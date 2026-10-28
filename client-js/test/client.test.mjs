@@ -261,6 +261,25 @@ test("425/429 replay a POST even without retryUnsafe", async () => {
   await retrying.close();
 });
 
+for (const failure of ["connection", "status"]) {
+  test(`buffered requests preserve ${failure} errors when retries end`, async () => {
+    let attempts = 0;
+    const retrying = new ContreeClient("test", {
+      retry: new RetryPolicy({ delays: [0], maxAttempts: 2 }),
+      fetch: async () => {
+        attempts += 1;
+        if (failure === "connection") throw new TypeError("connection lost");
+        return new Response("unavailable", { status: 503 });
+      },
+    });
+    await assert.rejects(
+      retrying.getOperationStatus(OPERATION_UUID),
+      failure === "connection" ? APIConnectionError : APIStatusError,
+    );
+    assert.equal(attempts, 2);
+  });
+}
+
 test("a null token sends no Authorization header", () => {
   const spec = { method: "GET", path: "/health" };
   const anonymous = new ContreeClient(null, {

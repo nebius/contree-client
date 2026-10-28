@@ -104,6 +104,8 @@ for (const ending of ["completion", "deadline", "disconnect"]) {
           return new Response(JSON.stringify({ status: "SUCCESS" }));
         }
         calls.push("events");
+        if (new URL(url).searchParams.get("follow") !== "1")
+          return new Response(frame(4));
         active = true;
         const body = new ReadableStream(
           {
@@ -171,7 +173,7 @@ for (const ending of ["completion", "deadline", "disconnect"]) {
         calls,
         ending === "completion"
           ? ["events", "status"]
-          : ["events", "status", "status"],
+          : ["events", "status", "events", "status"],
       );
     }
     assert.equal(active, false);
@@ -195,6 +197,8 @@ for (const idleTimeout of [undefined, 0.75, 0]) {
           return new Response(JSON.stringify({ status: "SUCCESS" }));
         }
         calls.push("events");
+        if (new URL(url).searchParams.get("follow") !== "1")
+          return new Response(frame(4));
         active = true;
         return new Response(
           new ReadableStream(
@@ -255,7 +259,7 @@ for (const idleTimeout of [undefined, 0.75, 0]) {
     assert.equal(active, false);
     assert.deepEqual(
       calls,
-      budget ? ["events", "status", "status"] : ["events", "status"],
+      budget ? ["events", "status", "events", "status"] : ["events", "status"],
     );
   });
 }

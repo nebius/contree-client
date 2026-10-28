@@ -24,6 +24,7 @@ import {
   EventDataFileUpload,
   InstanceResourcesLimits,
   OperationStatus,
+  SSEParser,
   TERMINAL_STATUSES,
   profiles,
 } from CLIENT_MODULE;
@@ -422,3 +423,85 @@ def test_js_live_instance_files_and_events(
     }
   }
     """)
+
+
+@pytest.mark.parametrize("ending", ["eof", "error"])
+def test_js_recovers_retained_event_tail(
+    live_js_image: Callable[[str], None], ending: str
+) -> None:
+    live_js_image(
+        "const ending = "
+        + json.dumps(ending)
+        + ";"
+        + r"""
+  if (!permissions.spawn_disposable && !permissions.spawn) {
+    return "token lacks spawn permissions";
+  }
+  const image = await pickSampleImage();
+  const operation = await client.spawnInstance(
+    "printf 'retained-one\n'; printf 'retained-two\n'",
+    String(image.uuid),
+    { shell: true, disposable: true, timeout: 30 },
+  );
+  const finished = await client.waitOperation(operation.uuid, {
+    followEvents: false, timeout: 120,
+  });
+  assert.equal(finished.status, OperationStatus.SUCCESS);
+
+  let reference;
+  const requests = [];
+  const interrupted = new ContreeClient(profile.token, {
+    baseUrl: profile.url,
+    project: profile.project,
+    fetch: async (url, options) => {
+      const parsed = new URL(url);
+      const events = parsed.pathname.endsWith("/events");
+      requests.push({
+        events,
+        follow: parsed.searchParams.get("follow"),
+        cursor: new Headers(options.headers).get("Last-Event-Id"),
+      });
+      const response = await fetch(url, options);
+      if (!events || requests.filter((request) => request.events).length !== 1) {
+        return response;
+      }
+      assert.equal(response.status, 200);
+      // Keep the real API's complete log as the reference, but expose only its
+      // first payload frame to the follower before EOF or a transport error.
+      const text = (await response.text()).replaceAll("\r\n", "\n");
+      reference = new SSEParser().feed(new TextEncoder().encode(text))
+        .filter((frame) => frame.data && frame.event !== "sse_error")
+        .map((frame) => JSON.parse(frame.data).id);
+      const blocks = text.split("\n\n");
+      const first = blocks.findIndex((block) => /^data:/m.test(block));
+      assert.ok(first >= 0);
+      const prefix = blocks.slice(0, first + 1).join("\n\n") + "\n\n";
+      const headers = new Headers(response.headers);
+      headers.delete("content-encoding");
+      headers.delete("content-length");
+      const body = ending === "eof" ? prefix : new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode(prefix)); },
+        pull(controller) {
+          controller.error(new TypeError("injected SSE disconnect"));
+        },
+      }, { highWaterMark: 0 });
+      return new Response(body, { status: response.status, headers });
+    },
+  });
+  try {
+    const events = [];
+    for await (const event of interrupted.followOperationEvents(operation.uuid, {
+      timeout: 60, idleTimeout: 15,
+    })) events.push(event);
+    assert.ok(reference.length > 1);
+    assert.deepEqual(events.map((event) => event.id), reference);
+    assert.equal(events.at(-1).type, "completion");
+    assert.deepEqual(requests.map((request) => request.events), [true, false, true]);
+    assert.equal(requests[0].follow, "1");
+    assert.notEqual(requests[2].follow, "1");
+    assert.equal(requests[2].cursor, String(events[0].id));
+  } finally {
+    await interrupted.close();
+  }
+    """
+    )

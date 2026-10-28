@@ -62,7 +62,7 @@ test("an SSE error keeps the last event id", () => {
         { id: null, event: "sse_error", data: "stream failed" },
         17,
       ),
-    (error) => error.constructor === Error && error.lastEventId === 17,
+    (error) => error instanceof APIConnectionError && error.lastEventId === 17,
   );
   assert.throws(
     () =>
