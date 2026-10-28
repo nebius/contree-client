@@ -525,9 +525,13 @@ JavaScript, or `IdleTimeout: &seconds` with a `float64` seconds value in Go.
 The option is available on both wait and follow helpers. Set it to 0 to disable
 the inactivity limit. It never extends the overall deadline.
 
-After terminal status, Python and Go drain retained events using the original
-caller deadline and the same inactivity timeout. JavaScript's follower stops on terminal status without this
-retained drain, so unread tail events can be missed.
+After terminal status, all three clients drain retained events from the last
+received event ID, preserving filters, the original deadline, and the inactivity
+timeout. An unfiltered log must include `completion`; terminal status alone does
+not prove complete event delivery. A filtered or explicitly resumed log may end
+at clean EOF. Interrupted retained reads use the configured retry policy, with
+three attempts by default when no policy is configured. An incomplete or
+unavailable log raises a client error.
 
 JavaScript's `waitOperation()` uses the same selection with `followEvents: null`
 by default. Set `followEvents` to `true` or `false` to force events or polling.

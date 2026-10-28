@@ -5,6 +5,8 @@
  * fetch itself, so only the protocol logic lives here.
  */
 
+import { APIConnectionError } from "./errors.js";
+
 export const CHUNK_SIZE = 65536;
 
 export const PACKAGE_VERSION = "0.1.0";
@@ -378,7 +380,7 @@ export class SSEParser {
 /** Decode an SSE frame's JSON payload. */
 export function decodeFramePayload(frame, lastEventId = null) {
   if (frame.event === "sse_error") {
-    throw Object.assign(new Error(frame.data), { lastEventId });
+    throw Object.assign(new APIConnectionError(frame.data), { lastEventId });
   }
   if (!frame.data) {
     return null;

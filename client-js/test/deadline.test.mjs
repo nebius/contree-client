@@ -210,7 +210,7 @@ test("waitOperation deadline bounds its terminal status probe", async () => {
     fetch: (url, options) => rejectWhenAborted(options.signal),
   });
   client.iterOperationEvents = async function* () {
-    throw new DOMException("stream timed out", "TimeoutError");
+    throw new APIConnectionError("stream timed out", { timedOut: true });
   };
 
   await assert.rejects(

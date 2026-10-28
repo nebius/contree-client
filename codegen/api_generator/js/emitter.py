@@ -885,6 +885,7 @@ import {{ AUTH_TYPE_IAM, ProfileError, resolveProfile }} from "./profiles.js";
 import {{
   IS_NODE,
   SSEParser,
+  RetryPolicy,
   TIGHT_LOOP_FLOOR,
   UA_PLATFORM,
   UA_PRODUCT,
@@ -901,6 +902,16 @@ import {{
 import {{ DEFAULT_BASE_URL }} from "./specInfo.js";
 import {{ OperationEvent, isTerminalStatus }} from "./models.js";
 import * as operations from "./operations.js";
+
+// Share fetch error normalization between buffered requests and SSE reads.
+function connectionError(cause, signal) {{
+  if (cause instanceof APIConnectionError || cause instanceof APIStatusError ||
+      (cause?.name === "AbortError" && !signal.aborted)) return cause;
+  return new APIConnectionError(String(cause?.message ?? cause), {{
+    cause,
+    timedOut: cause?.name === "TimeoutError" || signal.reason?.name === "TimeoutError",
+  }});
+}}
 
 /** Contree API client on top of the platform fetch.
  *
@@ -1061,15 +1072,7 @@ export class ContreeClient {{
       try {{
         response = await this._fetch(url, options);
       }} catch (cause) {{
-        if (cause?.name === "AbortError" && !controller.signal.aborted) {{
-          throw cause;
-        }}
-        throw new APIConnectionError(String(cause?.message ?? cause), {{
-          cause,
-          timedOut:
-            cause?.name === "TimeoutError" ||
-            controller.signal.reason?.name === "TimeoutError",
-        }});
+        throw connectionError(cause, controller.signal);
       }}
       if (deadline !== null && monotonic() >= deadline) {{
         const cause = new DOMException("request timed out", "TimeoutError");
@@ -1079,15 +1082,7 @@ export class ContreeClient {{
       try {{
         body = new Uint8Array(await response.arrayBuffer());
       }} catch (cause) {{
-        if (cause?.name === "AbortError" && !controller.signal.aborted) {{
-          throw cause;
-        }}
-        throw new APIConnectionError(String(cause?.message ?? cause), {{
-          cause,
-          timedOut:
-            cause?.name === "TimeoutError" ||
-            controller.signal.reason?.name === "TimeoutError",
-        }});
+        throw connectionError(cause, controller.signal);
       }}
       if (deadline !== null && monotonic() >= deadline) {{
         const cause = new DOMException("request timed out", "TimeoutError");
@@ -1282,7 +1277,7 @@ export class ContreeClient {{
           (maxAttempts !== null && attempts >= maxAttempts) ||
           (deadline !== null && monotonic() >= deadline)
         ) {{
-          throw error;
+          throw sse ? connectionError(error, controller.signal) : error;
         }}
         let delay = delays === null ? 0 : delays.next().value;
         if (deadline !== null) {{
@@ -1295,6 +1290,9 @@ export class ContreeClient {{
     const reader = response.body.getReader();
     try {{
       if (response.status >= 400) {{
+        if (sse) {{
+          throw new APIStatusError(response.status, response.statusText);
+        }}
         throw new RangeError(`HTTP ${{response.status}}`);
       }}
       for (;;) {{
@@ -1316,10 +1314,7 @@ export class ContreeClient {{
         yield value;
       }}
     }} catch (error) {{
-      if (spec.readTimeout != null && controller.signal.reason?.name === "TimeoutError") {{
-        throw controller.signal.reason;
-      }}
-      throw error;
+      throw sse ? connectionError(error, controller.signal) : error;
     }} finally {{
       disarm();
       try {{
@@ -1431,8 +1426,10 @@ export class ContreeClient {{
   }}
 
   /** Stream operation events with transparent reconnection.
-   * Native stream failures trigger a terminal-status probe and a
-   * reconnect from the last event id. */
+   * After terminal status, drain retained events from the last event id.
+   * Unfiltered logs require completion; filtered or explicitly resumed logs
+   * may end at EOF. Interrupted retained reads use the configured retry policy,
+   * or three attempts by default. All reads share the original deadline. */
   async *followOperationEvents(
     operationId,
     {{ lastEventId = null, spid = null, since = null, timeout = null, idleTimeout = 15 }} = {{}},
@@ -1441,6 +1438,11 @@ export class ContreeClient {{
     if (!Number.isFinite(idleTimeout) || idleTimeout < 0) {{
       throw new RangeError("idleTimeout must be finite and non-negative");
     }}
+    let terminal = false;
+    let drainAttempts = 0;
+    const allowDrainEOF = spid !== null || since !== null || lastEventId !== null;
+    const policy = this.retry ?? new RetryPolicy({{ maxAttempts: 3 }});
+    const delays = retryDelays(policy.delays);
     const deadline = timeout === null ? null : monotonic() + timeout;
     const checkDeadline = () => {{
       if (deadline !== null && monotonic() >= deadline) {{
@@ -1450,17 +1452,24 @@ export class ContreeClient {{
         );
       }}
     }};
+    const pause = async (delay) => {{
+      checkDeadline();
+      await sleep(deadline === null ? delay : Math.min(delay, Math.max(0, deadline - monotonic())));
+    }};
     for (;;) {{
       checkDeadline();
       const eventsBefore = lastId;
+      if (terminal) drainAttempts += 1;
+      let interrupted = false;
       try {{
         for await (const event of this.iterOperationEvents(operationId, {{
-          follow: true,
+          follow: !terminal,
           spid,
           since,
           lastEventId: lastId,
           deadline,
           idleTimeout,
+          _singleAttempt: true,
         }})) {{
           lastId = event.id;
           yield event;
@@ -1471,25 +1480,30 @@ export class ContreeClient {{
         }}
       }} catch (error) {{
         checkDeadline();
-        if (error?.name === "AbortError") {{
-          throw error;
+        if (error?.name === "AbortError") throw error;
+        const statusError = error instanceof APIStatusError;
+        const streamError = error instanceof APIConnectionError;
+        if (!statusError && !streamError) throw error;
+        if (Number.isInteger(error?.lastEventId)) lastId = error.lastEventId;
+        if ((statusError && !policy.retryableStatus(error.status)) ||
+            (terminal && policy.maxAttempts !== null && drainAttempts >= policy.maxAttempts)) {{
+          throw new APIConnectionError(`operation ${{operationId}} event log could not be read`, {{ cause: error }});
         }}
-        if (Number.isInteger(error?.lastEventId)) {{
-          lastId = error.lastEventId;
+        interrupted = true;
+      }}
+      if (terminal) {{
+        if (!interrupted) {{
+          checkDeadline();
+          if (allowDrainEOF) return;
+          throw new APIConnectionError(`operation ${{operationId}} event log ended without completion`);
         }}
+        await pause(delays.next().value);
+        continue;
       }}
-      // the stream ended or broke without a completion frame: the
-      // retry must not outlive the operation itself
-      if (await this.operationTerminal(operationId, deadline)) {{
-        return;
-      }}
-      if (lastId === eventsBefore) {{
-        let delay = TIGHT_LOOP_FLOOR;
-        if (deadline !== null) {{
-          delay = Math.min(delay, Math.max(0, deadline - monotonic()));
-        }}
-        await sleep(delay);
-      }}
+      // Terminal status does not prove that this subscriber received the tail.
+      // The iterator has closed its response before this probe or the next read.
+      terminal = await this.operationTerminal(operationId, deadline);
+      if (!terminal && lastId === eventsBefore) await pause(TIGHT_LOOP_FLOOR);
     }}
   }}
 
@@ -1636,6 +1650,8 @@ def render_client_method(op: OperationDef) -> list[str]:
             f'      throw new RangeError("idleTimeout must be finite and non-negative");\n'
             f"    }}\n"
             f"    spec.readTimeout = idleTimeout || null;\n"
+            f"    // The follower owns retries; raw iterators keep stale-socket recovery.\n"
+            f"    if (options._singleAttempt) spec.idempotent = false;\n"
             f"    const parser = new SSEParser();\n"
             f"    let lastSeen = options.{camel(resume_argument)} ?? null;\n"
             f"    for await (const chunk of this.stream(spec)) {{\n"
@@ -2022,7 +2038,13 @@ REFERENCE_HELPERS_RST = """\
    and transparent reconnection: network drops, transport timeouts,
    in-band ``sse_error`` frames and retryable statuses (410/425/5xx)
    resume from the last received event id; other API errors propagate.
-   Ends after the ``completion`` frame.
+   After terminal status, reads retained events with ``follow: false``, keeping
+   the cursor, filters, original deadline, and inactivity timeout. An unfiltered
+   log must include ``completion``. A filtered or explicitly resumed log may end
+   at clean EOF. Incomplete or unavailable logs raise ``APIConnectionError``.
+   Interrupted retained reads use the configured ``RetryPolicy`` statuses,
+   delays, and ``maxAttempts``, or three attempts by default. Cancellation and
+   malformed event data propagate without retry.
 
    :param operationId: ``string``
    :param options.lastEventId: ``number | null``

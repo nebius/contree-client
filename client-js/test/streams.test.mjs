@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import { ContreeClient } from "../lib/client.js";
+import { APIConnectionError } from "../lib/errors.js";
 import {
   EventDataCompletion,
   EventDataExit,
@@ -214,7 +215,7 @@ test("followOperationEvents resumes after an in-band stream error", async () => 
   assert.ok(events[3].data instanceof EventDataCompletion);
 });
 
-test("followOperationEvents retries timeouts until cancellation", async () => {
+test("followOperationEvents drains events after cancellation", async () => {
   let statusChecks = 0;
   const retrying = new ContreeClient("test-token", {
     baseUrl: "http://localhost:1",
@@ -236,9 +237,13 @@ test("followOperationEvents retries timeouts until cancellation", async () => {
     },
   });
   let streamAttempts = 0;
-  retrying.iterOperationEvents = async function* () {
+  retrying.iterOperationEvents = async function* (_id, options) {
     streamAttempts += 1;
-    throw new DOMException("stream timed out", "TimeoutError");
+    if (!options.follow) {
+      yield { id: 3, type: "completion" };
+      return;
+    }
+    throw new APIConnectionError("stream timed out", { timedOut: true });
   };
 
   const events = [];
@@ -246,8 +251,8 @@ test("followOperationEvents retries timeouts until cancellation", async () => {
     events.push(event);
   }
 
-  assert.deepEqual(events, []);
-  assert.equal(streamAttempts, 2);
+  assert.deepEqual(events, [{ id: 3, type: "completion" }]);
+  assert.equal(streamAttempts, 3);
   assert.equal(statusChecks, 2);
 });
 
@@ -280,26 +285,27 @@ test("followOperationEvents does not retry AbortError", async () => {
   assert.equal(statusChecks, 0);
 });
 
-test("waitOperation drains the stream and fetches the terminal status", async () => {
-  const operation = await client.waitOperation(OPERATION_UUID);
-  assert.equal(operation.status, OperationStatus.SUCCESS);
-});
-
-test("waitOperation completes when the events route is missing", async () => {
-  const operation = await client.waitOperation(
-    EVENTS_UNAVAILABLE_OPERATION_UUID,
+test("waitOperation rejects a retained log without completion", async () => {
+  await assert.rejects(
+    client.waitOperation(OPERATION_UUID, { timeout: 5 }),
+    APIConnectionError,
   );
-  assert.equal(operation.status, OperationStatus.SUCCESS);
 });
 
-test("followOperationEvents does not synthesize missing events", async () => {
-  const events = [];
-  for await (const event of client.followOperationEvents(
-    EVENTS_UNAVAILABLE_OPERATION_UUID,
-  )) {
-    events.push(event);
-  }
-  assert.deepEqual(events, []);
+test("waitOperation rejects an unavailable event log", async () => {
+  await assert.rejects(
+    client.waitOperation(EVENTS_UNAVAILABLE_OPERATION_UUID),
+    APIConnectionError,
+  );
+});
+
+test("followOperationEvents rejects an unavailable event log", async () => {
+  await assert.rejects(async () => {
+    for await (const event of client.followOperationEvents(
+      EVENTS_UNAVAILABLE_OPERATION_UUID,
+    ))
+      void event;
+  }, APIConnectionError);
 });
 
 test("the reconnect loop honors its deadline", async () => {
