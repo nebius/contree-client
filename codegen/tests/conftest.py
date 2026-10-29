@@ -25,13 +25,10 @@ CLIENT_ROOT = REPO_ROOT / "client"
 def spec_source(tmp_path_factory: pytest.TempPathFactory) -> str:
     """The OpenAPI spec location as a local path.
 
-    The spec is never stored in the repository: the CONTREE_SPEC
-    environment variable (a CI secret) points at it; a URL is fetched
+    CONTREE_SPEC overrides the committed snapshot. A URL is fetched
     once per session.
     """
-    source = os.environ.get("CONTREE_SPEC", "")
-    if not source:
-        pytest.skip("the CONTREE_SPEC environment variable is not set")
+    source = os.environ.get("CONTREE_SPEC") or str(REPO_ROOT / "api/v1/spec.yaml")
     if source.startswith(("http://", "https://")):
         path = tmp_path_factory.mktemp("spec") / "api.yaml"
         path.write_text(load_spec(source).text, encoding="utf-8")

@@ -6,6 +6,7 @@ import pytest
 
 from api_generator import __main__ as cli
 from api_generator.__main__ import main
+from api_generator.loader import load_spec
 from api_generator.python import emitter
 from api_generator.python.emitter import GENERATED_FILES
 
@@ -83,3 +84,61 @@ def test_cli_registers_all_language_defaults() -> None:
         "js": cli.REPO_ROOT / "client-js" / "lib",
         "go": cli.REPO_ROOT / "go" / "v1",
     }
+
+
+def test_cli_defaults_to_committed_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CONTREE_SPEC", raising=False)
+    parser = cli.Parser(config_files=())
+    parser.parse_args([])
+    assert Path(parser.spec) == cli.REPO_ROOT / "api/v1/spec.yaml"
+
+
+@pytest.mark.parametrize("source_kind", ["file", "url", "in_place"])
+def test_save_spec_preserves_input_bytes(
+    source_kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = "# café\r\nopenapi: 3.0.0\r\npaths: {}\r\n".encode()
+    source = tmp_path / "source.yaml"
+    source.write_bytes(payload)
+    target = source if source_kind == "in_place" else tmp_path / "api/v1/spec.yaml"
+    location = str(source)
+    fetched: list[str] = []
+    if source_kind == "url":
+        location = "https://example.invalid/spec.yaml"
+
+        def fetch_url(url: str) -> bytes:
+            fetched.append(url)
+            return payload
+
+        monkeypatch.setattr("api_generator.loader.fetch_url", fetch_url)
+
+    def unexpected_generation(*args: object) -> Path:
+        pytest.fail("saving the spec must not generate a package")
+
+    monkeypatch.setitem(cli.GENERATORS, "python", unexpected_generation)
+    monkeypatch.delenv("CONTREE_SPEC_SHA256", raising=False)
+    parser = cli.Parser(config_files=())
+    parser.parse_args(["--spec", location, "--save-spec", str(target)])
+    parser()
+
+    assert target.read_bytes() == payload
+    assert load_spec(target).sha256 == load_spec(source).sha256
+    assert fetched == ([location] if source_kind == "url" else [])
+    assert list(target.parent.iterdir()) == [target]
+
+
+def test_save_spec_keeps_snapshot_on_digest_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.yaml"
+    source.write_text("openapi: 3.0.0\npaths: {}\n")
+    target = tmp_path / "spec.yaml"
+    target.write_bytes(b"previous snapshot\n")
+    monkeypatch.setenv("CONTREE_SPEC_SHA256", "0" * 64)
+    parser = cli.Parser(config_files=())
+    parser.parse_args(["--spec", str(source), "--save-spec", str(target)])
+
+    with pytest.raises(ValueError, match="digest mismatch"):
+        parser()
+
+    assert target.read_bytes() == b"previous snapshot\n"

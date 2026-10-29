@@ -20,7 +20,7 @@ jobs:
     # codegen runs exactly once, on one Python: all packages are
     # generated and gated here. Python and JavaScript are packaged as
     # a wheel and npm tarball. All generated sources and reference
-    # pages are checked against the committed files.
+    # pages, including the input spec snapshot, are checked against Git.
     name: Generate and Build
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -61,7 +61,7 @@ jobs:
         # run only the offline parts
         run: echo "built=${{ env.CONTREE_SPEC != '' }}" >> "$GITHUB_OUTPUT"
 
-      - name: Verify committed generated files are current
+      - name: Verify committed spec and generated files are current
         if: env.CONTREE_SPEC != ''
         run: make check-generated
 
@@ -69,7 +69,9 @@ jobs:
         # spec-dependent by design: loader, IR, emitters, the wheel
         # gate (builds a wheel and imports it from an isolated env).
         # Linux-only on purpose - codegen runs nowhere else.
-        if: env.CONTREE_SPEC != ''
+        if: steps.flag.outputs.built == 'true'
+        env:
+          CONTREE_SPEC: ${{ github.workspace }}/api/v1/spec.yaml
         run: uv run pytest -v --tb=short codegen/tests
 
       - name: Build the packages

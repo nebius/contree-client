@@ -1,18 +1,19 @@
 """CLI: python -m api_generator [--lang python|js|go] [--spec URL].
 
-The spec location is deliberately not baked into the repository: it
-comes from the ``CONTREE_SPEC`` environment variable (a CI secret),
-a ``codegen.ini`` config file or the ``--spec`` flag.
+The default input is the committed ``api/v1/spec.yaml`` snapshot.
+Override it with ``CONTREE_SPEC``, ``codegen.ini`` or ``--spec``.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import argclass
 
 from api_generator.golang.emitter import generate as generate_go
 from api_generator.js.emitter import generate as generate_js
+from api_generator.loader import load_spec
 from api_generator.python.emitter import generate as generate_python
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -36,7 +37,7 @@ CONFIG_FILES = (
 
 class Parser(argclass.Parser):
     spec: str = argclass.Argument(
-        required=True,
+        default=str(REPO_ROOT / "api" / "v1" / "spec.yaml"),
         env_var="CONTREE_SPEC",
         help="Spec location: an http(s) URL or a local file path.",
     )
@@ -50,8 +51,23 @@ class Parser(argclass.Parser):
         type=Path,
         help="The package directory to generate into (default depends on --lang).",
     )
+    save_spec: Path | None = argclass.Argument(
+        default=None,
+        type=Path,
+        help="Save the input specification at this path without generating a package.",
+    )
 
     def __call__(self, *args, **kwargs) -> None:
+        if self.save_spec is not None:
+            spec = load_spec(self.spec)
+            self.save_spec.parent.mkdir(parents=True, exist_ok=True)
+            with TemporaryDirectory(dir=self.save_spec.parent) as directory:
+                staging = Path(directory) / "spec.yaml"
+                staging.write_bytes(spec.text.encode("utf-8"))
+                staging.replace(self.save_spec)
+            print(f"saved {self.save_spec}")
+            return
+
         package_dir = self.package or DEFAULT_PACKAGE_DIRS[self.lang]
         package = GENERATORS[self.lang](self.spec, package_dir)
         print(f"generated {package}")
