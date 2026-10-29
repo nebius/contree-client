@@ -19,8 +19,8 @@ jobs:
   build:
     # codegen runs exactly once, on one Python: all packages are
     # generated and gated here. Python and JavaScript are packaged as
-    # a wheel and npm tarball. Go output is checked against committed
-    # sources. Other jobs do not need the CONTREE_SPEC secret.
+    # a wheel and npm tarball. All generated sources and reference
+    # pages, including the input spec snapshot, are checked against Git.
     name: Generate and Build
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -61,32 +61,17 @@ jobs:
         # run only the offline parts
         run: echo "built=${{ env.CONTREE_SPEC != '' }}" >> "$GITHUB_OUTPUT"
 
-      - name: Generate the client packages
+      - name: Verify committed spec and generated files are current
         if: env.CONTREE_SPEC != ''
-        run: |
-          uv run python -m api_generator --package client/contree_client
-          uv run python -m api_generator --lang js --package client-js/lib
-          uv run python -m api_generator --lang go
-
-      - name: Verify committed Go sources are current
-        if: env.CONTREE_SPEC != ''
-        run: >-
-          git diff --exit-code --
-          go/v1/models.gen.go go/v1/operations.gen.go go/v1/spec_info.gen.go
-          go/v1/testing.gen.go
-
-      - name: Type check the generated client
-        # from client/ so its pyproject applies: python-version 3.10
-        # and respect-ignore-files=false (the generated package is
-        # gitignored - ty would otherwise scan zero files)
-        if: env.CONTREE_SPEC != ''
-        run: cd client && uv run --project .. ty check contree_client
+        run: make check-generated
 
       - name: Run the codegen test suite
         # spec-dependent by design: loader, IR, emitters, the wheel
         # gate (builds a wheel and imports it from an isolated env).
         # Linux-only on purpose - codegen runs nowhere else.
-        if: env.CONTREE_SPEC != ''
+        if: steps.flag.outputs.built == 'true'
+        env:
+          CONTREE_SPEC: ${{ github.workspace }}/api/v1/spec.yaml
         run: uv run pytest -v --tb=short codegen/tests
 
       - name: Build the packages
@@ -193,7 +178,7 @@ jobs:
         # NOT `uv sync`: the workspace would substitute the editable
         # source member for the wheel. A standalone venv gets the
         # exact artifact plus its own [dev] extra (pytest & friends);
-        # the incomplete source package is removed so nothing shadows
+        # the source package is removed so nothing shadows
         # the wheel
         if: needs.build.outputs.built == 'true'
         run: |

@@ -52,7 +52,6 @@ jobs:
       - name: Gate the artifact
         # builds a wheel and imports it from an isolated environment -
         # a formally successful but incomplete artifact cannot pass
-        # (the suite skips without the spec, so the secret is required)
         env:
           CONTREE_SPEC: ${{ secrets.CONTREE_SPEC }}
         run: uv run pytest -q codegen/tests/test_wheel.py

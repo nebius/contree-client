@@ -119,7 +119,7 @@ func generate(dir, importPath string) ([]byte, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
-	return []byte(r.page.String()), nil
+	return []byte(strings.TrimRight(r.page.String(), "\n") + "\n"), nil
 }
 
 type renderer struct {

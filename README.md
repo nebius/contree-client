@@ -49,8 +49,9 @@ optional retry handling. Streaming requests keep the response open and parse
 server-sent events into typed operation events. Higher-level helpers reconnect
 interrupted event streams and resume from the last received event.
 
-Python and JavaScript generated files are ignored by Git. Builds validate them
-before packaging them with the maintained runtime code.
+Generated Python, JavaScript, TypeScript and Go sources are committed to Git,
+together with the generated JavaScript and Go API reference pages. Regenerate
+and commit these files whenever the specification or generator changes.
 
 Go generated `*.gen.go` files are committed under `go/v1`. Go module proxies
 consume the Git tree for a version tag, so each tagged revision must contain a
@@ -59,7 +60,9 @@ specification.
 
 ## Development
 
-Set `CONTREE_SPEC` to the OpenAPI specification URL or local path:
+The OpenAPI snapshot is committed at `api/v1/spec.yaml`. Generation uses it
+by default. To refresh it, set `CONTREE_SPEC` to a URL or local path, or pass
+`SPEC=<url-or-path>` to make:
 
 ```sh
 export CONTREE_SPEC=path/to/api.yaml
@@ -69,6 +72,7 @@ make docs     # build documentation
 make build    # build the Python and npm distributions
 make go       # regenerate, lint, and test the Go module
 make test-go  # test committed Go sources without the specification
+make check-generated  # refresh the snapshot and regenerate; require no diff
 ```
 
 GitHub Actions publishes the HTML documentation to GitHub Pages after the
@@ -86,15 +90,19 @@ client. JavaScript development requires Node.js and npm. The Go module is in
 
 Generation follows the same process for all languages:
 
-1. Load the OpenAPI document and resolve its local references.
+1. Save the OpenAPI document once to `api/v1/spec.yaml`, preserving its bytes.
+   Load that snapshot for each language and resolve its local references.
 2. Convert schemas and paths into the shared intermediate representation.
 3. Render the language-specific package into a staging directory.
 4. Format, lint and compile the generated files.
 5. Replace the previous generated files only after validation succeeds.
 
 CI compiles and tests the committed Go module without the specification. When
-the specification secret is available, CI also regenerates Go sources and
-checks that the committed files are current.
+the specification secret is available, CI refreshes `api/v1/spec.yaml` and
+regenerates all client sources and API reference pages from that snapshot.
+It fails if the snapshot or generated files differ from Git, or new files are
+untracked. Commit the snapshot and generated files together after an update.
+`make clean` removes build artifacts and preserves the committed sources.
 
 The existing release workflows regenerate Python and JavaScript packages from
 the tagged revision, then publish them to PyPI and npm. The nested Go module

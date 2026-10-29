@@ -1,25 +1,13 @@
-# The spec location is never stored in the repository: the generator
-# reads the CONTREE_SPEC environment variable (a CI secret); an
-# explicit SPEC=<url-or-path> make variable overrides it.
+# CONTREE_SPEC or SPEC=<url-or-path> overrides the committed snapshot.
 SPEC ?=
+SPEC_SNAPSHOT = api/v1/spec.yaml
 PACKAGE = client/contree_client
 JS_PACKAGE = client-js/lib
 GO_ROOT = go
 GO_PACKAGE = $(GO_ROOT)/v1
-GENERATED = \
-    $(PACKAGE)/__init__.py \
-    $(PACKAGE)/base.py \
-    $(PACKAGE)/models.py \
-    $(PACKAGE)/operations.py \
-    $(PACKAGE)/spec_info.py
-JS_GENERATED = \
-    docs/js/reference.rst \
-    $(JS_PACKAGE)/models.js $(JS_PACKAGE)/models.d.ts \
-    $(JS_PACKAGE)/operations.js $(JS_PACKAGE)/operations.d.ts \
-    $(JS_PACKAGE)/client.js $(JS_PACKAGE)/client.d.ts \
-    $(JS_PACKAGE)/specInfo.js $(JS_PACKAGE)/specInfo.d.ts \
-    $(JS_PACKAGE)/index.js $(JS_PACKAGE)/index.d.ts
-.PHONY: all generate generate-js generate-go js go lint lint-js lint-go \
+# Check whole output directories so new generated files are covered too.
+GENERATED_PATHS = $(SPEC_SNAPSHOT) $(PACKAGE) $(JS_PACKAGE) $(GO_PACKAGE) docs/js docs/go
+.PHONY: all generate-spec generate generate-js generate-go check-generated js go lint lint-js lint-go \
     typecheck test test-python test-js test-go \
     test-live test-live-python test-live-js test-live-go \
     coverage docs docs-mintlify docs-go \
@@ -27,25 +15,37 @@ JS_GENERATED = \
 
 all: generate generate-js go lint lint-js typecheck test-python test-js
 
-# A single phony target keeps `make -j` down to one codegen run; the
-# spec is remote, so every invocation regenerates from the fresh spec.
+# Fetch once per make invocation, including parallel builds. Every
+# language consumes the exact bytes saved in the committed snapshot.
+generate-spec:
+	uv run python -m api_generator $(if $(SPEC),--spec "$(SPEC)") --save-spec $(SPEC_SNAPSHOT)
+
 # Codegen applies ruff to its output itself; here we only verify.
-generate:
-	uv run python -m api_generator $(if $(SPEC),--spec "$(SPEC)") --package $(PACKAGE)
+generate: generate-spec
+	uv run python -m api_generator --spec $(SPEC_SNAPSHOT) --package $(PACKAGE)
 	uv run ruff format --check client
 	uv run ruff check client
 	cd client && uv run --project .. ty check contree_client
 
 # Codegen runs prettier and `node --check` on its output itself; the
 # tsc pass lives in lint-js (it needs the whole package context).
-generate-js: client-js/node_modules
-	uv run python -m api_generator --lang js $(if $(SPEC),--spec "$(SPEC)") --package $(JS_PACKAGE)
+generate-js: generate-spec client-js/node_modules
+	uv run python -m api_generator --lang js --spec $(SPEC_SNAPSHOT) --package $(JS_PACKAGE)
 
 # Go source is generated in its versioned package and committed. This
 # keeps the tagged module complete for the Go module proxy.
-generate-go:
-	uv run python -m api_generator --lang go $(if $(SPEC),--spec "$(SPEC)") \
+generate-go: generate-spec
+	uv run python -m api_generator --lang go --spec $(SPEC_SNAPSHOT) \
 	    --package $(GO_PACKAGE)
+
+check-generated: generate generate-js generate-go
+	$(MAKE) docs-go
+	git diff --exit-code HEAD -- $(GENERATED_PATHS)
+	@untracked="$$(git ls-files --others --exclude-standard -- $(GENERATED_PATHS))"; \
+	if [ -n "$$untracked" ]; then \
+	    printf 'Untracked generated files:\n%s\n' "$$untracked"; \
+	    exit 1; \
+	fi
 
 client-js/node_modules: client-js/package.json client-js/package-lock.json
 	npm ci --prefix client-js --no-audit --no-fund
@@ -85,7 +85,7 @@ test-js: generate-js
 	cd client-js && node --test test/*.test.mjs
 
 # The committed generated files make this target independent of the
-# private OpenAPI specification.
+# OpenAPI specification.
 test-go:
 	cd $(GO_ROOT) && go test ./...
 
@@ -143,4 +143,4 @@ build-go:
 	cd $(GO_ROOT) && go build ./...
 
 clean:
-	rm -rf build dist $(GENERATED) $(JS_GENERATED) docs/go/reference.md
+	rm -rf build dist docs/_build
