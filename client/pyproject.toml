@@ -36,9 +36,6 @@ dev = [
 
 [tool.uv.build-backend]
 module-root = ""
-# the generated __init__.py may be absent on a fresh clone (it is
-# produced by `make generate`); namespace mode skips the module check
-namespace = true
 # ship the test suite inside the sdist as well
 source-include = ["tests/**"]
 
@@ -50,11 +47,6 @@ markers = [
 
 [tool.ty.environment]
 python-version = "3.10"
-
-[tool.ty.src]
-# the generated package is gitignored and ty honors ignore files by
-# default - without this the check silently scans zero files
-respect-ignore-files = false
 
 [tool.ruff]
 line-length = 88

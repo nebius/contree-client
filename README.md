@@ -49,8 +49,9 @@ optional retry handling. Streaming requests keep the response open and parse
 server-sent events into typed operation events. Higher-level helpers reconnect
 interrupted event streams and resume from the last received event.
 
-Python and JavaScript generated files are ignored by Git. Builds validate them
-before packaging them with the maintained runtime code.
+Generated Python, JavaScript, TypeScript and Go sources are committed to Git,
+together with the generated JavaScript and Go API reference pages. Regenerate
+and commit these files whenever the specification or generator changes.
 
 Go generated `*.gen.go` files are committed under `go/v1`. Go module proxies
 consume the Git tree for a version tag, so each tagged revision must contain a
@@ -69,6 +70,7 @@ make docs     # build documentation
 make build    # build the Python and npm distributions
 make go       # regenerate, lint, and test the Go module
 make test-go  # test committed Go sources without the specification
+make check-generated  # regenerate all sources and references; require no diff
 ```
 
 GitHub Actions publishes the HTML documentation to GitHub Pages after the
@@ -93,8 +95,9 @@ Generation follows the same process for all languages:
 5. Replace the previous generated files only after validation succeeds.
 
 CI compiles and tests the committed Go module without the specification. When
-the specification secret is available, CI also regenerates Go sources and
-checks that the committed files are current.
+the specification secret is available, CI also regenerates all client sources
+and API reference pages. It fails if files change or new files are untracked.
+`make clean` removes build artifacts and preserves the committed sources.
 
 The existing release workflows regenerate Python and JavaScript packages from
 the tagged revision, then publish them to PyPI and npm. The nested Go module

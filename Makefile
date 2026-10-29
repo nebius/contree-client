@@ -6,20 +6,9 @@ PACKAGE = client/contree_client
 JS_PACKAGE = client-js/lib
 GO_ROOT = go
 GO_PACKAGE = $(GO_ROOT)/v1
-GENERATED = \
-    $(PACKAGE)/__init__.py \
-    $(PACKAGE)/base.py \
-    $(PACKAGE)/models.py \
-    $(PACKAGE)/operations.py \
-    $(PACKAGE)/spec_info.py
-JS_GENERATED = \
-    docs/js/reference.rst \
-    $(JS_PACKAGE)/models.js $(JS_PACKAGE)/models.d.ts \
-    $(JS_PACKAGE)/operations.js $(JS_PACKAGE)/operations.d.ts \
-    $(JS_PACKAGE)/client.js $(JS_PACKAGE)/client.d.ts \
-    $(JS_PACKAGE)/specInfo.js $(JS_PACKAGE)/specInfo.d.ts \
-    $(JS_PACKAGE)/index.js $(JS_PACKAGE)/index.d.ts
-.PHONY: all generate generate-js generate-go js go lint lint-js lint-go \
+# Check whole output directories so new generated files are covered too.
+GENERATED_PATHS = $(PACKAGE) $(JS_PACKAGE) $(GO_PACKAGE) docs/js docs/go
+.PHONY: all generate generate-js generate-go check-generated js go lint lint-js lint-go \
     typecheck test test-python test-js test-go \
     test-live test-live-python test-live-js test-live-go \
     coverage docs docs-mintlify docs-go \
@@ -46,6 +35,15 @@ generate-js: client-js/node_modules
 generate-go:
 	uv run python -m api_generator --lang go $(if $(SPEC),--spec "$(SPEC)") \
 	    --package $(GO_PACKAGE)
+
+check-generated: generate generate-js generate-go
+	$(MAKE) docs-go
+	git diff --exit-code HEAD -- $(GENERATED_PATHS)
+	@untracked="$$(git ls-files --others --exclude-standard -- $(GENERATED_PATHS))"; \
+	if [ -n "$$untracked" ]; then \
+	    printf 'Untracked generated files:\n%s\n' "$$untracked"; \
+	    exit 1; \
+	fi
 
 client-js/node_modules: client-js/package.json client-js/package-lock.json
 	npm ci --prefix client-js --no-audit --no-fund
@@ -143,4 +141,4 @@ build-go:
 	cd $(GO_ROOT) && go build ./...
 
 clean:
-	rm -rf build dist $(GENERATED) $(JS_GENERATED) docs/go/reference.md
+	rm -rf build dist docs/_build
