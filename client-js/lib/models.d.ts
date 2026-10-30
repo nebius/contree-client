@@ -78,6 +78,8 @@ export declare class DirectoryList {
   constructor(fields?: { path?: string; files?: FileItem[] });
   static fromWire(data: Record<string, unknown>): DirectoryList;
   toWire(): Record<string, unknown>;
+  asText(short?: boolean): string;
+  toString(): string;
 }
 
 export declare class GrepSubmatch {
@@ -108,6 +110,8 @@ export declare class GrepMatch {
   });
   static fromWire(data: Record<string, unknown>): GrepMatch;
   toWire(): Record<string, unknown>;
+  asText(): string;
+  toString(): string;
 }
 
 export declare class GrepResult {
@@ -123,6 +127,8 @@ export declare class GrepResult {
   });
   static fromWire(data: Record<string, unknown>): GrepResult;
   toWire(): Record<string, unknown>;
+  asText(): string;
+  toString(): string;
 }
 
 export declare class ImageImportRegistryCredentials {
@@ -231,6 +237,7 @@ export declare class StreamRepr {
   asText(): string;
   static fromBytes(value: Uint8Array): StreamRepr;
   static fromText(value: string): StreamRepr;
+  toString(): string;
 }
 
 export declare class ClosableStreamRepr {
@@ -244,6 +251,12 @@ export declare class ClosableStreamRepr {
   });
   static fromWire(data: Record<string, unknown>): ClosableStreamRepr;
   toWire(): Record<string, unknown>;
+
+  asBytes(): Uint8Array;
+  asText(): string;
+  static fromBytes(value: Uint8Array): ClosableStreamRepr;
+  static fromText(value: string): ClosableStreamRepr;
+  toString(): string;
 }
 
 export declare class InstanceResourcesLimits {
@@ -862,6 +875,7 @@ export declare class EventDataStream {
   asText(): string;
   static fromBytes(value: Uint8Array): EventDataStream;
   static fromText(value: string): EventDataStream;
+  toString(): string;
 }
 
 export declare class EventResources {

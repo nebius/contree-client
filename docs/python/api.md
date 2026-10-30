@@ -621,6 +621,36 @@ parses wire payloads (missing key → unset `...`, explicit `null` →
 descriptions, examples and defaults are attached as
 `dataclasses.field(metadata=...)`.
 
+### Text formatting
+
+These models provide `as_text()`. Each model defines `__str__ = as_text`, so
+`str(model)` and f-strings use the default text format. `repr(model)` keeps the
+dataclass representation. Formatting does not change fields or `to_dict()`.
+
+| Model | Text representation |
+| --- | --- |
+| `GrepMatch` | One `path:line:text` row; context uses `-` instead of `:`. |
+| `GrepResult` | Rows in response order, with `--` between disjoint context groups. |
+| `DirectoryList` | An `ls -l`-style table; `as_text(short=True)` returns paths only. |
+| `StreamRepr` | Decoded stream content. |
+| `EventDataStream` | Decoded event content. |
+| `ClosableStreamRepr` | Decoded stdin content; `close` does not affect formatting. |
+
+Grep and directory formats end nonempty output with a newline. Use
+`print(model, end="")` to avoid an extra newline. Empty collections return `""`.
+`GrepResult.truncated` remains separate from the formatted output.
+
+Directory tables use the returned owner and group names, with numeric IDs as
+fallbacks for empty names. Modification times use UTC. Symlinks include their
+targets. Formatting preserves response order and adds no `total` header.
+
+Stream models decode base64 as UTF-8 and replace invalid UTF-8 bytes. Invalid
+base64 follows the existing lenient decoder: undecodable payloads return empty
+text. ASCII payloads retain their text, including existing newlines.
+`ClosableStreamRepr` treats omitted encoding as ASCII. Its `as_bytes()`,
+`from_bytes()`, and `from_text()` helpers use the same rules as `StreamRepr`;
+constructors leave `close` unset so the server default applies.
+
 ## Reference
 
 ### contree_client.base

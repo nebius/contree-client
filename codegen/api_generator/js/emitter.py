@@ -273,6 +273,93 @@ STREAM_VALUE_METHODS_DTS = """
   static fromText(value: string): {name};
 """
 
+GREP_MATCH_METHODS_JS = r"""
+  // Format one grep row with its path, line number, and trailing newline.
+  asText() {
+    const separator = this.type === "context" ? "-" : ":";
+    const text = `${this.path}${separator}${this.lineNumber}${separator}${this.lineText}`;
+    return text.endsWith("\n") ? text : text + "\n";
+  }
+"""
+
+GREP_RESULT_METHODS_JS = r"""
+  // Format grep rows in response order, separating disjoint context groups.
+  asText() {
+    const output = [];
+    let previous = null;
+    const hasContext = this.matches.some((row) => row.type === "context");
+    for (const row of this.matches) {
+      if (hasContext && previous !== null &&
+          (row.path !== previous.path || row.lineNumber !== previous.lineNumber + 1)) {
+        output.push("--\n");
+      }
+      output.push(row.asText());
+      previous = row;
+    }
+    return output.join("");
+  }
+"""
+
+DIRECTORY_LIST_METHODS_JS = r"""
+  // Format entries like ls -l, or return one path per line with short=true.
+  asText(short = false) {
+    if (short) return this.files.map((item) => `${item.path}\n`).join("");
+    const rows = this.files.map((item) => {
+      let mode = item.mode;
+      if (!(mode & 0o170000)) {
+        for (const [enabled, fileType] of [
+          [item.isSymlink, 0o120000], [item.isDir, 0o040000],
+          [item.isSocket, 0o140000], [item.isFifo, 0o010000],
+          [item.isRegular, 0o100000],
+        ]) {
+          if (enabled) {
+            mode |= fileType;
+            break;
+          }
+        }
+      }
+      const fileTypes = { [0o010000]: "p", [0o020000]: "c", [0o040000]: "d",
+        [0o060000]: "b", [0o100000]: "-", [0o120000]: "l", [0o140000]: "s" };
+      let permissions = fileTypes[mode & 0o170000] ?? "?";
+      for (const shift of [6, 3, 0]) {
+        permissions += mode & (4 << shift) ? "r" : "-";
+        permissions += mode & (2 << shift) ? "w" : "-";
+        const executable = Boolean(mode & (1 << shift));
+        const special = mode & (shift === 6 ? 0o4000 : shift === 3 ? 0o2000 : 0o1000);
+        permissions += special
+          ? shift === 0 ? (executable ? "t" : "T") : (executable ? "s" : "S")
+          : executable ? "x" : "-";
+      }
+      let path = item.path;
+      if ((mode & 0o170000) === 0o120000 && item.symlinkTo) path += ` -> ${item.symlinkTo}`;
+      const owner = String(item.owner === "" ? item.uid : item.owner);
+      const group = String(item.group === "" ? item.gid : item.group);
+      const modified = new Date(item.mtime * 1000).toISOString().slice(0, -8).replace("T", " ");
+      return [permissions, String(item.nlink), owner, group, String(item.size), modified, path];
+    });
+    if (!rows.length) return "";
+    const width = (column) => rows.reduce((size, row) => Math.max(size, [...row[column]].length), 0);
+    const linksWidth = width(1), ownerWidth = width(2), groupWidth = width(3), sizeWidth = width(4);
+    const pad = (text, size, right = false) => {
+      const spaces = " ".repeat(size - [...text].length);
+      return right ? spaces + text : text + spaces;
+    };
+    return rows.map(([mode, links, owner, group, size, modified, path]) =>
+      `${mode} ${pad(links, linksWidth, true)} ${pad(owner, ownerWidth)} ` +
+      `${pad(group, groupWidth)} ${pad(size, sizeWidth, true)} ${modified} ${path}\n`
+    ).join("");
+  }
+"""
+
+TEXT_MODEL_TRAITS = frozenset(
+    {
+        ModelTrait.STREAM_VALUE,
+        ModelTrait.GREP_MATCH,
+        ModelTrait.GREP_RESULT,
+        ModelTrait.DIRECTORY_LIST,
+    }
+)
+
 FILESPEC_MODE_JS = """
     // the wire format is an octal string; accept a plain int too
     if (typeof this.mode === "number") {
@@ -381,6 +468,14 @@ def render_class_js(cls: ModelDef) -> str:
     lines.append("  }")
     if ModelTrait.STREAM_VALUE in cls.traits:
         lines.append(STREAM_VALUE_METHODS_JS.rstrip())
+    if ModelTrait.GREP_MATCH in cls.traits:
+        lines.append(GREP_MATCH_METHODS_JS.rstrip())
+    if ModelTrait.GREP_RESULT in cls.traits:
+        lines.append(GREP_RESULT_METHODS_JS.rstrip())
+    if ModelTrait.DIRECTORY_LIST in cls.traits:
+        lines.append(DIRECTORY_LIST_METHODS_JS.rstrip())
+    if cls.traits & TEXT_MODEL_TRAITS:
+        lines.append("\n  toString() {\n    return this.asText();\n  }")
     lines.append("}")
     return "\n".join(lines)
 
@@ -400,6 +495,12 @@ def render_class_dts(cls: ModelDef) -> str:
     lines.append("  toWire(): Record<string, unknown>;")
     if ModelTrait.STREAM_VALUE in cls.traits:
         lines.append(STREAM_VALUE_METHODS_DTS.format(name=cls.name).rstrip())
+    if cls.traits & {ModelTrait.GREP_MATCH, ModelTrait.GREP_RESULT}:
+        lines.append("  asText(): string;")
+    if ModelTrait.DIRECTORY_LIST in cls.traits:
+        lines.append("  asText(short?: boolean): string;")
+    if cls.traits & TEXT_MODEL_TRAITS:
+        lines.append("  toString(): string;")
     lines.append("}")
     return "\n".join(lines)
 
@@ -2012,6 +2113,24 @@ def render_model_reference(cls: ModelDef, public_names: set[str] | None = None) 
             f"Codec helpers: ``asBytes()``, ``asText()``,"
             f" ``{cls.name}.fromBytes(bytes)``, ``{cls.name}.fromText(text)``."
         )
+        body.append("")
+    if ModelTrait.GREP_MATCH in cls.traits:
+        body.append(
+            "``asText()`` formats one grep row, using ``-`` separators for context rows."
+        )
+        body.append("")
+    if ModelTrait.GREP_RESULT in cls.traits:
+        body.append(
+            "``asText()`` formats grep rows in response order, separating disjoint context groups with ``--``."
+        )
+        body.append("")
+    if ModelTrait.DIRECTORY_LIST in cls.traits:
+        body.append(
+            "``asText(short = false)`` formats an ``ls -l``-style table; pass the boolean ``true`` for paths only."
+        )
+        body.append("")
+    if cls.traits & TEXT_MODEL_TRAITS:
+        body.append("``toString()`` delegates to ``asText()`` with the default format.")
         body.append("")
     lines.extend(indented(body))
     return "\n".join(lines).rstrip()

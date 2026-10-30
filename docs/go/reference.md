@@ -1831,6 +1831,42 @@ type ClosableStreamRepr struct {
 }
 ```
 
+(go-newclosablestreamreprfrombytes)=
+#### NewClosableStreamReprFromBytes
+
+NewClosableStreamReprFromBytes constructs a stream payload from bytes.
+
+```go
+func NewClosableStreamReprFromBytes(value []byte) ClosableStreamRepr
+```
+
+(go-newclosablestreamreprfromtext)=
+#### NewClosableStreamReprFromText
+
+NewClosableStreamReprFromText constructs a stream payload from text.
+
+```go
+func NewClosableStreamReprFromText(value string) ClosableStreamRepr
+```
+
+(go-closablestreamrepr-asbytes)=
+#### ClosableStreamRepr.AsBytes
+
+AsBytes decodes the stream payload to bytes.
+
+```go
+func (m ClosableStreamRepr) AsBytes() []byte
+```
+
+(go-closablestreamrepr-astext)=
+#### ClosableStreamRepr.AsText
+
+AsText decodes the stream payload to valid UTF-8 text.
+
+```go
+func (m ClosableStreamRepr) AsText() string
+```
+
 (go-closablestreamrepr-marshaljson)=
 #### ClosableStreamRepr.MarshalJSON
 
@@ -1838,6 +1874,15 @@ MarshalJSON encodes ClosableStreamRepr with exact wire names.
 
 ```go
 func (m ClosableStreamRepr) MarshalJSON() ([]byte, error)
+```
+
+(go-closablestreamrepr-string)=
+#### ClosableStreamRepr.String
+
+String returns the decoded payload text.
+
+```go
+func (m ClosableStreamRepr) String() string
 ```
 
 (go-closablestreamrepr-unmarshaljson)=
@@ -1895,6 +1940,15 @@ type DirectoryList struct {
 }
 ```
 
+(go-directorylist-astext)=
+#### DirectoryList.AsText
+
+AsText formats entries like ls -l; pass true to return one path per line.
+
+```go
+func (m DirectoryList) AsText(short ...bool) string
+```
+
 (go-directorylist-marshaljson)=
 #### DirectoryList.MarshalJSON
 
@@ -1902,6 +1956,15 @@ MarshalJSON encodes DirectoryList with exact wire names.
 
 ```go
 func (m DirectoryList) MarshalJSON() ([]byte, error)
+```
+
+(go-directorylist-string)=
+#### DirectoryList.String
+
+String returns the detailed directory listing.
+
+```go
+func (m DirectoryList) String() string
 ```
 
 (go-directorylist-unmarshaljson)=
@@ -2385,6 +2448,15 @@ MarshalJSON encodes EventDataStream with exact wire names.
 func (m EventDataStream) MarshalJSON() ([]byte, error)
 ```
 
+(go-eventdatastream-string)=
+#### EventDataStream.String
+
+String returns the decoded payload text.
+
+```go
+func (m EventDataStream) String() string
+```
+
 (go-eventdatastream-unmarshaljson)=
 #### EventDataStream.UnmarshalJSON
 
@@ -2832,6 +2904,15 @@ type GrepMatch struct {
 }
 ```
 
+(go-grepmatch-astext)=
+#### GrepMatch.AsText
+
+AsText formats one grep row with its path, line number, and trailing newline.
+
+```go
+func (m GrepMatch) AsText() string
+```
+
 (go-grepmatch-marshaljson)=
 #### GrepMatch.MarshalJSON
 
@@ -2839,6 +2920,15 @@ MarshalJSON encodes GrepMatch with exact wire names.
 
 ```go
 func (m GrepMatch) MarshalJSON() ([]byte, error)
+```
+
+(go-grepmatch-string)=
+#### GrepMatch.String
+
+String returns the formatted grep row.
+
+```go
+func (m GrepMatch) String() string
 ```
 
 (go-grepmatch-unmarshaljson)=
@@ -2864,6 +2954,15 @@ type GrepResult struct {
 }
 ```
 
+(go-grepresult-astext)=
+#### GrepResult.AsText
+
+AsText formats grep rows in response order, separating disjoint context groups.
+
+```go
+func (m GrepResult) AsText() string
+```
+
 (go-grepresult-marshaljson)=
 #### GrepResult.MarshalJSON
 
@@ -2871,6 +2970,15 @@ MarshalJSON encodes GrepResult with exact wire names.
 
 ```go
 func (m GrepResult) MarshalJSON() ([]byte, error)
+```
+
+(go-grepresult-string)=
+#### GrepResult.String
+
+String returns the formatted grep results.
+
+```go
+func (m GrepResult) String() string
 ```
 
 (go-grepresult-unmarshaljson)=
@@ -4532,6 +4640,15 @@ MarshalJSON encodes StreamRepr with exact wire names.
 
 ```go
 func (m StreamRepr) MarshalJSON() ([]byte, error)
+```
+
+(go-streamrepr-string)=
+#### StreamRepr.String
+
+String returns the decoded payload text.
+
+```go
+func (m StreamRepr) String() string
 ```
 
 (go-streamrepr-unmarshaljson)=

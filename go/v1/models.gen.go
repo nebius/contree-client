@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Optional preserves whether a JSON property was absent, null, or a value.
@@ -697,6 +699,117 @@ func (m *DirectoryList) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func fileItemMode(item FileItem) int64 {
+	mode := item.Mode
+	if mode&0170000 == 0 {
+		switch {
+		case item.IsSymlink:
+			mode |= 0120000
+		case item.IsDir:
+			mode |= 0040000
+		case item.IsSocket:
+			mode |= 0140000
+		case item.IsFifo:
+			mode |= 0010000
+		case item.IsRegular:
+			mode |= 0100000
+		}
+	}
+	return mode
+}
+
+func fileModeText(mode int64) string {
+	text := []byte("?---------")
+	switch mode & 0170000 {
+	case 0100000:
+		text[0] = '-'
+	case 0040000:
+		text[0] = 'd'
+	case 0120000:
+		text[0] = 'l'
+	case 0140000:
+		text[0] = 's'
+	case 0010000:
+		text[0] = 'p'
+	case 0020000:
+		text[0] = 'c'
+	case 0060000:
+		text[0] = 'b'
+	}
+	for index, symbol := range []byte("rwxrwxrwx") {
+		if mode&(1<<uint(8-index)) != 0 {
+			text[index+1] = symbol
+		}
+	}
+	for _, special := range []struct {
+		mask         int64
+		index        int
+		lower, upper byte
+	}{
+		{04000, 3, 's', 'S'},
+		{02000, 6, 's', 'S'},
+		{01000, 9, 't', 'T'},
+	} {
+		if mode&special.mask != 0 {
+			text[special.index] = special.upper
+			if mode&(1<<uint(9-special.index)) != 0 {
+				text[special.index] = special.lower
+			}
+		}
+	}
+	return string(text)
+}
+
+func fileIdentityText(value StringOrInt64, fallback int64) string {
+	if name, ok := value.StringValue(); ok && name != "" {
+		return name
+	}
+	if number, ok := value.Int64Value(); ok {
+		return strconv.FormatInt(number, 10)
+	}
+	return strconv.FormatInt(fallback, 10)
+}
+
+// AsText formats entries like ls -l; pass true to return one path per line.
+func (m DirectoryList) AsText(short ...bool) string {
+	var output strings.Builder
+	if len(short) > 0 && short[0] {
+		for _, item := range m.Files {
+			output.WriteString(item.Path + "\n")
+		}
+		return output.String()
+	}
+	rows := make([][7]string, 0, len(m.Files))
+	var widths [4]int
+	for _, item := range m.Files {
+		mode := fileItemMode(item)
+		path := item.Path
+		if mode&0170000 == 0120000 && item.SymlinkTo != "" {
+			path += " -> " + item.SymlinkTo
+		}
+		row := [7]string{
+			fileModeText(mode), strconv.FormatInt(item.Nlink, 10),
+			fileIdentityText(item.Owner, item.UID),
+			fileIdentityText(item.Group, item.GID),
+			strconv.FormatInt(item.Size, 10),
+			time.Unix(item.Mtime, 0).UTC().Format("2006-01-02 15:04"), path,
+		}
+		for index := range widths {
+			widths[index] = max(widths[index], utf8.RuneCountInString(row[index+1]))
+		}
+		rows = append(rows, row)
+	}
+	for _, row := range rows {
+		fmt.Fprintf(&output, "%s %*s %-*s %-*s %*s %s %s\n",
+			row[0], widths[0], row[1], widths[1], row[2],
+			widths[2], row[3], widths[3], row[4], row[5], row[6])
+	}
+	return output.String()
+}
+
+// String returns the detailed directory listing.
+func (m DirectoryList) String() string { return m.AsText() }
+
 // GrepSubmatch is generated from the GrepSubmatch schema.
 type GrepSubmatch struct {
 	Text  string `json:"text"`
@@ -894,6 +1007,23 @@ func (m *GrepMatch) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// AsText formats one grep row with its path, line number, and trailing newline.
+func (m GrepMatch) AsText() string {
+	separator := ":"
+	if m.Type == "context" {
+		separator = "-"
+	}
+	text := fmt.Sprintf("%s%s%d%s%s",
+		m.Path, separator, m.LineNumber, separator, m.LineText)
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	return text
+}
+
+// String returns the formatted grep row.
+func (m GrepMatch) String() string { return m.AsText() }
+
 // GrepResult is generated from the GrepResult schema.
 type GrepResult struct {
 	Path      string      `json:"path"`
@@ -982,6 +1112,31 @@ func (m *GrepResult) UnmarshalJSON(data []byte) error {
 	*m = decoded
 	return nil
 }
+
+// AsText formats grep rows in response order, separating disjoint context groups.
+func (m GrepResult) AsText() string {
+	hasContext := false
+	for _, row := range m.Matches {
+		if row.Type == "context" {
+			hasContext = true
+			break
+		}
+	}
+	var output strings.Builder
+	for index, row := range m.Matches {
+		if hasContext && index > 0 {
+			previous := m.Matches[index-1]
+			if row.Path != previous.Path || row.LineNumber != previous.LineNumber+1 {
+				output.WriteString("--\n")
+			}
+		}
+		output.WriteString(row.AsText())
+	}
+	return output.String()
+}
+
+// String returns the formatted grep results.
+func (m GrepResult) String() string { return m.AsText() }
 
 // ImageImportRegistryCredentials is generated from the ImageImportRegistryCredentials schema.
 type ImageImportRegistryCredentials struct {
@@ -1518,6 +1673,11 @@ func (m StreamRepr) AsText() string {
 	return m.Value
 }
 
+// String returns the decoded payload text.
+func (m StreamRepr) String() string {
+	return m.AsText()
+}
+
 // NewStreamReprFromBytes constructs a stream payload from bytes.
 func NewStreamReprFromBytes(value []byte) StreamRepr {
 	printable := true
@@ -1604,6 +1764,56 @@ func (m *ClosableStreamRepr) UnmarshalJSON(data []byte) error {
 	}
 	*m = decoded
 	return nil
+}
+
+// AsBytes decodes the stream payload to bytes.
+func (m ClosableStreamRepr) AsBytes() []byte {
+	encoding, _ := m.Encoding.Value()
+	if encoding == "base64" {
+		value, err := base64.StdEncoding.DecodeString(m.Value)
+		if err != nil {
+			return []byte{}
+		}
+		return value
+	}
+	return []byte(m.Value)
+}
+
+// AsText decodes the stream payload to valid UTF-8 text.
+func (m ClosableStreamRepr) AsText() string {
+	encoding, _ := m.Encoding.Value()
+	if encoding == "base64" {
+		return strings.ToValidUTF8(string(m.AsBytes()), "�")
+	}
+	return m.Value
+}
+
+// String returns the decoded payload text.
+func (m ClosableStreamRepr) String() string {
+	return m.AsText()
+}
+
+// NewClosableStreamReprFromBytes constructs a stream payload from bytes.
+func NewClosableStreamReprFromBytes(value []byte) ClosableStreamRepr {
+	printable := true
+	for _, char := range value {
+		if !((char >= 32 && char < 127) || char == 9 || char == 10 || char == 13) {
+			printable = false
+			break
+		}
+	}
+	if printable {
+		return ClosableStreamRepr{Value: string(value), Encoding: Some("ascii")}
+	}
+	return ClosableStreamRepr{
+		Value:    base64.StdEncoding.EncodeToString(value),
+		Encoding: Some("base64"),
+	}
+}
+
+// NewClosableStreamReprFromText constructs a stream payload from text.
+func NewClosableStreamReprFromText(value string) ClosableStreamRepr {
+	return NewClosableStreamReprFromBytes([]byte(value))
 }
 
 // InstanceResourcesLimits is generated from the InstanceResourcesLimits schema.
@@ -5133,6 +5343,11 @@ func (m EventDataStream) AsText() string {
 		return strings.ToValidUTF8(string(m.AsBytes()), "�")
 	}
 	return m.Value
+}
+
+// String returns the decoded payload text.
+func (m EventDataStream) String() string {
+	return m.AsText()
 }
 
 // NewEventDataStreamFromBytes constructs a stream payload from bytes.

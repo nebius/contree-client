@@ -221,12 +221,19 @@ class ModelTrait(Enum):
 
     STREAM_VALUE = auto()
     FILE_MODE = auto()
+    GREP_MATCH = auto()
+    GREP_RESULT = auto()
+    DIRECTORY_LIST = auto()
 
 
 MODEL_TRAITS: dict[str, frozenset[ModelTrait]] = {
     "StreamRepr": frozenset({ModelTrait.STREAM_VALUE}),
     "EventDataStream": frozenset({ModelTrait.STREAM_VALUE}),
+    "ClosableStreamRepr": frozenset({ModelTrait.STREAM_VALUE}),
     "FileSpec": frozenset({ModelTrait.FILE_MODE}),
+    "GrepMatch": frozenset({ModelTrait.GREP_MATCH}),
+    "GrepResult": frozenset({ModelTrait.GREP_RESULT}),
+    "DirectoryList": frozenset({ModelTrait.DIRECTORY_LIST}),
 }
 
 
