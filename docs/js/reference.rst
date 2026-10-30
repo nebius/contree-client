@@ -1252,6 +1252,10 @@ Models
       ``FileItem[]`` (required) — List of files and directories in the
       specified path
 
+   ``asText(short = false)`` formats an ``ls -l``-style table; pass the boolean ``true`` for paths only.
+
+   ``toString()`` delegates to ``asText()`` with the default format.
+
 .. js:class:: GrepSubmatch(fields?)
 
    .. js:attribute:: GrepSubmatch.text
@@ -1309,6 +1313,10 @@ Models
       type: "match" is an actual match, "context" is a before/after context
       line requested via before/after. Example: ``match``.
 
+   ``asText()`` formats one grep row, using ``-`` separators for context rows.
+
+   ``toString()`` delegates to ``asText()`` with the default format.
+
 .. js:class:: GrepResult(fields?)
 
    .. js:attribute:: GrepResult.path
@@ -1331,6 +1339,10 @@ Models
 
       ``boolean`` (required) — True when maxTotal or the search deadline
       stopped the search early Example: ``false``.
+
+   ``asText()`` formats grep rows in response order, separating disjoint context groups with ``--``.
+
+   ``toString()`` delegates to ``asText()`` with the default format.
 
 .. js:class:: ImageImportRegistryCredentials(fields?)
 
@@ -1458,6 +1470,8 @@ Models
 
    Codec helpers: ``asBytes()``, ``asText()``, ``StreamRepr.fromBytes(bytes)``, ``StreamRepr.fromText(text)``.
 
+   ``toString()`` delegates to ``asText()`` with the default format.
+
 .. js:class:: ClosableStreamRepr(fields?)
 
    Stdin payload.  Delivery to the child is always complete —
@@ -1481,6 +1495,10 @@ Models
       writing ``value`` — the pre-existing one-shot behavior. ``false``
       keeps the pipe open so more data can be sent later via
       ``POST /operations/{operationId}/subprocesses/{spid}/stdin``.
+
+   Codec helpers: ``asBytes()``, ``asText()``, ``ClosableStreamRepr.fromBytes(bytes)``, ``ClosableStreamRepr.fromText(text)``.
+
+   ``toString()`` delegates to ``asText()`` with the default format.
 
 .. js:class:: InstanceResourcesLimits(fields?)
 
@@ -2662,6 +2680,8 @@ Models
       emitted/dropped totals. Example: ``false``.
 
    Codec helpers: ``asBytes()``, ``asText()``, ``EventDataStream.fromBytes(bytes)``, ``EventDataStream.fromText(text)``.
+
+   ``toString()`` delegates to ``asText()`` with the default format.
 
 .. js:class:: EventResources(fields?)
 

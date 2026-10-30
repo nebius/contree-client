@@ -389,6 +389,8 @@ STREAM_VALUE_METHODS = '''
             return self.as_bytes().decode("utf-8", errors="replace")
         return self.value
 
+    __str__ = as_text
+
     @classmethod
     def from_bytes(cls, value: bytes) -> "{name}":
         """Build a payload from raw bytes.
@@ -416,6 +418,79 @@ FILESPEC_MODE_METHODS = """
         if isinstance(self.mode, int):
             self.mode = f"{{self.mode:04o}}"
 """
+
+GREP_MATCH_METHODS = r'''
+    def as_text(self) -> str:
+        """Format one grep row with its path, line number, and trailing newline."""
+        separator = "-" if self.type == "context" else ":"
+        text = f"{self.path}{separator}{self.line_number}{separator}{self.line_text}"
+        return text if text.endswith("\n") else text + "\n"
+
+    __str__ = as_text
+'''
+
+GREP_RESULT_METHODS = r'''
+    def as_text(self) -> str:
+        """Format grep rows in response order, separating disjoint context groups."""
+        output: list[str] = []
+        previous: GrepMatch | None = None
+        has_context = any(row.type == "context" for row in self.matches)
+        for row in self.matches:
+            if has_context and previous is not None and (
+                row.path != previous.path
+                or row.line_number != previous.line_number + 1
+            ):
+                output.append("--\n")
+            output.append(row.as_text())
+            previous = row
+        return "".join(output)
+
+    __str__ = as_text
+'''
+
+DIRECTORY_LIST_METHODS = r'''
+    def as_text(self, short: bool = False) -> str:
+        """Format entries like ls -l, or return one path per line with short=True."""
+        if short:
+            return "".join(f"{item.path}\n" for item in self.files)
+        rows: list[tuple[str, str, str, str, str, str, str]] = []
+        for item in self.files:
+            mode = item.mode
+            if not stat.S_IFMT(mode):
+                for enabled, file_type in (
+                    (item.is_symlink, stat.S_IFLNK),
+                    (item.is_dir, stat.S_IFDIR),
+                    (item.is_socket, stat.S_IFSOCK),
+                    (item.is_fifo, stat.S_IFIFO),
+                    (item.is_regular, stat.S_IFREG),
+                ):
+                    if enabled:
+                        mode |= file_type
+                        break
+            path = item.path
+            if stat.S_ISLNK(mode) and item.symlink_to:
+                path += f" -> {item.symlink_to}"
+            owner = str(item.owner if item.owner != "" else item.uid)
+            group = str(item.group if item.group != "" else item.gid)
+            modified = datetime.fromtimestamp(item.mtime, timezone.utc)
+            rows.append((
+                stat.filemode(mode), str(item.nlink), owner, group,
+                str(item.size), modified.strftime("%Y-%m-%d %H:%M"), path,
+            ))
+        if not rows:
+            return ""
+        links_width = max(len(row[1]) for row in rows)
+        owner_width = max(len(row[2]) for row in rows)
+        group_width = max(len(row[3]) for row in rows)
+        size_width = max(len(row[4]) for row in rows)
+        return "".join(
+            f"{mode} {links:>{links_width}} {owner:<{owner_width}} "
+            f"{group:<{group_width}} {size:>{size_width}} {modified} {path}\n"
+            for mode, links, owner, group, size, modified, path in rows
+        )
+
+    __str__ = as_text
+'''
 
 
 def ordered_model_fields(model: ModelDef) -> list[FieldDef]:
@@ -461,6 +536,12 @@ def render_model(model: ModelDef) -> str:
         lines.append(STREAM_VALUE_METHODS.format(name=model.name).rstrip("\n"))
     if ModelTrait.FILE_MODE in model.traits:
         lines.append(FILESPEC_MODE_METHODS.format(name=model.name).rstrip("\n"))
+    if ModelTrait.GREP_MATCH in model.traits:
+        lines.append(GREP_MATCH_METHODS.rstrip("\n"))
+    if ModelTrait.GREP_RESULT in model.traits:
+        lines.append(GREP_RESULT_METHODS.rstrip("\n"))
+    if ModelTrait.DIRECTORY_LIST in model.traits:
+        lines.append(DIRECTORY_LIST_METHODS.rstrip("\n"))
     return "\n".join(lines)
 
 
@@ -540,6 +621,7 @@ def render_models(ir: SpecIR) -> str:
             "import base64",
             "import binascii",
             "import re",
+            "import stat",
             "from collections.abc import Callable",
             "from contextlib import suppress",
             "from dataclasses import dataclass, field, fields",

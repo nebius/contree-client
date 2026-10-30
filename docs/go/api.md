@@ -240,6 +240,24 @@ Non-seekable readers upload directly unless you pass a known SHA-256 digest.
 `ResolveImage` accepts an image UUID, `tag:NAME`, or a bare tag. UUID values do
 not cause a request.
 
+## Model text formatting
+
+`GrepMatch.AsText()` formats one grep row. `GrepResult.AsText()` formats all rows
+in response order, including context separators. `DirectoryList.AsText()` returns
+an `ls -l`-style table with UTC timestamps; `AsText(true)` returns paths only.
+Nonempty grep and directory output ends with a newline. Check `Truncated`
+separately on grep results.
+
+These models, `StreamRepr`, `EventDataStream`, and `ClosableStreamRepr` implement
+`fmt.Stringer`: `String()` delegates to the default `AsText()` format. Use
+`fmt.Print(model)` to avoid adding another newline. Formatting preserves fields
+and JSON serialization.
+
+`ClosableStreamRepr` also supports `AsBytes()`, `NewClosableStreamReprFromText`,
+and `NewClosableStreamReprFromBytes`. Omitted encoding means ASCII. Constructors
+leave `Close` unset so the server default applies. Decoding preserves the
+existing stream codec behavior for base64 and invalid UTF-8.
+
 ## Errors
 
 Use `errors.As` with typed transport and status errors:

@@ -776,7 +776,11 @@ def test_model_traits_describe_shared_semantics(ir: SpecIR) -> None:
 
     assert models["StreamRepr"].traits == frozenset({ModelTrait.STREAM_VALUE})
     assert models["EventDataStream"].traits == frozenset({ModelTrait.STREAM_VALUE})
+    assert models["ClosableStreamRepr"].traits == frozenset({ModelTrait.STREAM_VALUE})
     assert models["FileSpec"].traits == frozenset({ModelTrait.FILE_MODE})
+    assert models["GrepMatch"].traits == frozenset({ModelTrait.GREP_MATCH})
+    assert models["GrepResult"].traits == frozenset({ModelTrait.GREP_RESULT})
+    assert models["DirectoryList"].traits == frozenset({ModelTrait.DIRECTORY_LIST})
     assert models["OperationEvent"].traits == frozenset()
 
 

@@ -8,10 +8,11 @@ from __future__ import annotations
 import base64
 import binascii
 import re
+import stat
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field, fields
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from types import EllipsisType
 from typing import Any, Literal, TypeVar
@@ -245,6 +246,55 @@ class DirectoryList(ContreeModel):
             "files": [FileItem.from_dict(item) for item in data["files"]],
         }
 
+    def as_text(self, short: bool = False) -> str:
+        """Format entries like ls -l, or return one path per line with short=True."""
+        if short:
+            return "".join(f"{item.path}\n" for item in self.files)
+        rows: list[tuple[str, str, str, str, str, str, str]] = []
+        for item in self.files:
+            mode = item.mode
+            if not stat.S_IFMT(mode):
+                for enabled, file_type in (
+                    (item.is_symlink, stat.S_IFLNK),
+                    (item.is_dir, stat.S_IFDIR),
+                    (item.is_socket, stat.S_IFSOCK),
+                    (item.is_fifo, stat.S_IFIFO),
+                    (item.is_regular, stat.S_IFREG),
+                ):
+                    if enabled:
+                        mode |= file_type
+                        break
+            path = item.path
+            if stat.S_ISLNK(mode) and item.symlink_to:
+                path += f" -> {item.symlink_to}"
+            owner = str(item.owner if item.owner != "" else item.uid)
+            group = str(item.group if item.group != "" else item.gid)
+            modified = datetime.fromtimestamp(item.mtime, timezone.utc)
+            rows.append(
+                (
+                    stat.filemode(mode),
+                    str(item.nlink),
+                    owner,
+                    group,
+                    str(item.size),
+                    modified.strftime("%Y-%m-%d %H:%M"),
+                    path,
+                )
+            )
+        if not rows:
+            return ""
+        links_width = max(len(row[1]) for row in rows)
+        owner_width = max(len(row[2]) for row in rows)
+        group_width = max(len(row[3]) for row in rows)
+        size_width = max(len(row[4]) for row in rows)
+        return "".join(
+            f"{mode} {links:>{links_width}} {owner:<{owner_width}} "
+            f"{group:<{group_width}} {size:>{size_width}} {modified} {path}\n"
+            for mode, links, owner, group, size, modified, path in rows
+        )
+
+    __str__ = as_text
+
 
 @dataclass
 class GrepSubmatch(ContreeModel):
@@ -325,6 +375,14 @@ class GrepMatch(ContreeModel):
             "type": data["type"],
         }
 
+    def as_text(self) -> str:
+        """Format one grep row with its path, line number, and trailing newline."""
+        separator = "-" if self.type == "context" else ":"
+        text = f"{self.path}{separator}{self.line_number}{separator}{self.line_text}"
+        return text if text.endswith("\n") else text + "\n"
+
+    __str__ = as_text
+
 
 @dataclass
 class GrepResult(ContreeModel):
@@ -369,6 +427,27 @@ class GrepResult(ContreeModel):
             "matches": [GrepMatch.from_dict(item) for item in data["matches"]],
             "truncated": data["truncated"],
         }
+
+    def as_text(self) -> str:
+        """Format grep rows in response order, separating disjoint context groups."""
+        output: list[str] = []
+        previous: GrepMatch | None = None
+        has_context = any(row.type == "context" for row in self.matches)
+        for row in self.matches:
+            if (
+                has_context
+                and previous is not None
+                and (
+                    row.path != previous.path
+                    or row.line_number != previous.line_number + 1
+                )
+            ):
+                output.append("--\n")
+            output.append(row.as_text())
+            previous = row
+        return "".join(output)
+
+    __str__ = as_text
 
 
 @dataclass
@@ -593,6 +672,8 @@ class StreamRepr(ContreeModel):
             return self.as_bytes().decode("utf-8", errors="replace")
         return self.value
 
+    __str__ = as_text
+
     @classmethod
     def from_bytes(cls, value: bytes) -> StreamRepr:
         """Build a payload from raw bytes.
@@ -648,6 +729,50 @@ class ClosableStreamRepr(ContreeModel):
             "default": True,
         },
     )
+
+    def as_bytes(self) -> bytes:
+        """The payload decoded to raw bytes.
+
+        ``base64`` values are decoded; ``ascii`` text is UTF-8
+        encoded. Undecodable base64 becomes empty bytes instead of
+        failing a live stream.
+        """
+        if not self.value:
+            return b""
+        if self.encoding == "base64":
+            try:
+                return base64.b64decode(self.value)
+            except (binascii.Error, ValueError):
+                return b""
+        return self.value.encode("utf-8", errors="replace")
+
+    def as_text(self) -> str:
+        """The payload decoded to text (UTF-8, errors replaced)."""
+        if self.encoding == "base64":
+            return self.as_bytes().decode("utf-8", errors="replace")
+        return self.value
+
+    __str__ = as_text
+
+    @classmethod
+    def from_bytes(cls, value: bytes) -> ClosableStreamRepr:
+        """Build a payload from raw bytes.
+
+        Printable ASCII (plus tab/newline/carriage return) is stored
+        as ``ascii``; anything else is base64-encoded - the same rule
+        the server applies on its side.
+        """
+        if all(32 <= byte < 127 or byte in (9, 10, 13) for byte in value):
+            return cls(value=value.decode("ascii"), encoding="ascii")
+        return cls(
+            value=base64.b64encode(value).decode("ascii"),
+            encoding="base64",
+        )
+
+    @classmethod
+    def from_text(cls, value: str) -> ClosableStreamRepr:
+        """Build a payload from text (UTF-8 encoded unless ASCII)."""
+        return cls.from_bytes(value.encode("utf-8"))
 
 
 @dataclass
@@ -2204,6 +2329,8 @@ class EventDataStream(ContreeModel):
         if self.encoding == "base64":
             return self.as_bytes().decode("utf-8", errors="replace")
         return self.value
+
+    __str__ = as_text
 
     @classmethod
     def from_bytes(cls, value: bytes) -> EventDataStream:

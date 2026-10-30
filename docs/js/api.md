@@ -93,7 +93,7 @@ Python ones: an unset optional field is `undefined` and omitted on the
 wire, an explicit `null` is sent as JSON null. Timestamps become
 `Date` where the spec says so.
 
-- `StreamRepr` / `EventDataStream` keep their codec helpers:
+- `StreamRepr`, `EventDataStream`, and `ClosableStreamRepr` expose codec helpers:
   `asBytes()`, `asText()`, `StreamRepr.fromBytes()`,
   `StreamRepr.fromText()`; module-level `decodeChunk()` /
   `decodeStream()` decode payloads that may be typed or raw.
@@ -105,6 +105,17 @@ wire, an explicit `null` is sent as JSON null. Timestamps become
 - `OperationStatus` constants, `TERMINAL_STATUSES` /
   `ACTIVE_STATUSES` sets and `isTerminalStatus()` mirror the Python
   enum and frozen sets.
+
+`GrepMatch.asText()` formats one grep row. `GrepResult.asText()` formats all rows
+in response order, including context separators. `DirectoryList.asText()` returns
+an `ls -l`-style table with UTC timestamps; `asText(true)` returns paths only.
+Nonempty grep and directory output ends with a newline. Check `truncated`
+separately on grep results.
+
+These three models and all three stream models implement `toString()`, so
+`String(model)` uses the default text format. Formatting preserves `toWire()`
+and all fields. `ClosableStreamRepr` treats omitted encoding as ASCII; its
+constructors leave `close` unset so the server default applies.
 
 ## Errors
 

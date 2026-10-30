@@ -157,6 +157,96 @@ export class DirectoryList {
     }
     return data;
   }
+
+  // Format entries like ls -l, or return one path per line with short=true.
+  asText(short = false) {
+    if (short) return this.files.map((item) => `${item.path}\n`).join("");
+    const rows = this.files.map((item) => {
+      let mode = item.mode;
+      if (!(mode & 0o170000)) {
+        for (const [enabled, fileType] of [
+          [item.isSymlink, 0o120000],
+          [item.isDir, 0o040000],
+          [item.isSocket, 0o140000],
+          [item.isFifo, 0o010000],
+          [item.isRegular, 0o100000],
+        ]) {
+          if (enabled) {
+            mode |= fileType;
+            break;
+          }
+        }
+      }
+      const fileTypes = {
+        [0o010000]: "p",
+        [0o020000]: "c",
+        [0o040000]: "d",
+        [0o060000]: "b",
+        [0o100000]: "-",
+        [0o120000]: "l",
+        [0o140000]: "s",
+      };
+      let permissions = fileTypes[mode & 0o170000] ?? "?";
+      for (const shift of [6, 3, 0]) {
+        permissions += mode & (4 << shift) ? "r" : "-";
+        permissions += mode & (2 << shift) ? "w" : "-";
+        const executable = Boolean(mode & (1 << shift));
+        const special =
+          mode & (shift === 6 ? 0o4000 : shift === 3 ? 0o2000 : 0o1000);
+        permissions += special
+          ? shift === 0
+            ? executable
+              ? "t"
+              : "T"
+            : executable
+              ? "s"
+              : "S"
+          : executable
+            ? "x"
+            : "-";
+      }
+      let path = item.path;
+      if ((mode & 0o170000) === 0o120000 && item.symlinkTo)
+        path += ` -> ${item.symlinkTo}`;
+      const owner = String(item.owner === "" ? item.uid : item.owner);
+      const group = String(item.group === "" ? item.gid : item.group);
+      const modified = new Date(item.mtime * 1000)
+        .toISOString()
+        .slice(0, -8)
+        .replace("T", " ");
+      return [
+        permissions,
+        String(item.nlink),
+        owner,
+        group,
+        String(item.size),
+        modified,
+        path,
+      ];
+    });
+    if (!rows.length) return "";
+    const width = (column) =>
+      rows.reduce((size, row) => Math.max(size, [...row[column]].length), 0);
+    const linksWidth = width(1),
+      ownerWidth = width(2),
+      groupWidth = width(3),
+      sizeWidth = width(4);
+    const pad = (text, size, right = false) => {
+      const spaces = " ".repeat(size - [...text].length);
+      return right ? spaces + text : text + spaces;
+    };
+    return rows
+      .map(
+        ([mode, links, owner, group, size, modified, path]) =>
+          `${mode} ${pad(links, linksWidth, true)} ${pad(owner, ownerWidth)} ` +
+          `${pad(group, groupWidth)} ${pad(size, sizeWidth, true)} ${modified} ${path}\n`,
+      )
+      .join("");
+  }
+
+  toString() {
+    return this.asText();
+  }
 }
 
 export class GrepSubmatch {
@@ -240,6 +330,17 @@ export class GrepMatch {
     }
     return data;
   }
+
+  // Format one grep row with its path, line number, and trailing newline.
+  asText() {
+    const separator = this.type === "context" ? "-" : ":";
+    const text = `${this.path}${separator}${this.lineNumber}${separator}${this.lineText}`;
+    return text.endsWith("\n") ? text : text + "\n";
+  }
+
+  toString() {
+    return this.asText();
+  }
 }
 
 export class GrepResult {
@@ -277,6 +378,30 @@ export class GrepResult {
       data["truncated"] = this.truncated;
     }
     return data;
+  }
+
+  // Format grep rows in response order, separating disjoint context groups.
+  asText() {
+    const output = [];
+    let previous = null;
+    const hasContext = this.matches.some((row) => row.type === "context");
+    for (const row of this.matches) {
+      if (
+        hasContext &&
+        previous !== null &&
+        (row.path !== previous.path ||
+          row.lineNumber !== previous.lineNumber + 1)
+      ) {
+        output.push("--\n");
+      }
+      output.push(row.asText());
+      previous = row;
+    }
+    return output.join("");
+  }
+
+  toString() {
+    return this.asText();
   }
 }
 
@@ -585,6 +710,10 @@ export class StreamRepr {
   static fromText(value) {
     return this.fromBytes(textToBytes(value));
   }
+
+  toString() {
+    return this.asText();
+  }
 }
 
 /** Stdin payload.  Delivery to the child is always complete — */
@@ -615,6 +744,55 @@ export class ClosableStreamRepr {
       data["close"] = this.close;
     }
     return data;
+  }
+
+  /** The payload decoded to raw bytes; undecodable base64 becomes
+   * empty bytes instead of failing a live stream. */
+  asBytes() {
+    if (!this.value) {
+      return new Uint8Array();
+    }
+    if (this.encoding === "base64") {
+      try {
+        return base64ToBytes(this.value);
+      } catch {
+        return new Uint8Array();
+      }
+    }
+    return textToBytes(this.value);
+  }
+
+  /** The payload decoded to text. */
+  asText() {
+    if (this.encoding === "base64") {
+      return bytesToText(this.asBytes());
+    }
+    return this.value;
+  }
+
+  /** Build a payload from raw bytes: printable ASCII stays `ascii`,
+   * anything else is base64-encoded - the server-side rule. */
+  static fromBytes(value) {
+    const printable = value.every(
+      (byte) =>
+        (byte >= 32 && byte < 127) || byte === 9 || byte === 10 || byte === 13,
+    );
+    if (printable) {
+      return new this({
+        value: new TextDecoder("ascii").decode(value),
+        encoding: "ascii",
+      });
+    }
+    return new this({ value: bytesToBase64(value), encoding: "base64" });
+  }
+
+  /** Build a payload from text (UTF-8 encoded unless ASCII). */
+  static fromText(value) {
+    return this.fromBytes(textToBytes(value));
+  }
+
+  toString() {
+    return this.asText();
   }
 }
 
@@ -2264,6 +2442,10 @@ export class EventDataStream {
   /** Build a payload from text (UTF-8 encoded unless ASCII). */
   static fromText(value) {
     return this.fromBytes(textToBytes(value));
+  }
+
+  toString() {
+    return this.asText();
   }
 }
 

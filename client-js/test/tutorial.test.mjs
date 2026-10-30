@@ -7,6 +7,7 @@ import { pipeline } from "node:stream/promises";
 import { test } from "node:test";
 
 import { ContreeClient } from "../lib/testing.js";
+import { GrepMatch, GrepResult } from "../lib/models.js";
 
 const tutorial = readFileSync(
   new URL("../../docs/tutorial.md", import.meta.url),
@@ -163,21 +164,25 @@ test("tutorial subprocesses close the event stream when creation fails", async (
 test("tutorial grep passes patterns, roots, limits, and context", async () => {
   const client = new ContreeClient();
   const output = [];
-  client.mock("inspectImageGrep", {
-    matches: [
-      {
-        path: "/etc/hosts",
-        lineNumber: 1,
-        lineText: hosts.toString(),
-        type: "match",
-      },
-    ],
-    truncated: true,
-  });
+  client.mock(
+    "inspectImageGrep",
+    new GrepResult({
+      matches: [
+        new GrepMatch({
+          path: "/etc/hosts",
+          lineNumber: 1,
+          lineText: hosts.toString(),
+          type: "match",
+        }),
+      ],
+      truncated: true,
+    }),
+  );
   await runSnippet("tutorial_grep", {
     client,
     uuid,
     console: { log: (...args) => output.push(args.join(" ")) },
+    process: { stdout: { write: (text) => output.push(text) } },
   });
   const [call] = client.callsFor("inspectImageGrep");
   assert.deepEqual(call.args, [
@@ -192,7 +197,7 @@ test("tutorial grep passes patterns, roots, limits, and context", async () => {
       maxTotal: 20,
     },
   ]);
-  assert.match(output[0], /\/etc\/hosts:1 \[match\] 127\.0\.0\.1 localhost/);
+  assert.equal(output[0], "/etc/hosts:1:127.0.0.1 localhost\n");
   assert.match(output[1], /Search stopped early/);
 });
 

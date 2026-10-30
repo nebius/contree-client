@@ -318,6 +318,13 @@ def _render_imports(ir: SpecIR) -> str:
         imports.add("time")
     if any(ModelTrait.STREAM_VALUE in model.traits for model in ir.models):
         imports.update(("encoding/base64", "strings"))
+    if any(
+        model.traits & {ModelTrait.GREP_MATCH, ModelTrait.GREP_RESULT}
+        for model in ir.models
+    ):
+        imports.add("strings")
+    if any(ModelTrait.DIRECTORY_LIST in model.traits for model in ir.models):
+        imports.update(("strconv", "strings", "time", "unicode/utf8"))
     lines = ["import ("]
     lines.extend(f'\t"{name}"' for name in sorted(imports))
     lines.append(")")
@@ -643,7 +650,7 @@ def _render_unmarshal_field(
     return lines
 
 
-def _stream_trait_fields(model: ModelDef, names: list[str]) -> tuple[str, str]:
+def _stream_trait_fields(model: ModelDef, names: list[str]) -> tuple[str, str, bool]:
     by_name = {
         field.name: (field, names[index]) for index, field in enumerate(model.fields)
     }
@@ -655,23 +662,34 @@ def _stream_trait_fields(model: ModelDef, names: list[str]) -> tuple[str, str]:
             f"{model.name}: STREAM_VALUE needs value and encoding fields"
         ) from exc
     for field in (value, encoding):
-        if (
-            field.type.kind not in (TypeKind.STRING, TypeKind.LITERAL)
-            or not field.required
-            or field.nullable
-        ):
+        if field.type.kind not in (TypeKind.STRING, TypeKind.LITERAL) or field.nullable:
             raise ValueError(
-                f"{model.name}: STREAM_VALUE fields must be required strings"
+                f"{model.name}: STREAM_VALUE fields must be non-nullable strings"
             )
-    return value_name, encoding_name
+    if not value.required or (
+        not encoding.required
+        and (not encoding.has_default or encoding.default_value != "ascii")
+    ):
+        raise ValueError(
+            f"{model.name}: STREAM_VALUE needs required value "
+            "and ASCII-default encoding"
+        )
+    return value_name, encoding_name, encoding.required
 
 
 def _render_stream_trait(model: ModelDef, names: list[str]) -> str:
     model_name = go_name(model.name)
-    value, encoding = _stream_trait_fields(model, names)
+    value, encoding, required = _stream_trait_fields(model, names)
+    encoding_read = f"m.{encoding}"
+    encoding_setup = ""
+    ascii_value = '"ascii"' if required else 'Some("ascii")'
+    base64_value = '"base64"' if required else 'Some("base64")'
+    if not required:
+        encoding_setup = f"\tencoding, _ := m.{encoding}.Value()\n"
+        encoding_read = "encoding"
     return f"""// AsBytes decodes the stream payload to bytes.
 func (m {model_name}) AsBytes() []byte {{
-\tif m.{encoding} == "base64" {{
+{encoding_setup}\tif {encoding_read} == "base64" {{
 \t\tvalue, err := base64.StdEncoding.DecodeString(m.{value})
 \t\tif err != nil {{
 \t\t\treturn []byte{{}}
@@ -683,10 +701,15 @@ func (m {model_name}) AsBytes() []byte {{
 
 // AsText decodes the stream payload to valid UTF-8 text.
 func (m {model_name}) AsText() string {{
-\tif m.{encoding} == "base64" {{
+{encoding_setup}\tif {encoding_read} == "base64" {{
 \t\treturn strings.ToValidUTF8(string(m.AsBytes()), "�")
 \t}}
 \treturn m.{value}
+}}
+
+// String returns the decoded payload text.
+func (m {model_name}) String() string {{
+\treturn m.AsText()
 }}
 
 // New{model_name}FromBytes constructs a stream payload from bytes.
@@ -699,11 +722,11 @@ func New{model_name}FromBytes(value []byte) {model_name} {{
 \t\t}}
 \t}}
 \tif printable {{
-\t\treturn {model_name}{{{value}: string(value), {encoding}: "ascii"}}
+\t\treturn {model_name}{{{value}: string(value), {encoding}: {ascii_value}}}
 \t}}
 \treturn {model_name}{{
 \t\t{value}: base64.StdEncoding.EncodeToString(value),
-\t\t{encoding}: "base64",
+\t\t{encoding}: {base64_value},
 \t}}
 }}
 
@@ -711,6 +734,166 @@ func New{model_name}FromBytes(value []byte) {model_name} {{
 func New{model_name}FromText(value string) {model_name} {{
 \treturn New{model_name}FromBytes([]byte(value))
 }}"""
+
+
+GREP_MATCH_METHODS = r"""
+// AsText formats one grep row with its path, line number, and trailing newline.
+func (m GrepMatch) AsText() string {
+	separator := ":"
+	if m.Type == "context" {
+		separator = "-"
+	}
+	text := fmt.Sprintf("%s%s%d%s%s",
+		m.Path, separator, m.LineNumber, separator, m.LineText)
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	return text
+}
+
+// String returns the formatted grep row.
+func (m GrepMatch) String() string { return m.AsText() }
+"""
+
+GREP_RESULT_METHODS = r"""
+// AsText formats grep rows in response order, separating disjoint context groups.
+func (m GrepResult) AsText() string {
+	hasContext := false
+	for _, row := range m.Matches {
+		if row.Type == "context" {
+			hasContext = true
+			break
+		}
+	}
+	var output strings.Builder
+	for index, row := range m.Matches {
+		if hasContext && index > 0 {
+			previous := m.Matches[index-1]
+			if row.Path != previous.Path || row.LineNumber != previous.LineNumber+1 {
+				output.WriteString("--\n")
+			}
+		}
+		output.WriteString(row.AsText())
+	}
+	return output.String()
+}
+
+// String returns the formatted grep results.
+func (m GrepResult) String() string { return m.AsText() }
+"""
+
+DIRECTORY_LIST_METHODS = r"""
+func fileItemMode(item FileItem) int64 {
+	mode := item.Mode
+	if mode&0170000 == 0 {
+		switch {
+		case item.IsSymlink:
+			mode |= 0120000
+		case item.IsDir:
+			mode |= 0040000
+		case item.IsSocket:
+			mode |= 0140000
+		case item.IsFifo:
+			mode |= 0010000
+		case item.IsRegular:
+			mode |= 0100000
+		}
+	}
+	return mode
+}
+
+func fileModeText(mode int64) string {
+	text := []byte("?---------")
+	switch mode & 0170000 {
+	case 0100000:
+		text[0] = '-'
+	case 0040000:
+		text[0] = 'd'
+	case 0120000:
+		text[0] = 'l'
+	case 0140000:
+		text[0] = 's'
+	case 0010000:
+		text[0] = 'p'
+	case 0020000:
+		text[0] = 'c'
+	case 0060000:
+		text[0] = 'b'
+	}
+	for index, symbol := range []byte("rwxrwxrwx") {
+		if mode&(1<<uint(8-index)) != 0 {
+			text[index+1] = symbol
+		}
+	}
+	for _, special := range []struct {
+		mask int64
+		index int
+		lower, upper byte
+	}{
+		{04000, 3, 's', 'S'},
+		{02000, 6, 's', 'S'},
+		{01000, 9, 't', 'T'},
+	} {
+		if mode&special.mask != 0 {
+			text[special.index] = special.upper
+			if mode&(1<<uint(9-special.index)) != 0 {
+				text[special.index] = special.lower
+			}
+		}
+	}
+	return string(text)
+}
+
+func fileIdentityText(value StringOrInt64, fallback int64) string {
+	if name, ok := value.StringValue(); ok && name != "" {
+		return name
+	}
+	if number, ok := value.Int64Value(); ok {
+		return strconv.FormatInt(number, 10)
+	}
+	return strconv.FormatInt(fallback, 10)
+}
+
+// AsText formats entries like ls -l; pass true to return one path per line.
+func (m DirectoryList) AsText(short ...bool) string {
+	var output strings.Builder
+	if len(short) > 0 && short[0] {
+		for _, item := range m.Files {
+			output.WriteString(item.Path + "\n")
+		}
+		return output.String()
+	}
+	rows := make([][7]string, 0, len(m.Files))
+	var widths [4]int
+	for _, item := range m.Files {
+		mode := fileItemMode(item)
+		path := item.Path
+		if mode&0170000 == 0120000 && item.SymlinkTo != "" {
+			path += " -> " + item.SymlinkTo
+		}
+		row := [7]string{
+			fileModeText(mode), strconv.FormatInt(item.Nlink, 10),
+			fileIdentityText(item.Owner, item.UID),
+			fileIdentityText(item.Group, item.GID),
+			strconv.FormatInt(item.Size, 10),
+			time.Unix(item.Mtime, 0).UTC().Format("2006-01-02 15:04"), path,
+		}
+		for index := range widths {
+			widths[index] = max(widths[index], utf8.RuneCountInString(row[index+1]))
+		}
+		rows = append(rows, row)
+	}
+	for _, row := range rows {
+		fmt.Fprintf(&output, "%s %*s %-*s %-*s %*s %s %s\n",
+			row[0], widths[0], row[1], widths[1], row[2],
+			widths[2], row[3], widths[3], row[4], row[5], row[6])
+	}
+	return output.String()
+}
+
+// String returns the detailed directory listing.
+func (m DirectoryList) String() string { return m.AsText() }
+"""
 
 
 def _file_mode_field(model: ModelDef, names: list[str]) -> tuple[FieldDef, str]:
@@ -825,6 +1008,13 @@ def render_model(model: ModelDef) -> str:
         lines.extend(("", _render_stream_trait(model, names)))
     if ModelTrait.FILE_MODE in model.traits:
         lines.extend(("", _render_file_mode_trait(model, names)))
+    for trait, methods in (
+        (ModelTrait.GREP_MATCH, GREP_MATCH_METHODS),
+        (ModelTrait.GREP_RESULT, GREP_RESULT_METHODS),
+        (ModelTrait.DIRECTORY_LIST, DIRECTORY_LIST_METHODS),
+    ):
+        if trait in model.traits:
+            lines.extend(("", methods.strip()))
     return "\n".join(lines)
 
 

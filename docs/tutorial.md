@@ -386,8 +386,9 @@ explicitly. `Timeout` uses `time.Duration` and rounds positive values up to whol
 seconds. Use `SpawnInstanceWithResponse` for explicit zero and null request values
 that `SpawnInstance` would omit.
 
-Standard input is a {class}`~contree_client.StreamRepr` (build one with
-`from_text()` / `fromText()` or `from_bytes()` / `fromBytes()`). Go uses a
+Python standard input uses {class}`~contree_client.ClosableStreamRepr`, built with
+`from_text()` or `from_bytes()`. JavaScript uses `ClosableStreamRepr.fromText()` or
+`ClosableStreamRepr.fromBytes()`. Go uses a
 `ClosableStreamRepr` value and `Some` for each present field. Files
 are staged with {class}`~contree_client.FileSpec` (mode accepts an int
 / number or the octal wire string), and cgroup limits ride in
@@ -406,13 +407,13 @@ limits. Process limits cannot exceed the operation limits.
 
 <!-- name: test_tutorial; case: spawn_files -->
 ```python
-from contree_client import FileSpec, InstanceResourcesLimits, StreamRepr
+from contree_client import ClosableStreamRepr, FileSpec, InstanceResourcesLimits
 
 client.spawn_instance(
     "/bin/sh",
     "tag:ubuntu:latest",
     args=["-c", "cat - >> /work/data.txt"],
-    stdin=StreamRepr.from_text("appended line\n"),
+    stdin=ClosableStreamRepr.from_text("appended line\n"),
     files={"/work/data.txt": FileSpec(uuid=file_uuid, mode=0o644)},
     resources_limits=InstanceResourcesLimits(max_layer_bytes=1 << 30),
     truncate_output_at=1 << 20,  # cap captured stdout/stderr
@@ -427,13 +428,13 @@ client.spawn_instance(
 
 <!-- name: test_tutorial_async; case: spawn_files -->
 ```python
-from contree_client import FileSpec, InstanceResourcesLimits, StreamRepr
+from contree_client import ClosableStreamRepr, FileSpec, InstanceResourcesLimits
 
 await client.spawn_instance(
     "/bin/sh",
     "tag:ubuntu:latest",
     args=["-c", "cat - >> /work/data.txt"],
-    stdin=StreamRepr.from_text("appended line\n"),
+    stdin=ClosableStreamRepr.from_text("appended line\n"),
     files={"/work/data.txt": FileSpec(uuid=file_uuid, mode=0o644)},
     resources_limits=InstanceResourcesLimits(max_layer_bytes=1 << 30),
     truncate_output_at=1 << 20,  # cap captured stdout/stderr
@@ -451,12 +452,12 @@ await client.spawn_instance(
 import {
   FileSpec,
   InstanceResourcesLimits,
-  StreamRepr,
+  ClosableStreamRepr,
 } from "contree-client";
 
 await client.spawnInstance("/bin/sh", "tag:ubuntu:latest", {
   args: ["-c", "cat - >> /work/data.txt"],
-  stdin: StreamRepr.fromText("appended line\n"),
+  stdin: ClosableStreamRepr.fromText("appended line\n"),
   files: { "/work/data.txt": new FileSpec({ uuid: fileUuid, mode: 0o644 }) },
   resourcesLimits: new InstanceResourcesLimits({
     maxLayerBytes: 1 << 30,
@@ -1563,12 +1564,56 @@ and the stream-only `inspect_image_archive()` / `inspectImageArchive()` /
 `InspectImageArchive()` (a POSIX tar). In Go, `InspectImageArchiveRaw()`
 preserves transport gzip exactly as served.
 
+`DirectoryList` text helpers format permissions, link count,
+owner, group, size, UTC modification time, and name in an `ls -l`-style table.
+Symbolic links include their targets. Short mode returns only names, one per
+line. Both formats preserve response order and end nonempty output with a newline.
+
+| Language | Detailed format | Short format | Default string conversion |
+| --- | --- | --- | --- |
+| Python | `directory.as_text()` | `directory.as_text(short=True)` | `str(directory)` |
+| JavaScript | `directory.asText()` | `directory.asText(true)` | `String(directory)` |
+| Go | `directory.AsText()` | `directory.AsText(true)` | `directory.String()` |
+
+::::{tab-set}
+
+:::{tab-item} Python · sync
+:sync: sync
+
+<!-- name: test_tutorial; case: directory_text -->
+```python
+directory = client.inspect_image_list(image_uuid, "/etc")
+print(directory, end="")
+print(directory.as_text(short=True), end="")
+```
+:::
+
+:::{tab-item} Python · async
+:sync: async
+
+<!-- name: test_tutorial_async; case: directory_text -->
+```python
+directory = await client.inspect_image_list(image_uuid, "/etc")
+print(directory, end="")
+print(directory.as_text(short=True), end="")
+```
+:::
+
+::::
+
 ### Search file contents with grep
 
 `inspect_image_grep()` / `inspectImageGrep()` / `InspectImageGrep()` searches
 inside the image with ripgrep. Patterns use Rust regex syntax; multiple
 patterns are OR-ed. Paths can name files or directories. Repeated paths share
 the same total-match limit. Every requested path must exist.
+
+Results provide `as_text()` / `asText()` / `AsText()` with `path:line:text` for matches and
+`path-line-text` for context. When context rows are present, `--` separates
+disjoint groups. Empty results produce an empty string. Formatting preserves
+the returned text; check `truncated` separately to detect an incomplete search.
+Individual `GrepMatch` rows provide the same helpers. Python `str(result)`,
+JavaScript `String(result)`, and Go `result.String()` use the default text format.
 
 This example searches the hosts and passwd files. It includes one context line
 on each side and limits the result to 20 matches:
@@ -1590,8 +1635,7 @@ matches = client.inspect_image_grep(
     after=1,
     max_total=20,
 )
-for line in matches.matches:
-    print(f"{line.path}:{line.line_number} [{line.type}] {line.line_text}", end="")
+print(matches.as_text(), end="")
 if matches.truncated:
     print("Search stopped early; narrow the paths or patterns.")
 ```
@@ -1612,8 +1656,7 @@ matches = await client.inspect_image_grep(
     after=1,
     max_total=20,
 )
-for line in matches.matches:
-    print(f"{line.path}:{line.line_number} [{line.type}] {line.line_text}", end="")
+print(matches.as_text(), end="")
 if matches.truncated:
     print("Search stopped early; narrow the paths or patterns.")
 ```
@@ -1632,9 +1675,7 @@ const matches = await client.inspectImageGrep(uuid, ["^root:", "localhost"], {
   after: 1,
   maxTotal: 20,
 });
-for (const line of matches.matches) {
-  console.log(`${line.path}:${line.lineNumber} [${line.type}] ${line.lineText.trimEnd()}`);
-}
+process.stdout.write(matches.asText());
 if (matches.truncated) {
   console.log("Search stopped early; narrow the paths or patterns.");
 }
@@ -1660,9 +1701,7 @@ matches, err := client.InspectImageGrep(ctx, imageUUID,
 if err != nil {
     return fmt.Errorf("search image %s: %w", imageUUID, err)
 }
-for _, line := range matches.Matches {
-    fmt.Printf("%s:%d [%s] %s", line.Path, line.LineNumber, line.Type, line.LineText)
-}
+fmt.Print(matches.AsText())
 if matches.Truncated {
     fmt.Println("Search stopped early; narrow the paths or patterns.")
 }
