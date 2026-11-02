@@ -282,8 +282,87 @@ export declare class ProcessResourcesLimits {
 
 export declare class InstanceNetworking {
   enabled?: boolean;
-  constructor(fields?: { enabled?: boolean | null });
+  policy?: string[];
+  constructor(fields?: { enabled?: boolean | null; policy?: string[] | null });
   static fromWire(data: Record<string, unknown>): InstanceNetworking;
+  toWire(): Record<string, unknown>;
+}
+
+export declare class NetworkPolicyCIDRRule {
+  cidr: string;
+  proto: "tcp" | "udp";
+  ports?: number[];
+  constructor(fields?: {
+    cidr?: string;
+    proto?: "tcp" | "udp";
+    ports?: number[] | null;
+  });
+  static fromWire(data: Record<string, unknown>): NetworkPolicyCIDRRule;
+  toWire(): Record<string, unknown>;
+}
+
+export declare class NetworkPolicyCreateRequest {
+  cidrs: NetworkPolicyCIDRRule[];
+  constructor(fields?: { cidrs?: NetworkPolicyCIDRRule[] });
+  static fromWire(data: Record<string, unknown>): NetworkPolicyCreateRequest;
+  toWire(): Record<string, unknown>;
+}
+
+export declare class InstanceNetworkingResponse {
+  enabled?: boolean;
+  policy?: string[];
+  effectivePolicy?: NetworkPolicyCreateRequest | null;
+  constructor(fields?: {
+    enabled?: boolean | null;
+    policy?: string[] | null;
+    effectivePolicy?: NetworkPolicyCreateRequest | null;
+  });
+  static fromWire(data: Record<string, unknown>): InstanceNetworkingResponse;
+  toWire(): Record<string, unknown>;
+}
+
+export declare class NetworkPolicyTag {
+  tag: string;
+  uuid: string;
+  constructor(fields?: { tag?: string; uuid?: string });
+  static fromWire(data: Record<string, unknown>): NetworkPolicyTag;
+  toWire(): Record<string, unknown>;
+}
+
+export declare class NetworkPolicy {
+  uuid: string;
+  cidrs: NetworkPolicyCIDRRule[];
+  constructor(fields?: { uuid?: string; cidrs?: NetworkPolicyCIDRRule[] });
+  static fromWire(data: Record<string, unknown>): NetworkPolicy;
+  toWire(): Record<string, unknown>;
+}
+
+export declare class NetworkPolicyListItemSummary {
+  cidrs: number;
+  constructor(fields?: { cidrs?: number });
+  static fromWire(data: Record<string, unknown>): NetworkPolicyListItemSummary;
+  toWire(): Record<string, unknown>;
+}
+
+export declare class NetworkPolicyListItem {
+  uuid: string;
+  createdAt: Date;
+  tags: string[];
+  summary: NetworkPolicyListItemSummary;
+  constructor(fields?: {
+    uuid?: string;
+    createdAt?: Date;
+    tags?: string[];
+    summary?: NetworkPolicyListItemSummary;
+  });
+  static fromWire(data: Record<string, unknown>): NetworkPolicyListItem;
+  toWire(): Record<string, unknown>;
+}
+
+export declare class NetworkPolicyListResponse {
+  policies: NetworkPolicyListItem[];
+  constructor(fields?: { policies?: NetworkPolicyListItem[] });
+  static fromWire(data: Record<string, unknown>): NetworkPolicyListResponse;
   toWire(): Record<string, unknown>;
 }
 
@@ -462,7 +541,7 @@ export declare class InstanceSpawnResponse {
   uid?: number;
   gid?: number;
   resourcesLimits?: InstanceResourcesLimits;
-  networking?: InstanceNetworking;
+  networking?: InstanceNetworkingResponse;
   stdin?: ClosableStreamRepr;
   timeout?: number;
   truncateOutputAt?: number;
@@ -482,7 +561,7 @@ export declare class InstanceSpawnResponse {
     uid?: number | null;
     gid?: number | null;
     resourcesLimits?: InstanceResourcesLimits | null;
-    networking?: InstanceNetworking | null;
+    networking?: InstanceNetworkingResponse | null;
     stdin?: ClosableStreamRepr | null;
     timeout?: number | null;
     truncateOutputAt?: number | null;
@@ -537,7 +616,7 @@ export declare class OperationInstanceMetadata {
   uid?: number;
   gid?: number;
   resourcesLimits?: InstanceResourcesLimits;
-  networking?: InstanceNetworking;
+  networking?: InstanceNetworkingResponse;
   stdin?: ClosableStreamRepr;
   timeout?: number;
   truncateOutputAt?: number;
@@ -557,7 +636,7 @@ export declare class OperationInstanceMetadata {
     uid?: number | null;
     gid?: number | null;
     resourcesLimits?: InstanceResourcesLimits | null;
-    networking?: InstanceNetworking | null;
+    networking?: InstanceNetworkingResponse | null;
     stdin?: ClosableStreamRepr | null;
     timeout?: number | null;
     truncateOutputAt?: number | null;
@@ -1045,6 +1124,13 @@ export declare class EventDataCompletion {
     consumedMemory?: number | null;
   });
   static fromWire(data: Record<string, unknown>): EventDataCompletion;
+  toWire(): Record<string, unknown>;
+}
+
+export declare class ListNetworkPolicyTagsResponse {
+  tags: NetworkPolicyTag[];
+  constructor(fields?: { tags?: NetworkPolicyTag[] });
+  static fromWire(data: Record<string, unknown>): ListNetworkPolicyTagsResponse;
   toWire(): Record<string, unknown>;
 }
 

@@ -231,6 +231,22 @@ leave the field nil, for automatic selection.
 `DecodeStream(payload)` returns text with invalid UTF-8 replaced. Unsupported
 payloads and invalid base64 return empty output.
 
+## Network policies
+
+Use `CreateNetworkPolicy`, `ListNetworkPolicies`, `GetNetworkPolicy`, and
+`DeleteNetworkPolicy` to manage destination allowlists. The corresponding tag
+methods are `ListNetworkPolicyTags`, `GetNetworkPolicyTag`,
+`SetNetworkPolicyTag`, and `DeleteNetworkPolicyTag`. Tag lookup returns the
+binding from the HTTP 302 JSON response without following its redirect.
+
+Requests still use `InstanceNetworking`. The `Networking` fields of
+`InstanceSpawnResponse` and `OperationInstanceMetadata` now use
+`InstanceNetworkingResponse`, which adds resolved policy UUIDs and optional
+`EffectivePolicy`. Update code that explicitly assigns the old response type.
+
+Selecting no policies allows all IPv4 and global-unicast IPv6 destinations.
+Selecting only policies with empty `cidrs` denies all network traffic.
+
 ## Files and images
 
 `EnsureFile` accepts any `io.Reader`. It hashes and rewinds seekable readers,

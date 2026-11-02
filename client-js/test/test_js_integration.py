@@ -22,6 +22,7 @@ import {
   ClosableStreamRepr,
   EventDataInspect,
   EventDataFileUpload,
+  InstanceNetworking,
   InstanceResourcesLimits,
   OperationStatus,
   SSEParser,
@@ -137,6 +138,50 @@ def test_js_whoami(live_js: Callable[[str], None]) -> None:
   assert.ok(me.tokenUuid);
   assert.ok(Object.keys(me.permissions).length > 0);
     """)
+
+
+def test_js_network_policy_allows_https_blocks_http(
+    live_js: Callable[..., None],
+    live_network_policy: str,
+    network_probe_image: str,
+    network_probe_command: str,
+) -> None:
+    source = r"""
+  const policy = POLICY_UUID;
+  const spawned = await client.spawnInstance(PROBE_COMMAND, SAMPLE_IMAGE_UUID, {
+    shell: true,
+    disposable: true,
+    timeout: 60,
+    networking: new InstanceNetworking({ enabled: true, policy: [policy] }),
+  });
+
+  try {
+    assert.deepEqual(spawned.networking.policy, [policy]);
+    assert.deepEqual(spawned.networking.effectivePolicy.toWire(), {
+      cidrs: [{ cidr: "1.1.1.1/32", proto: "tcp", ports: [443] }],
+    });
+
+    const operation = await client.waitOperation(spawned.uuid, { timeout: 90 });
+    assert.equal(operation.status, OperationStatus.SUCCESS, JSON.stringify(operation));
+    assert.match(
+      operation.metadata.result.stdout.asText(),
+      /network-policy-probe-ok/,
+      JSON.stringify(operation),
+    );
+  } finally {
+    const current = await client.getOperationStatus(spawned.uuid);
+    if (!TERMINAL_STATUSES.has(current.status)) {
+      await client.cancelOperation(spawned.uuid);
+      await client.waitOperation(spawned.uuid, { timeout: 60 });
+    }
+  }
+    """
+    live_js(
+        source.replace("POLICY_UUID", json.dumps(live_network_policy)).replace(
+            "PROBE_COMMAND", json.dumps(network_probe_command)
+        ),
+        image_uuid=network_probe_image,
+    )
 
 
 def test_js_lists(live_js: Callable[[str], None]) -> None:

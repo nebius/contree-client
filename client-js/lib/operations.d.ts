@@ -17,12 +17,75 @@ import type {
   InstanceResourcesLimits,
   InstanceResult,
   InstanceSpawnResponse,
+  ListNetworkPolicyTagsResponse,
+  NetworkPolicy,
+  NetworkPolicyCIDRRule,
+  NetworkPolicyListResponse,
+  NetworkPolicyTag,
   OperationResponse,
   OperationStatus,
   OperationSummary,
   ProcessResourcesLimits,
   WhoAmIResponse,
 } from "./models.js";
+
+export declare function buildListNetworkPolicies(options?: {
+  search?: string | null;
+  limit?: number | null;
+  offset?: number | null;
+}): RequestSpec;
+
+export declare function parseListNetworkPolicies(
+  response: ResponseData,
+): NetworkPolicyListResponse;
+
+export declare function buildCreateNetworkPolicy(
+  cidrs: NetworkPolicyCIDRRule[],
+): RequestSpec;
+
+export declare function parseCreateNetworkPolicy(
+  response: ResponseData,
+): NetworkPolicy;
+
+export declare function buildGetNetworkPolicy(uuid: string): RequestSpec;
+
+export declare function parseGetNetworkPolicy(
+  response: ResponseData,
+): NetworkPolicy;
+
+export declare function buildDeleteNetworkPolicy(uuid: string): RequestSpec;
+
+export declare function parseDeleteNetworkPolicy(response: ResponseData): null;
+
+export declare function buildListNetworkPolicyTags(options?: {
+  limit?: number | null;
+  offset?: number | null;
+}): RequestSpec;
+
+export declare function parseListNetworkPolicyTags(
+  response: ResponseData,
+): ListNetworkPolicyTagsResponse;
+
+export declare function buildGetNetworkPolicyTag(tag: string): RequestSpec;
+
+export declare function parseGetNetworkPolicyTag(
+  response: ResponseData,
+): NetworkPolicyTag;
+
+export declare function buildSetNetworkPolicyTag(
+  tag: string,
+  uuid: string,
+): RequestSpec;
+
+export declare function parseSetNetworkPolicyTag(
+  response: ResponseData,
+): NetworkPolicyTag;
+
+export declare function buildDeleteNetworkPolicyTag(tag: string): RequestSpec;
+
+export declare function parseDeleteNetworkPolicyTag(
+  response: ResponseData,
+): null;
 
 export declare function buildListImages(options?: {
   limit?: number | null;

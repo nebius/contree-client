@@ -14,6 +14,7 @@ import importlib
 import io
 import sys
 import tarfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,112 @@ def live_image_uuid() -> str:
             "alpine:latest has no /bin/sh"
         )
         return image_uuid
+
+
+@pytest.fixture(scope="session")
+def network_probe_command() -> str:
+    return r"""
+set -eu
+probe() {
+    url="$1"
+    expected="$2"
+    rc=0
+    metrics=$(curl --noproxy '*' --silent --show-error --connect-timeout 5 \
+        --max-time 15 --output /dev/null --write-out '%{num_connects} %{http_code}' \
+        "$url") || rc=$?
+    printf '%s rc=%s connections/status=%s\n' "$url" "$rc" "$metrics"
+    if [ "$expected" = allowed ]; then
+        [ "$rc" -eq 0 ]
+        case "$metrics" in
+            '1 '[23][0-9][0-9]) ;;
+            *) return 1 ;;
+        esac
+    else
+        [ "$metrics" = '0 000' ]
+        [ "$rc" -eq 7 ] || [ "$rc" -eq 28 ]
+    fi
+}
+probe https://1.1.1.1/ allowed
+probe http://1.1.1.1/ blocked
+probe https://1.1.1.1/ allowed
+printf 'network-policy-probe-ok\n'
+"""
+
+
+@pytest.fixture(scope="session")
+def live_network_client(live_image_uuid: str) -> Iterator[Any]:
+    profiles = importlib.import_module("contree_client.profiles")
+    sync = importlib.import_module("contree_client.sync")
+    runtime = importlib.import_module("contree_client.runtime")
+    profile = profiles.from_env() or profiles.resolve_profile()
+    with sync.ContreeClient.from_profile(
+        profile, retry=runtime.RetryPolicy()
+    ) as client:
+        permissions = client.whoami().permissions
+        assert permissions.get("network_policy"), (
+            "live network tests require network_policy permission"
+        )
+        assert permissions.get("spawn"), (
+            "live network tests require spawn permission to prepare the image"
+        )
+        yield client
+
+
+@pytest.fixture(scope="session")
+def live_network_policy(live_network_client: Any) -> Iterator[str]:
+    models = importlib.import_module("contree_client.models")
+    existing = set()
+    offset = 0
+    while True:
+        page = live_network_client.list_network_policies(limit=1000, offset=offset)
+        existing.update(policy.uuid for policy in page.policies)
+        if len(page.policies) < 1000:
+            break
+        offset += len(page.policies)
+    policy = live_network_client.create_network_policy(
+        [models.NetworkPolicyCIDRRule(cidr="1.1.1.1/32", proto="tcp", ports=[443])]
+    )
+    try:
+        assert [rule.to_dict() for rule in policy.cidrs] == [
+            {"cidr": "1.1.1.1/32", "proto": "tcp", "ports": [443]}
+        ]
+        yield str(policy.uuid)
+    finally:
+        if policy.uuid not in existing:
+            live_network_client.delete_network_policy(str(policy.uuid))
+
+
+@pytest.fixture(scope="session")
+def network_probe_image(
+    live_network_client: Any,
+    live_network_policy: str,
+    live_image_uuid: str,
+    network_probe_command: str,
+) -> str:
+    models = importlib.import_module("contree_client.models")
+    baseline = network_probe_command.replace(
+        "probe http://1.1.1.1/ blocked", "probe http://1.1.1.1/ allowed"
+    )
+    spawned = live_network_client.spawn_instance(
+        "set -e\napk add --no-cache curl ca-certificates\n" + baseline,
+        live_image_uuid,
+        shell=True,
+        timeout=180,
+        networking=models.InstanceNetworking(enabled=True, policy=[]),
+    )
+    try:
+        operation = live_network_client.wait_operation(str(spawned.uuid), timeout=240)
+        assert operation.status is models.OperationStatus.SUCCESS, operation.to_dict()
+        assert (
+            "network-policy-probe-ok" in operation.metadata.result.stdout.as_text()
+        ), operation.to_dict()
+        assert isinstance(operation.result.image, str)
+        return operation.result.image
+    finally:
+        current = live_network_client.get_operation_status(str(spawned.uuid))
+        if not current.status.is_terminal():
+            live_network_client.cancel_operation(str(spawned.uuid))
+            live_network_client.wait_operation(str(spawned.uuid), timeout=60)
 
 
 OPERATION_ID = "87654321-9abc-baba-deda-0123456789ab"

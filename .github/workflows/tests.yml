@@ -393,20 +393,8 @@ jobs:
           go-version-file: go/go.mod
           cache: false
 
-      - name: Run Python integration tests
+      - name: Run Python, JS, and Go integration tests
         if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
         run: >
           uv run --no-project pytest -c pyproject.toml -v -rs --tb=short --timeout 300
-          -m integration client
-
-      - name: Run JS integration tests
-        if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
-        run: >
-          uv run --no-project pytest -c pyproject.toml -v -rs --tb=short --timeout 300
-          -m integration client-js/test
-
-      - name: Run Go integration tests
-        if: needs.build.outputs.built == 'true' && env.CONTREE_TOKEN != ''
-        run: >
-          uv run --no-project pytest -c pyproject.toml -v -rs --tb=short --timeout 300
-          -m integration go/tests
+          -m integration client client-js/test go/tests

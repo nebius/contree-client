@@ -8,7 +8,13 @@ import pytest
 from docutils import nodes
 from docutils.core import publish_doctree
 
-from api_generator.documentation import build_docstring, doc_block_lines
+from api_generator.documentation import build_docstring, doc_block_lines, sanitize_doc
+
+
+def test_spec_port_range_punctuation_is_safe_for_docstrings() -> None:
+    assert sanitize_doc("ports 1\u201365535 and non\u2011empty") == (
+        "ports 1-65535 and non-empty"
+    )
 
 
 def parse_description(text: str) -> nodes.document:

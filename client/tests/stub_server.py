@@ -49,6 +49,11 @@ FILE_UUID = "a9165a5d-5c86-4bd8-8ee4-ae46c19cf45d"
 KNOWN_SHA256 = "a" * 64
 CREATED_AT = "2024-01-01T12:00:00+00:00"
 
+NETWORK_POLICY_UUID = "e166a653-c0ec-4c66-ae86-1463e22f5742"
+NETWORK_RULE = {"cidr": "192.0.2.0/24", "proto": "tcp", "ports": [443]}
+NETWORK_POLICY = {"uuid": NETWORK_POLICY_UUID, "cidrs": [NETWORK_RULE]}
+NETWORK_TAG = {"tag": "tests/https", "uuid": NETWORK_POLICY_UUID}
+
 IMAGE = {
     "uuid": IMAGE_UUID,
     "tag": "busybox:latest",
@@ -534,6 +539,47 @@ def route(request: Captured, attempts: collections.Counter[str]) -> Reply:
             truncate_chunked=True,
         )
 
+    if path == "/v1/network/policies":
+        if method == "POST":
+            return json_reply(
+                201, {"uuid": NETWORK_POLICY_UUID, **json.loads(request.body)}
+            )
+        if method == "GET":
+            return json_reply(
+                200,
+                {
+                    "policies": [
+                        {
+                            "uuid": NETWORK_POLICY_UUID,
+                            "created_at": CREATED_AT,
+                            "tags": [NETWORK_TAG["tag"]],
+                            "summary": {"cidrs": 1},
+                        }
+                    ]
+                },
+            )
+
+    if path == f"/v1/network/policies/{NETWORK_POLICY_UUID}":
+        if method == "GET":
+            return json_reply(200, NETWORK_POLICY)
+        if method == "DELETE":
+            return Reply(status=204, content_type=None)
+
+    if path == "/v1/network/tags" and method == "GET":
+        return json_reply(200, {"tags": [NETWORK_TAG]})
+
+    if path in ("/v1/network/tags/tests/https", "/v1/network/tags/tests%2Fhttps"):
+        if method == "GET":
+            return json_reply(
+                302, NETWORK_TAG, Location=f"/v1/network/policies/{NETWORK_POLICY_UUID}"
+            )
+        if method == "PUT":
+            return json_reply(
+                200, {"tag": NETWORK_TAG["tag"], **json.loads(request.body)}
+            )
+        if method == "DELETE":
+            return Reply(status=204, content_type=None)
+
     if path == "/v1/images" and method == "GET":
         if query.get("limit") == ["0"]:
             return json_reply(
@@ -889,6 +935,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PATCH(self) -> None:
         self.handle_request_for("PATCH")
+
+    def do_PUT(self) -> None:
+        self.handle_request_for("PUT")
 
     def do_DELETE(self) -> None:
         self.handle_request_for("DELETE")

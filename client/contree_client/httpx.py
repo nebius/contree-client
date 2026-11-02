@@ -106,6 +106,7 @@ class ContreeClient(base.ContreeSyncClient):
                 content=content,
                 headers=headers,
                 timeout=timeout,
+                follow_redirects=False,
             )
             data = ResponseData(
                 status=response.status_code,
@@ -137,6 +138,7 @@ class ContreeClient(base.ContreeSyncClient):
                 content=request_content(spec.body),
                 headers=list(self.build_headers(spec)),
                 timeout=httpx.Timeout(timeout, read=read_timeout),
+                follow_redirects=False,
             ) as response:
                 self.log.debug(
                     "%s %s -> %d (stream)",
@@ -227,6 +229,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 content=content,
                 headers=headers,
                 timeout=timeout,
+                follow_redirects=False,
             )
             data = ResponseData(
                 status=response.status_code,
@@ -258,6 +261,7 @@ class ContreeAsyncClient(base.ContreeAsyncClient):
                 content=async_request_content(spec.body),
                 headers=list(self.build_headers(spec)),
                 timeout=httpx.Timeout(timeout, read=read_timeout),
+                follow_redirects=False,
             ) as response:
                 self.log.debug(
                     "%s %s -> %d (stream)",

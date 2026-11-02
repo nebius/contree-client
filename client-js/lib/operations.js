@@ -21,10 +21,174 @@ import {
   InstanceResult,
   InstanceSpawnRequest,
   InstanceSpawnResponse,
+  ListNetworkPolicyTagsResponse,
+  NetworkPolicy,
+  NetworkPolicyCreateRequest,
+  NetworkPolicyListResponse,
+  NetworkPolicyTag,
   OperationResponse,
   OperationSummary,
   WhoAmIResponse,
 } from "./models.js";
+
+/** Build the request for `GET /network/policies`. */
+export function buildListNetworkPolicies({
+  search = null,
+  limit = null,
+  offset = null,
+} = {}) {
+  const query = {};
+  if (search != null) {
+    query["search"] = search;
+  }
+  if (limit != null) {
+    query["limit"] = String(limit);
+  }
+  if (offset != null) {
+    query["offset"] = String(offset);
+  }
+  return { method: "GET", path: `/network/policies`, idempotent: true, query };
+}
+
+/** Parse the response of `GET /network/policies`. */
+export function parseListNetworkPolicies(response) {
+  if (response.status >= 200 && response.status < 300) {
+    return NetworkPolicyListResponse.fromWire(jsonObject(response));
+  }
+  throw new RangeError(`unexpected HTTP status ${response.status}`);
+}
+
+/** Build the request for `POST /network/policies`. */
+export function buildCreateNetworkPolicy(cidrs) {
+  const payload = new NetworkPolicyCreateRequest({ cidrs }).toWire();
+  return {
+    method: "POST",
+    path: `/network/policies`,
+    idempotent: false,
+    body: JSON.stringify(payload),
+    contentType: "application/json",
+  };
+}
+
+/** Parse the response of `POST /network/policies`. */
+export function parseCreateNetworkPolicy(response) {
+  if (response.status >= 200 && response.status < 300) {
+    return NetworkPolicy.fromWire(jsonObject(response));
+  }
+  throw new RangeError(`unexpected HTTP status ${response.status}`);
+}
+
+/** Build the request for `GET /network/policies/{uuid}`. */
+export function buildGetNetworkPolicy(uuid) {
+  return {
+    method: "GET",
+    path: `/network/policies/${quotePath(uuid)}`,
+    idempotent: true,
+  };
+}
+
+/** Parse the response of `GET /network/policies/{uuid}`. */
+export function parseGetNetworkPolicy(response) {
+  if (response.status >= 200 && response.status < 300) {
+    return NetworkPolicy.fromWire(jsonObject(response));
+  }
+  throw new RangeError(`unexpected HTTP status ${response.status}`);
+}
+
+/** Build the request for `DELETE /network/policies/{uuid}`. */
+export function buildDeleteNetworkPolicy(uuid) {
+  return {
+    method: "DELETE",
+    path: `/network/policies/${quotePath(uuid)}`,
+    idempotent: true,
+  };
+}
+
+/** Parse the response of `DELETE /network/policies/{uuid}`. */
+export function parseDeleteNetworkPolicy(response) {
+  if (response.status >= 200 && response.status < 300) {
+    return null;
+  }
+  throw new RangeError(`unexpected HTTP status ${response.status}`);
+}
+
+/** Build the request for `GET /network/tags`. */
+export function buildListNetworkPolicyTags({
+  limit = null,
+  offset = null,
+} = {}) {
+  const query = {};
+  if (limit != null) {
+    query["limit"] = String(limit);
+  }
+  if (offset != null) {
+    query["offset"] = String(offset);
+  }
+  return { method: "GET", path: `/network/tags`, idempotent: true, query };
+}
+
+/** Parse the response of `GET /network/tags`. */
+export function parseListNetworkPolicyTags(response) {
+  if (response.status >= 200 && response.status < 300) {
+    return ListNetworkPolicyTagsResponse.fromWire(jsonObject(response));
+  }
+  throw new RangeError(`unexpected HTTP status ${response.status}`);
+}
+
+/** Build the request for `GET /network/tags/{tag}`. */
+export function buildGetNetworkPolicyTag(tag) {
+  return {
+    method: "GET",
+    path: `/network/tags/${quotePath(tag)}`,
+    idempotent: true,
+  };
+}
+
+/** Parse the response of `GET /network/tags/{tag}`. */
+export function parseGetNetworkPolicyTag(response) {
+  if (response.status === 302) {
+    return NetworkPolicyTag.fromWire(jsonObject(response));
+  }
+  throw new RangeError(`unexpected HTTP status ${response.status}`);
+}
+
+/** Build the request for `PUT /network/tags/{tag}`. */
+export function buildSetNetworkPolicyTag(tag, uuid) {
+  const payload = {};
+  payload["uuid"] = uuid;
+  return {
+    method: "PUT",
+    path: `/network/tags/${quotePath(tag)}`,
+    idempotent: true,
+    body: JSON.stringify(payload),
+    contentType: "application/json",
+  };
+}
+
+/** Parse the response of `PUT /network/tags/{tag}`. */
+export function parseSetNetworkPolicyTag(response) {
+  if (response.status >= 200 && response.status < 300) {
+    return NetworkPolicyTag.fromWire(jsonObject(response));
+  }
+  throw new RangeError(`unexpected HTTP status ${response.status}`);
+}
+
+/** Build the request for `DELETE /network/tags/{tag}`. */
+export function buildDeleteNetworkPolicyTag(tag) {
+  return {
+    method: "DELETE",
+    path: `/network/tags/${quotePath(tag)}`,
+    idempotent: true,
+  };
+}
+
+/** Parse the response of `DELETE /network/tags/{tag}`. */
+export function parseDeleteNetworkPolicyTag(response) {
+  if (response.status >= 200 && response.status < 300) {
+    return null;
+  }
+  throw new RangeError(`unexpected HTTP status ${response.status}`);
+}
 
 /** Build the request for `GET /images`. */
 export function buildListImages({

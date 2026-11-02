@@ -148,6 +148,8 @@ Stream status failures use `RangeError`. Other stream failures remain native.
 - Browsers forbid the `User-Agent` header — it is only attached in
   Node; `client.userAgent()` reports the composed value everywhere.
 - `fromProfile()` and `ReadableStream` request bodies are Node-only.
+- `getNetworkPolicyTag()` reads a JSON body from HTTP 302. Native browser fetch
+  hides this body. Use Node.js or a custom fetch that exposes redirect responses.
 - A truncated compressed download can end short because fetch hides
   the raw compressed bytes.
 

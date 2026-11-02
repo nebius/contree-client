@@ -706,6 +706,54 @@ export class ContreeClient {
     }
   }
 
+  /** List network policies (GET /network/policies) */
+  async listNetworkPolicies(options = {}) {
+    const spec = operations.buildListNetworkPolicies(options);
+    return operations.parseListNetworkPolicies(await this.call(spec));
+  }
+
+  /** Create a network policy (POST /network/policies) */
+  async createNetworkPolicy(cidrs) {
+    const spec = operations.buildCreateNetworkPolicy(cidrs);
+    return operations.parseCreateNetworkPolicy(await this.call(spec));
+  }
+
+  /** Get a network policy (GET /network/policies/{uuid}) */
+  async getNetworkPolicy(uuid) {
+    const spec = operations.buildGetNetworkPolicy(uuid);
+    return operations.parseGetNetworkPolicy(await this.call(spec));
+  }
+
+  /** Remove a network policy (DELETE /network/policies/{uuid}) */
+  async deleteNetworkPolicy(uuid) {
+    const spec = operations.buildDeleteNetworkPolicy(uuid);
+    return operations.parseDeleteNetworkPolicy(await this.call(spec));
+  }
+
+  /** List network policy tags (GET /network/tags) */
+  async listNetworkPolicyTags(options = {}) {
+    const spec = operations.buildListNetworkPolicyTags(options);
+    return operations.parseListNetworkPolicyTags(await this.call(spec));
+  }
+
+  /** Get a network policy tag (GET /network/tags/{tag}) */
+  async getNetworkPolicyTag(tag) {
+    const spec = operations.buildGetNetworkPolicyTag(tag);
+    return operations.parseGetNetworkPolicyTag(await this.call(spec));
+  }
+
+  /** Bind a tag to a network policy (PUT /network/tags/{tag}) */
+  async setNetworkPolicyTag(tag, uuid) {
+    const spec = operations.buildSetNetworkPolicyTag(tag, uuid);
+    return operations.parseSetNetworkPolicyTag(await this.call(spec));
+  }
+
+  /** Remove a network policy tag (DELETE /network/tags/{tag}) */
+  async deleteNetworkPolicyTag(tag) {
+    const spec = operations.buildDeleteNetworkPolicyTag(tag);
+    return operations.parseDeleteNetworkPolicyTag(await this.call(spec));
+  }
+
   /** List publicly available images (GET /images) */
   async listImages(options = {}) {
     const spec = operations.buildListImages(options);

@@ -911,15 +911,19 @@ class OperationBuilder:
                 success_statuses=(302,),
                 header_name="location",
             )
-        for code in ("200", "201"):
+        for code in ("200", "201", "302"):
             response = responses.get(code)
             if response is None:
                 continue
             content = response.get("content") or {}
+            if code == "302" and "application/json" not in content:
+                continue
+            success = SuccessPolicy.EXACT if code == "302" else SuccessPolicy.ANY_2XX
             if "text/event-stream" in content:
                 return ResponseDef(
                     ResponseMode.SSE,
                     type=model_ref("OperationEvent"),
+                    success=success,
                     success_statuses=(int(code),),
                     resume_argument="last_event_id",
                 )
@@ -927,6 +931,7 @@ class OperationBuilder:
                 return ResponseDef(
                     ResponseMode.BYTES,
                     type=BYTES,
+                    success=success,
                     success_statuses=(int(code),),
                 )
             if "application/json" in content:
@@ -938,6 +943,7 @@ class OperationBuilder:
                     return ResponseDef(
                         ResponseMode.JSON,
                         type=list_of(model_ref(item)),
+                        success=success,
                         success_statuses=(int(code),),
                     )
                 rname = ref_name(schema)
@@ -945,15 +951,30 @@ class OperationBuilder:
                     return ResponseDef(
                         ResponseMode.JSON,
                         type=model_ref(rname),
+                        success=success,
                         success_statuses=(int(code),),
                     )
                 scalar = self.single_scalar_field(schema)
                 if scalar is None:
-                    raise ValueError(f"unsupported inline response in {op_id}")
+                    if schema.get("type") != "object" or not schema.get("properties"):
+                        raise ValueError(f"unsupported inline response in {op_id}")
+                    name = pascal_case(op_id) + "Response"
+                    if name in self.converter.known or name in self.spec.schemas:
+                        raise ValueError(
+                            f"{op_id}: inline response model {name!r} already exists"
+                        )
+                    self.converter.convert_object(name, schema)
+                    return ResponseDef(
+                        ResponseMode.JSON,
+                        type=model_ref(name),
+                        success=success,
+                        success_statuses=(int(code),),
+                    )
                 field_name, type_ref = scalar
                 return ResponseDef(
                     ResponseMode.JSON,
                     type=type_ref,
+                    success=success,
                     success_statuses=(int(code),),
                     json_path=(field_name,),
                 )
