@@ -47,3 +47,56 @@ clients. **Complete** means the client preserves the same API semantics.
   recorded request headers and URLs instead of a `constructedWith` snapshot.
 - Python alone can save profiles. JavaScript and Go only read profiles because
   the Contree CLI owns credential-file updates.
+
+## Saved profile formats
+
+All three clients read ordinary TOML profile tables. For example, save this as
+`auth.toml` in the configuration directory:
+
+```toml
+profile = "dev"
+
+[dev]
+url = "http://127.0.0.1:8080/sandboxes/"
+token = "example-token"
+project = "example-project"
+```
+
+The directory is `CONTREE_HOME`, otherwise `XDG_CONFIG_HOME/contree`, otherwise
+`~/.config/contree`. Discovery independently prefers `cli.toml` over `cli.ini`
+and `auth.toml` over `auth.ini`. An empty TOML file still replaces its INI
+counterpart. Selected authentication fields override selected CLI fields;
+missing fields inherit from CLI. INI `[DEFAULT]` inheritance remains supported,
+with explicit profile fields overriding global defaults.
+
+An explicit `.toml` path uses that file as the authentication source, with
+sibling `cli.toml` defaults, or `cli.ini` when `cli.toml` is absent. An explicit
+non-TOML path retains INI interpretation and only sibling `cli.ini` defaults.
+For example, Python accepts `ContreeClient.from_profile("dev",
+config_path="e2e.toml")`; Node accepts
+`await ContreeClient.fromProfile("dev", {configPath: "e2e.toml"})`; Go accepts
+`ResolveProfile("dev", "e2e.toml")`, followed by `NewClientFromProfile(profile)`.
+Python async clients accept the same profile arguments.
+
+Selection uses a nonempty explicit name, then nonempty `CONTREE_PROFILE`, then
+the configured root `profile`, or `default` when no selector is configured.
+An explicitly empty configured selector remains empty. TOML profile tables use
+plain names such as `[dev]`, without the INI `profile:` prefix. The known fields
+`url`, `token`, `type`, and `project`, and the root selector, must be strings.
+Missing `type` means `jwt`; `type = "iam"` uses
+`https://api.tokenfactory.nebius.com/sandboxes` when URL is absent.
+Trailing URL slashes are removed. Project is optional.
+
+Listing may include incomplete profiles. When TOML participates, resolving a
+named profile requires a nonblank token and a nonblank URL for non-IAM profiles,
+after merging. Invalid TOML, invalid field types, unreadable selected files,
+missing explicit TOML files, and missing or incomplete selected profiles fail
+without trying alternative INI credentials or another profile. Error diagnostics
+do not include credential lines. Loading does not write configuration files.
+INI-only behavior and Python's INI save format remain supported.
+
+Python 3.11 and later use `tomllib` automatically. On Python 3.10, install
+`contree-client[toml]` to enable TOML through `tomli`. Without that extra,
+INI, direct credentials, and environment helpers remain available, but selecting
+a TOML source fails with installation guidance. Node requires version 18.17 or
+later. Go retains its module's Go 1.27 requirement.

@@ -108,7 +108,7 @@ import (
 	if err := os.WriteFile(filepath.Join(directory, "all_examples.go"), []byte(all.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command("go", "test", "-count=1", "./...")
+	command := exec.Command("go", "test", "-mod=mod", "-count=1", "./...")
 	command.Dir = directory
 	command.Env = append(os.Environ(), "GOWORK=off")
 	if output, err := command.CombinedOutput(); err != nil {

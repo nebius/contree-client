@@ -359,3 +359,13 @@ set_log_level(logging.ERROR)  # keep the other examples quiet
 ## Copyright
 
 Nebius B.V. 2026, Licensed under the Apache License, Version 2.0 (see "LICENSE" file).
+
+## Saved profile formats
+
+Saved profiles support plain TOML tables such as `[dev]`, as well as legacy INI.
+Each role independently prefers `cli.toml` or `auth.toml` over its INI file.
+Authentication fields override CLI defaults. Python 3.11+ supports TOML directly;
+Python 3.10 requires `pip install 'contree-client[toml]'`. Selected TOML errors
+fail without falling back to INI credentials. See
+[profile formats](../docs/parity.md#saved-profile-formats) for examples, explicit
+paths, field defaults, and validation rules. `Profile.save` still writes INI.

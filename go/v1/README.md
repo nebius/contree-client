@@ -26,7 +26,10 @@ for _, image := range listed {
 ```
 
 Saved Contree profiles use the same files and selection rules as the Python and
-JavaScript clients:
+JavaScript clients. TOML uses plain tables such as `[dev]`; each role
+independently prefers `cli.toml` or `auth.toml` over its INI file. Authentication
+fields override CLI defaults. See [profile formats](../../docs/parity.md#saved-profile-formats)
+for explicit paths, field defaults, and errors without credential fallback:
 
 ```go
 profile, err := contree.ResolveProfile("")

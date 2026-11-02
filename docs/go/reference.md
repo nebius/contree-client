@@ -925,7 +925,7 @@ func IsTerminalStatus(status OperationStatus) bool
 (go-loadprofiles)=
 ### LoadProfiles
 
-LoadProfiles reads cli.ini and auth.ini and returns profiles and the active profile name. auth.ini values override cli.ini values. Pass no path to use the default auth.ini location, or pass one explicit auth.ini path.
+LoadProfiles reads the selected CLI and authentication sources. Each role prefers TOML over INI; authentication fields override CLI fields. An explicit INI path uses only INI sibling defaults. An explicit TOML path prefers TOML sibling defaults. Listing permits incomplete profiles.
 
 ```go
 func LoadProfiles(path ...string) (map[string]Profile, string, error)
@@ -4872,7 +4872,7 @@ func ProfileFromEnvironment() (Profile, bool)
 (go-resolveprofile)=
 #### ResolveProfile
 
-ResolveProfile selects a profile. An explicit name has priority over CONTREE\_PROFILE and the active profile in the configuration. Pass one path to read a specific auth.ini file.
+ResolveProfile selects a profile. An explicit name has priority over CONTREE\_PROFILE and the active profile in the configuration. Pass one path to read a specific authentication file.
 
 ```go
 func ResolveProfile(name string, path ...string) (Profile, error)

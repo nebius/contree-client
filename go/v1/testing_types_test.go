@@ -40,7 +40,7 @@ func TestMockResultTypes(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(directory, "mock.go"), []byte(source), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			command := exec.Command("go", "build", "./...")
+			command := exec.Command("go", "build", "-mod=mod", "./...")
 			command.Dir = directory
 			command.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local")
 			output, err := command.CombinedOutput()

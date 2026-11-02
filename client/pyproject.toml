@@ -20,6 +20,7 @@ Homepage = "https://contree.dev/"
 Documentation = "https://docs.tokenfactory.nebius.com/sandboxes/overview"
 
 [project.optional-dependencies]
+toml = ["tomli>=2.2; python_version < '3.11'"]
 urllib3 = ["urllib3>=2.0"]
 requests = ["requests>=2.28"]
 aiohttp = ["aiohttp>=3.9"]

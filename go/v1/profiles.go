@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 const (
@@ -82,23 +84,32 @@ func ContreeHome() (string, error) {
 	return filepath.Join(home, ".config", "contree"), nil
 }
 
-// LoadProfiles reads cli.ini and auth.ini and returns profiles and the active
-// profile name. auth.ini values override cli.ini values. Pass no path to use
-// the default auth.ini location, or pass one explicit auth.ini path.
+// LoadProfiles reads the selected CLI and authentication sources. Each role
+// prefers TOML over INI; authentication fields override CLI fields. An explicit
+// INI path uses only INI sibling defaults. An explicit TOML path prefers TOML
+// sibling defaults. Listing permits incomplete profiles.
 func LoadProfiles(path ...string) (map[string]Profile, string, error) {
-	authFile, err := profileAuthFile(path)
-	if err != nil {
-		return nil, "", err
-	}
+	profiles, active, _, err := loadProfileData(path...)
+	return profiles, active, err
+}
 
+func loadProfileData(path ...string) (map[string]Profile, string, bool, error) {
+	sources, err := profileSources(path)
+	if err != nil {
+		return nil, "", false, err
+	}
 	merged := make(iniSections)
-	for _, file := range []string{
-		filepath.Join(filepath.Dir(authFile), "cli.ini"),
-		authFile,
-	} {
-		sections, err := readProfileINI(file)
+	hasTOML := false
+	for _, file := range sources {
+		var sections iniSections
+		if filepath.Ext(file) == ".toml" {
+			hasTOML = true
+			sections, err = readProfileTOML(file)
+		} else {
+			sections, err = readProfileINI(file)
+		}
 		if err != nil {
-			return nil, "", err
+			return nil, "", false, err
 		}
 		mergeINI(merged, sections)
 	}
@@ -139,14 +150,14 @@ func LoadProfiles(path ...string) (map[string]Profile, string, error) {
 			Project:  effective["project"],
 		}
 	}
-	return profiles, active, nil
+	return profiles, active, hasTOML, nil
 }
 
 // ResolveProfile selects a profile. An explicit name has priority over
 // CONTREE_PROFILE and the active profile in the configuration. Pass one path
-// to read a specific auth.ini file.
+// to read a specific authentication file.
 func ResolveProfile(name string, path ...string) (Profile, error) {
-	profiles, active, err := LoadProfiles(path...)
+	profiles, active, hasTOML, err := loadProfileData(path...)
 	if err != nil {
 		return Profile{}, err
 	}
@@ -160,6 +171,14 @@ func ResolveProfile(name string, path ...string) (Profile, error) {
 	profile, ok := profiles[selected]
 	if !ok {
 		return Profile{}, &ProfileError{Name: selected, Problem: "not found"}
+	}
+	if hasTOML {
+		if strings.TrimSpace(profile.Token) == "" {
+			return Profile{}, &ProfileError{Name: selected, Problem: "has no token"}
+		}
+		if strings.TrimSpace(profile.URL) == "" && !(profile.AuthType == AuthTypeIAM && profile.URL == "") {
+			return Profile{}, &ProfileError{Name: selected, Problem: "has no URL"}
+		}
 	}
 	return profile, nil
 }
@@ -218,22 +237,95 @@ func NewClientFromProfile(profile Profile, options ...ClientOption) (*Client, er
 
 type iniSections map[string]map[string]string
 
-func profileAuthFile(path []string) (string, error) {
-	if len(path) > 1 {
-		return "", errors.New("contree: LoadProfiles accepts at most one path")
+func preferredProfileFile(directory, role string) (string, error) {
+	candidate := filepath.Join(directory, role+".toml")
+	_, err := os.Stat(candidate)
+	if errors.Is(err, os.ErrNotExist) {
+		return filepath.Join(directory, role+".ini"), nil
 	}
-	if len(path) == 1 && path[0] != "" {
-		expanded, err := expandUserPath(path[0])
-		if err != nil {
-			return "", fmt.Errorf("contree: expand profile path: %w", err)
-		}
-		return filepath.Clean(expanded), nil
-	}
-	home, err := ContreeHome()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("contree: inspect profile file %q: %w", candidate, err)
 	}
-	return filepath.Join(home, "auth.ini"), nil
+	return candidate, nil
+}
+
+func profileSources(path []string) ([]string, error) {
+	if len(path) > 1 {
+		return nil, errors.New("contree: LoadProfiles accepts at most one path")
+	}
+	explicit := len(path) == 1 && path[0] != ""
+	var auth string
+	var err error
+	if explicit {
+		auth, err = expandUserPath(path[0])
+		if err != nil {
+			return nil, err
+		}
+		auth = filepath.Clean(auth)
+	} else {
+		home, homeErr := ContreeHome()
+		if homeErr != nil {
+			return nil, homeErr
+		}
+		auth, err = preferredProfileFile(home, "auth")
+		if err != nil {
+			return nil, err
+		}
+	}
+	defaults := filepath.Join(filepath.Dir(auth), "cli.ini")
+	if !explicit || filepath.Ext(auth) == ".toml" {
+		defaults, err = preferredProfileFile(filepath.Dir(auth), "cli")
+		if err != nil {
+			return nil, err
+		}
+	}
+	if defaults == auth {
+		return []string{auth}, nil
+	}
+	return []string{defaults, auth}, nil
+}
+
+func readProfileTOML(path string) (iniSections, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("contree: read profile file %q: %w", path, err)
+	}
+	var data map[string]any
+	if err := toml.Unmarshal(raw, &data); err != nil {
+		// Parser errors may include credential lines. Do not wrap them.
+		return nil, fmt.Errorf("contree: invalid TOML profile file %q", path)
+	}
+	sections := iniSections{"": make(map[string]string)}
+	if active, present := data["profile"]; present {
+		value, ok := active.(string)
+		if !ok {
+			return nil, fmt.Errorf("contree: invalid profile selector in %q", path)
+		}
+		sections[""]["profile"] = value
+	}
+	for name, rawValues := range data {
+		if name == "profile" {
+			continue
+		}
+		values, ok := rawValues.(map[string]any)
+		if !ok {
+			continue
+		}
+		fields := make(map[string]string)
+		for _, key := range []string{"url", "token", "type", "project"} {
+			rawValue, present := values[key]
+			if !present {
+				continue
+			}
+			value, ok := rawValue.(string)
+			if !ok {
+				return nil, fmt.Errorf("contree: invalid profile field %q in %q", key, path)
+			}
+			fields[key] = value
+		}
+		sections[ProfileSectionPrefix+name] = fields
+	}
+	return sections, nil
 }
 
 func expandUserPath(value string) (string, error) {

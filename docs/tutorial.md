@@ -41,13 +41,13 @@ All clients accept credentials in two ways:
 
 - **Production** — services usually pass the token and IAM project
   explicitly from their configuration or secret manager.
-- **Local development** — *profiles*: the INI files under
+- **Local development** — *profiles*: the TOML or legacy INI files under
   `$CONTREE_HOME` (`~/.config/contree` by default), shared by all
   Contree tooling and every client. `from_profile()`, `fromProfile()`, and
   `ResolveProfile()` select an explicit name, then `CONTREE_PROFILE`, then the
   active profile from the configuration. One machine can hold several
   environments such as `default` and `staging`. This mechanism also works on
-  a server when you set `CONTREE_HOME` and provide `auth.ini`.
+  a server when you set `CONTREE_HOME` and provide `auth.toml` or `auth.ini`. See [saved profile formats](parity.md#saved-profile-formats) for source precedence and explicit paths.
 
 Python clients are context managers. JavaScript exposes `close()` to release
 its transport. Go does not own its `http.Client`, so it has no close method:

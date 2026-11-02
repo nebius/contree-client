@@ -28,7 +28,9 @@ console.log(operation.status, operation.metadata.result.stdout.asText());
 
 In Node a saved Contree profile works too:
 `await ContreeClient.fromProfile()` reads
-`$CONTREE_HOME/{cli,auth}.ini` (shared with the Python client).
+`$CONTREE_HOME/{cli,auth}.toml`, with independent fallback to each role's
+legacy `.ini` file when TOML is absent. See
+[profile formats](../docs/parity.md#saved-profile-formats) for examples and merging.
 
 ## Streaming
 
