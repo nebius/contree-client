@@ -7,6 +7,7 @@ import time
 import zlib
 from collections import Counter
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 import aiohttp
@@ -15,7 +16,7 @@ import pytest
 import requests
 import urllib3
 
-from contree_client import RetryPolicy, testing
+from contree_client import RetryPolicy, base, testing
 from contree_client.exceptions import APIConnectionError
 from tests import stub_server as server
 from tests.conftest import BACKENDS, TOKEN, client_class, make_invoke
@@ -328,10 +329,22 @@ def test_retry_delay_respects_original_deadline(async_mode: bool) -> None:
     )
 
 
-def test_async_retry_delay_handles_early_timer_wakeups() -> None:
+def test_async_retry_delay_handles_early_timer_wakeups(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 0.0
+    sleeps: list[float] = []
+    clock = SimpleNamespace(monotonic=lambda: now)
+
+    async def early_sleep(delay: float) -> None:
+        nonlocal now
+        sleeps.append(delay)
+        now += delay / 2 if len(sleeps) == 1 else delay
+
+    monkeypatch.setattr(base, "time", clock)
+    monkeypatch.setattr(base, "asyncio", SimpleNamespace(sleep=early_sleep))
+
     async def scenario() -> None:
-        loop = asyncio.get_running_loop()
-        loop._clock_resolution = 0.015625  # Windows-like timer resolution.
         client = testing.ContreeAsyncClient()
         client.mock("iter_operation_events", [])
         for _ in range(3):
@@ -341,23 +354,16 @@ def test_async_retry_delay_handles_early_timer_wakeups() -> None:
             )
         client.mock("operation_terminal", True)
 
-        async def heartbeat() -> None:
-            while True:
-                await asyncio.sleep(0.001)
-
-        task = asyncio.create_task(heartbeat())
-        started = time.monotonic()
         try:
             with pytest.raises(TimeoutError, match="events did not complete"):
-                async for _event in client.follow_operation_events(
+                async for event in client.follow_operation_events(
                     server.OPERATION_UUID, timeout=0.05
                 ):
-                    pass
-            assert time.monotonic() - started >= 0.05
+                    pytest.fail(f"unexpected event: {event}")
+            assert now == pytest.approx(0.05)
+            assert sleeps == pytest.approx([0.05, 0.025])
             assert len(client.calls_for("iter_operation_events")) == 2
         finally:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
             await client.close()
 
     asyncio.run(scenario())
