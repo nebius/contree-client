@@ -29,7 +29,7 @@ def gorun(tmp_path: Path) -> Callable[[str], str]:
     def run(source: str) -> str:
         (tmp_path / "main.go").write_text(textwrap.dedent(source), encoding="utf-8")
         result = subprocess.run(
-            [go, "run", "."],
+            [go, "run", "-mod=mod", "."],
             cwd=tmp_path,
             env={**os.environ, "GOWORK": "off"},
             capture_output=True,

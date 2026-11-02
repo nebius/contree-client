@@ -49,7 +49,7 @@ def test_toml_errors_are_safe_without_fallback(
     rendered = "".join(traceback.format_exception(caught.value))
     assert "SECRET-MARKER" not in rendered
     assert "ignored-token" not in rendered
-    assert str(path) in str(caught.value)
+    assert repr(str(path)) in str(caught.value)
 
 
 def test_explicit_toml_missing_is_authoritative(

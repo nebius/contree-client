@@ -29,7 +29,7 @@ test("TOML merges partial profiles and rejects malformed credentials safely", as
     await writeFile(path, '[dev]\ntoken = "SECRET-MARKER" broken');
     await assert.rejects(loadProfiles(path), (error) => {
       assert.ok(error instanceof ProfileError);
-      assert.ok(error.message.includes(path));
+      assert.ok(error.message.includes(JSON.stringify(path)));
       assert.ok(!error.stack.includes("SECRET-MARKER"));
       assert.equal(error.cause, undefined);
       return true;
@@ -67,7 +67,7 @@ test("malformed TOML UTF-8 fails without exposing or replacing credentials", asy
     ]) {
       await assert.rejects(operation(), (error) => {
         assert.ok(error instanceof ProfileError);
-        assert.ok(error.message.includes(path));
+        assert.ok(error.message.includes(JSON.stringify(path)));
         assert.ok(!error.stack.includes("SECRET-MARKER"));
         assert.ok(!error.stack.includes("ignored-ini-sentinel"));
         assert.equal(error.cause, undefined);

@@ -36,7 +36,7 @@ func TestTOMLPartialMergeAndSafeFailure(t *testing.T) {
 	}
 	writeProfileFile(t, path, "[dev]\ntoken = \"SECRET-MARKER\" broken")
 	_, _, err = LoadProfiles(path)
-	if err == nil || !strings.Contains(err.Error(), path) || strings.Contains(fmt.Sprintf("%+v", err), "SECRET-MARKER") {
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q", path)) || strings.Contains(fmt.Sprintf("%+v", err), "SECRET-MARKER") {
 		t.Fatalf("expected safe source error: %v", err)
 	}
 	if _, err := ResolveProfile("dev", filepath.Join(home, "missing.toml")); err == nil {
