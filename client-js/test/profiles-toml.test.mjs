@@ -42,3 +42,39 @@ test("TOML merges partial profiles and rejects malformed credentials safely", as
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test("malformed TOML UTF-8 fails without exposing or replacing credentials", async () => {
+  const home = await mkdtemp(join(tmpdir(), "contree-toml-encoding-"));
+  try {
+    await writeFile(
+      join(home, "auth.ini"),
+      "[profile:dev]\ntoken = ignored-ini-sentinel\nurl = https://ignored.test\n",
+    );
+    const path = join(home, "auth.toml");
+    await writeFile(
+      path,
+      Buffer.concat([
+        Buffer.from(
+          '[dev]\nurl = "https://example.test"\ntoken = "SECRET-MARKER-',
+        ),
+        Buffer.from([0xff]),
+        Buffer.from('-token"\n'),
+      ]),
+    );
+    for (const operation of [
+      () => loadProfiles(path),
+      () => resolveProfile("dev", { path }),
+    ]) {
+      await assert.rejects(operation(), (error) => {
+        assert.ok(error instanceof ProfileError);
+        assert.ok(error.message.includes(path));
+        assert.ok(!error.stack.includes("SECRET-MARKER"));
+        assert.ok(!error.stack.includes("ignored-ini-sentinel"));
+        assert.equal(error.cause, undefined);
+        return true;
+      });
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});

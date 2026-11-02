@@ -78,7 +78,7 @@ async function preferredFile(directory, role) {
 }
 
 async function profileSources(path) {
-  const { dirname, join, extname } = await import("node:path");
+  const { dirname, join, extname, normalize } = await import("node:path");
   if (path === null) {
     const home = await contreeHome();
     return [
@@ -90,7 +90,7 @@ async function profileSources(path) {
     extname(path) === ".toml"
       ? await preferredFile(dirname(path), "cli")
       : join(dirname(path), "cli.ini");
-  return defaults === path ? [path] : [defaults, path];
+  return normalize(defaults) === normalize(path) ? [path] : [defaults, path];
 }
 
 async function readSource(path) {
@@ -99,7 +99,10 @@ async function readSource(path) {
   const toml = extname(path) === ".toml";
   let text;
   try {
-    text = await readFile(path, "utf-8");
+    const bytes = await readFile(path);
+    text = toml
+      ? new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+      : bytes.toString("utf-8");
   } catch (error) {
     if (!toml && error?.code === "ENOENT") return new Map();
     throw new ProfileError(`cannot read profile file ${JSON.stringify(path)}`);
