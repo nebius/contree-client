@@ -12,6 +12,266 @@ import (
 	"time"
 )
 
+// ListNetworkPoliciesOptions contains optional arguments for ListNetworkPolicies.
+type ListNetworkPoliciesOptions struct {
+	Search *string
+	Limit  *int64
+	Offset *int64
+}
+
+func buildListNetworkPolicies(
+	options *ListNetworkPoliciesOptions,
+) (requestSpec, error) {
+	query := make(url.Values)
+	if options != nil && options.Search != nil {
+		if err := addQueryValue(query, "search", *options.Search, false); err != nil {
+			return requestSpec{}, err
+		}
+	}
+	if options != nil && options.Limit != nil {
+		if err := addQueryValue(query, "limit", *options.Limit, false); err != nil {
+			return requestSpec{}, err
+		}
+	}
+	if options != nil && options.Offset != nil {
+		if err := addQueryValue(query, "offset", *options.Offset, false); err != nil {
+			return requestSpec{}, err
+		}
+	}
+	requestPath := "/network/policies"
+	return requestSpec{
+		method:     "GET",
+		path:       requestPath,
+		query:      query,
+		idempotent: true,
+	}, nil
+}
+
+// ListNetworkPolicies calls GET /network/policies.
+func (c *Client) ListNetworkPolicies(
+	ctx context.Context,
+	options *ListNetworkPoliciesOptions,
+) (NetworkPolicyListResponse, error) {
+	spec, err := buildListNetworkPolicies(options)
+	if err != nil {
+		var zero NetworkPolicyListResponse
+		return zero, err
+	}
+	return c.doJSON[NetworkPolicyListResponse](ctx, spec, acceptAny2xx)
+}
+
+func buildCreateNetworkPolicy(
+	cidrs []NetworkPolicyCidrRule,
+) (requestSpec, error) {
+	payload := NetworkPolicyCreateRequest{
+		Cidrs: cidrs,
+	}
+	body, err := jsonBody(payload)
+	if err != nil {
+		return requestSpec{}, err
+	}
+	requestPath := "/network/policies"
+	return requestSpec{
+		method:      "POST",
+		path:        requestPath,
+		body:        body,
+		contentType: "application/json",
+		idempotent:  false,
+	}, nil
+}
+
+// CreateNetworkPolicy calls POST /network/policies.
+func (c *Client) CreateNetworkPolicy(
+	ctx context.Context,
+	cidrs []NetworkPolicyCidrRule,
+) (NetworkPolicy, error) {
+	spec, err := buildCreateNetworkPolicy(cidrs)
+	if err != nil {
+		var zero NetworkPolicy
+		return zero, err
+	}
+	return c.doJSON[NetworkPolicy](ctx, spec, acceptAny2xx)
+}
+
+func buildGetNetworkPolicy(
+	uuid string,
+) (requestSpec, error) {
+	requestPath := "/network/policies/" + quotePath(uuid)
+	return requestSpec{
+		method:     "GET",
+		path:       requestPath,
+		idempotent: true,
+	}, nil
+}
+
+// GetNetworkPolicy calls GET /network/policies/{uuid}.
+func (c *Client) GetNetworkPolicy(
+	ctx context.Context,
+	uuid string,
+) (NetworkPolicy, error) {
+	spec, err := buildGetNetworkPolicy(uuid)
+	if err != nil {
+		var zero NetworkPolicy
+		return zero, err
+	}
+	return c.doJSON[NetworkPolicy](ctx, spec, acceptAny2xx)
+}
+
+func buildDeleteNetworkPolicy(
+	uuid string,
+) (requestSpec, error) {
+	requestPath := "/network/policies/" + quotePath(uuid)
+	return requestSpec{
+		method:     "DELETE",
+		path:       requestPath,
+		idempotent: true,
+	}, nil
+}
+
+// DeleteNetworkPolicy calls DELETE /network/policies/{uuid}.
+func (c *Client) DeleteNetworkPolicy(
+	ctx context.Context,
+	uuid string,
+) error {
+	spec, err := buildDeleteNetworkPolicy(uuid)
+	if err != nil {
+		return err
+	}
+	response, err := c.do(ctx, spec)
+	if err != nil {
+		return err
+	}
+	return emptyResponse(response, acceptAny2xx)
+}
+
+// ListNetworkPolicyTagsOptions contains optional arguments for ListNetworkPolicyTags.
+type ListNetworkPolicyTagsOptions struct {
+	Limit  *int64
+	Offset *int64
+}
+
+func buildListNetworkPolicyTags(
+	options *ListNetworkPolicyTagsOptions,
+) (requestSpec, error) {
+	query := make(url.Values)
+	if options != nil && options.Limit != nil {
+		if err := addQueryValue(query, "limit", *options.Limit, false); err != nil {
+			return requestSpec{}, err
+		}
+	}
+	if options != nil && options.Offset != nil {
+		if err := addQueryValue(query, "offset", *options.Offset, false); err != nil {
+			return requestSpec{}, err
+		}
+	}
+	requestPath := "/network/tags"
+	return requestSpec{
+		method:     "GET",
+		path:       requestPath,
+		query:      query,
+		idempotent: true,
+	}, nil
+}
+
+// ListNetworkPolicyTags calls GET /network/tags.
+func (c *Client) ListNetworkPolicyTags(
+	ctx context.Context,
+	options *ListNetworkPolicyTagsOptions,
+) (ListNetworkPolicyTagsResponse, error) {
+	spec, err := buildListNetworkPolicyTags(options)
+	if err != nil {
+		var zero ListNetworkPolicyTagsResponse
+		return zero, err
+	}
+	return c.doJSON[ListNetworkPolicyTagsResponse](ctx, spec, acceptAny2xx)
+}
+
+func buildGetNetworkPolicyTag(
+	tag string,
+) (requestSpec, error) {
+	requestPath := "/network/tags/" + quotePath(tag)
+	return requestSpec{
+		method:     "GET",
+		path:       requestPath,
+		idempotent: true,
+	}, nil
+}
+
+// GetNetworkPolicyTag calls GET /network/tags/{tag}.
+func (c *Client) GetNetworkPolicyTag(
+	ctx context.Context,
+	tag string,
+) (NetworkPolicyTag, error) {
+	spec, err := buildGetNetworkPolicyTag(tag)
+	if err != nil {
+		var zero NetworkPolicyTag
+		return zero, err
+	}
+	return c.doJSON[NetworkPolicyTag](ctx, spec, acceptStatuses(302))
+}
+
+func buildSetNetworkPolicyTag(
+	tag string,
+	uuid string,
+) (requestSpec, error) {
+	payload := map[string]any{
+		"uuid": uuid,
+	}
+	body, err := jsonBody(payload)
+	if err != nil {
+		return requestSpec{}, err
+	}
+	requestPath := "/network/tags/" + quotePath(tag)
+	return requestSpec{
+		method:      "PUT",
+		path:        requestPath,
+		body:        body,
+		contentType: "application/json",
+		idempotent:  true,
+	}, nil
+}
+
+// SetNetworkPolicyTag calls PUT /network/tags/{tag}.
+func (c *Client) SetNetworkPolicyTag(
+	ctx context.Context,
+	tag string,
+	uuid string,
+) (NetworkPolicyTag, error) {
+	spec, err := buildSetNetworkPolicyTag(tag, uuid)
+	if err != nil {
+		var zero NetworkPolicyTag
+		return zero, err
+	}
+	return c.doJSON[NetworkPolicyTag](ctx, spec, acceptAny2xx)
+}
+
+func buildDeleteNetworkPolicyTag(
+	tag string,
+) (requestSpec, error) {
+	requestPath := "/network/tags/" + quotePath(tag)
+	return requestSpec{
+		method:     "DELETE",
+		path:       requestPath,
+		idempotent: true,
+	}, nil
+}
+
+// DeleteNetworkPolicyTag calls DELETE /network/tags/{tag}.
+func (c *Client) DeleteNetworkPolicyTag(
+	ctx context.Context,
+	tag string,
+) error {
+	spec, err := buildDeleteNetworkPolicyTag(tag)
+	if err != nil {
+		return err
+	}
+	response, err := c.do(ctx, spec)
+	if err != nil {
+		return err
+	}
+	return emptyResponse(response, acceptAny2xx)
+}
+
 // ListImagesOptions contains optional arguments for ListImages.
 type ListImagesOptions struct {
 	Limit  *int64

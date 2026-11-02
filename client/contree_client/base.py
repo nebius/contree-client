@@ -45,6 +45,11 @@ from .models import (
     InstanceResourcesLimits,
     InstanceResult,
     InstanceSpawnResponse,
+    ListNetworkPolicyTagsResponse,
+    NetworkPolicy,
+    NetworkPolicyCIDRRule,
+    NetworkPolicyListResponse,
+    NetworkPolicyTag,
     OperationEvent,
     OperationResponse,
     OperationStatus,
@@ -639,6 +644,249 @@ class ContreeSyncClient(ContreeClientBase, ABC):
             return self.get_file(digest)
         except NotFoundError:
             return self.upload_file(content)
+
+    def list_network_policies(
+        self,
+        *,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> NetworkPolicyListResponse:
+        """List network policies.
+
+        Returns policies in your namespace and the shared namespace. Deleted
+        policies are excluded.
+        Reusing or restoring a policy does not change its creation time or
+        listing position.
+        Each entry contains the policy UUID, creation timestamp, accessible
+        tags, and a summary
+        with the number of IP rules. Tags are sorted by name. Your tag takes
+        precedence over
+        a shared tag with the same name; the overridden shared binding is
+        omitted.
+        Use ``GET /network/policies/{uuid}`` to retrieve the full rules.
+        Requires ``spawn`` or ``spawn_disposable`` permission.
+
+        Search:
+        Supply ``search`` to find active policies in your namespace and the
+        shared namespace
+        that allow the destination. The input determines the search type;
+        currently only IPv4
+        and IPv6 addresses and CIDRs are supported. Domains and other
+        unsupported inputs
+        return 400. An omitted search parameter lists policies normally; an
+        empty value
+        returns 400.
+
+        Use ``[tcp://|udp://]address-or-cidr[:port]``. IPv6 addresses and CIDRs
+        must be
+        enclosed in brackets when specifying a port, with the prefix length
+        inside
+        the brackets. Examples: ``192.0.2.1``, ``192.0.2.0/24:443``,
+        ``tcp://192.0.2.0/24:443``, and ``udp://[2001:db8::/64]:53``.
+        This is search syntax, not a URL. CIDRs must use their network address;
+        host bits, scoped IPv6 addresses, and ports outside 1-65535 return 400.
+
+        A match must allow the requested protocol and port throughout the entire
+        CIDR,
+        not merely overlap it. An IP address is treated as a /32 or /128 CIDR.
+        All-port rules match every requested port. If protocol or port is
+        omitted,
+        any single protocol/port combination covering the entire destination
+        matches.
+        Complementary subnets granting that same access are normalized into a
+        covering
+        rule. Permissions from different policies are never combined for search.
+        Empty policies do not match. Filtering happens before pagination, and
+        results
+        retain the same order, summary, timestamp, and tags as the normal
+        listing.
+
+        Args:
+            search: IP or CIDR search, optionally qualified by TCP/UDP and a
+                destination port.
+            limit: Maximum number of results to return. Invalid values raise
+                400 error.
+            offset: Number of results to skip. Invalid values raise 400
+                error.
+        """
+        spec = operations.build_list_network_policies(
+            search=search, limit=limit, offset=offset
+        )
+        self.log_request(spec)
+        response = self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_list_network_policies(response)
+
+    def create_network_policy(
+        self, cidrs: list[NetworkPolicyCIDRRule]
+    ) -> NetworkPolicy:
+        """Create a network policy.
+
+        Creates a policy with immutable rules in the caller's namespace.
+        Requires ``network_policy`` permission.
+
+        **Rules**
+
+        - Each rule allows a CIDR for the selected protocol and ports. An empty
+          or
+          omitted port list allows all ports.
+
+        - ICMP is allowed to every listed CIDR, regardless of protocol or ports.
+        - An empty rules array (``cidrs: []``) blocks all IP egress, including
+          ICMP
+          and traffic to the host.
+
+        - ARP is blocked for all policies.
+
+        **Limits**
+
+        The same limit of 16384 units applies before and after normalization.
+        Sum the number of ports across all rules, counting an empty or omitted
+        port list (all ports) as 1. The limit covers the entire policy, across
+        all IP versions and protocols.
+        Duplicates count toward the limit before normalization. Exceeding the
+        limit returns 400, even if normalization would remove redundant rules or
+        ports.
+
+        **Normalization**
+
+        Before storage, duplicate rules and ports are removed, CIDRs are merged
+        per protocol and port, and rules and ports are sorted. This preserves
+        the
+        allowed traffic. The response contains the normalized rules.
+
+        **Policy identity**
+
+        Equivalent normalized policies in the same namespace reuse the same
+        UUID,
+        including concurrent requests. The UUID is UUIDv5 derived from the
+        namespace
+        and the normalized policy hash. Resubmitting a deleted policy restores
+        it
+        without restoring its tags. To change the rules, create a new policy.
+        """
+        spec = operations.build_create_network_policy(cidrs=cidrs)
+        self.log_request(spec)
+        response = self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_create_network_policy(response)
+
+    def get_network_policy(self, uuid: str) -> NetworkPolicy:
+        """Get a network policy.
+
+        Returns an accessible policy, including deleted policies.
+        Returns 404 if the policy does not exist.
+        Requires ``spawn`` or ``spawn_disposable`` permission.
+
+        Args:
+            uuid: Network policy UUID Example:
+                ``12345678-9abc-baba-deda-0123456789ab``.
+        """
+        spec = operations.build_get_network_policy(uuid=uuid)
+        self.log_request(spec)
+        response = self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_get_network_policy(response)
+
+    def delete_network_policy(self, uuid: str) -> None:
+        """Remove a network policy.
+
+        Removes a policy in your namespace. Requires ``network_policy``
+        permission.
+        Returns 204 if the policy is removed or was already removed.
+        Returns 404 if the policy does not exist in your namespace.
+        Removes its tags and excludes it from listings. The policy remains
+        accessible
+        and usable by UUID, but cannot be assigned to tags.
+
+        Args:
+            uuid: Network policy UUID Example:
+                ``12345678-9abc-baba-deda-0123456789ab``.
+        """
+        spec = operations.build_delete_network_policy(uuid=uuid)
+        self.log_request(spec)
+        response = self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_delete_network_policy(response)
+
+    def list_network_policy_tags(
+        self, *, limit: int | None = None, offset: int | None = None
+    ) -> ListNetworkPolicyTagsResponse:
+        """List network policy tags.
+
+        Returns your tags and shared tags, ordered by name. Your tag takes
+        precedence
+        when a shared tag has the same name. Requires ``spawn`` or
+        ``spawn_disposable`` permission.
+
+        Args:
+            limit: Maximum number of results to return. Invalid values raise
+                400 error.
+            offset: Number of results to skip. Invalid values raise 400
+                error.
+        """
+        spec = operations.build_list_network_policy_tags(limit=limit, offset=offset)
+        self.log_request(spec)
+        response = self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_list_network_policy_tags(response)
+
+    def get_network_policy_tag(self, tag: str) -> NetworkPolicyTag:
+        """Get a network policy tag.
+
+        Redirects to the policy referenced by your tag, or the shared tag if you
+        have no tag with that name.
+        The redirect response includes the effective tag binding as JSON.
+        Requires ``spawn`` or ``spawn_disposable`` permission. Returns 404 if
+        the tag or its target
+        policy does not exist or is removed.
+
+        Args:
+            tag: Network policy tag name
+        """
+        spec = operations.build_get_network_policy_tag(tag=tag)
+        self.log_request(spec)
+        response = self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_get_network_policy_tag(response)
+
+    def set_network_policy_tag(self, tag: str, uuid: str) -> NetworkPolicyTag:
+        """Bind a tag to a network policy.
+
+        Creates or replaces your tag's binding to an active policy in your
+        namespace or the shared namespace.
+        Repeating the same binding has no effect. Returns 404 if the target
+        policy
+        does not exist, is inaccessible, or is removed. The tag belongs to your
+        namespace.
+        Requires ``network_policy`` permission.
+
+        Args:
+            tag: Network policy tag name
+        """
+        spec = operations.build_set_network_policy_tag(tag=tag, uuid=uuid)
+        self.log_request(spec)
+        response = self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_set_network_policy_tag(response)
+
+    def delete_network_policy_tag(self, tag: str) -> None:
+        """Remove a network policy tag.
+
+        Removes your tag, including when operations use its policy. Repeated
+        deletion succeeds.
+        If a shared tag has the same name, it becomes visible again.
+        Requires ``network_policy`` permission.
+
+        Args:
+            tag: Network policy tag name
+        """
+        spec = operations.build_delete_network_policy_tag(tag=tag)
+        self.log_request(spec)
+        response = self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_delete_network_policy_tag(response)
 
     def list_images(
         self,
@@ -2782,6 +3030,249 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
             return await self.get_file(digest)
         except NotFoundError:
             return await self.upload_file(content)
+
+    async def list_network_policies(
+        self,
+        *,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> NetworkPolicyListResponse:
+        """List network policies.
+
+        Returns policies in your namespace and the shared namespace. Deleted
+        policies are excluded.
+        Reusing or restoring a policy does not change its creation time or
+        listing position.
+        Each entry contains the policy UUID, creation timestamp, accessible
+        tags, and a summary
+        with the number of IP rules. Tags are sorted by name. Your tag takes
+        precedence over
+        a shared tag with the same name; the overridden shared binding is
+        omitted.
+        Use ``GET /network/policies/{uuid}`` to retrieve the full rules.
+        Requires ``spawn`` or ``spawn_disposable`` permission.
+
+        Search:
+        Supply ``search`` to find active policies in your namespace and the
+        shared namespace
+        that allow the destination. The input determines the search type;
+        currently only IPv4
+        and IPv6 addresses and CIDRs are supported. Domains and other
+        unsupported inputs
+        return 400. An omitted search parameter lists policies normally; an
+        empty value
+        returns 400.
+
+        Use ``[tcp://|udp://]address-or-cidr[:port]``. IPv6 addresses and CIDRs
+        must be
+        enclosed in brackets when specifying a port, with the prefix length
+        inside
+        the brackets. Examples: ``192.0.2.1``, ``192.0.2.0/24:443``,
+        ``tcp://192.0.2.0/24:443``, and ``udp://[2001:db8::/64]:53``.
+        This is search syntax, not a URL. CIDRs must use their network address;
+        host bits, scoped IPv6 addresses, and ports outside 1-65535 return 400.
+
+        A match must allow the requested protocol and port throughout the entire
+        CIDR,
+        not merely overlap it. An IP address is treated as a /32 or /128 CIDR.
+        All-port rules match every requested port. If protocol or port is
+        omitted,
+        any single protocol/port combination covering the entire destination
+        matches.
+        Complementary subnets granting that same access are normalized into a
+        covering
+        rule. Permissions from different policies are never combined for search.
+        Empty policies do not match. Filtering happens before pagination, and
+        results
+        retain the same order, summary, timestamp, and tags as the normal
+        listing.
+
+        Args:
+            search: IP or CIDR search, optionally qualified by TCP/UDP and a
+                destination port.
+            limit: Maximum number of results to return. Invalid values raise
+                400 error.
+            offset: Number of results to skip. Invalid values raise 400
+                error.
+        """
+        spec = operations.build_list_network_policies(
+            search=search, limit=limit, offset=offset
+        )
+        self.log_request(spec)
+        response = await self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_list_network_policies(response)
+
+    async def create_network_policy(
+        self, cidrs: list[NetworkPolicyCIDRRule]
+    ) -> NetworkPolicy:
+        """Create a network policy.
+
+        Creates a policy with immutable rules in the caller's namespace.
+        Requires ``network_policy`` permission.
+
+        **Rules**
+
+        - Each rule allows a CIDR for the selected protocol and ports. An empty
+          or
+          omitted port list allows all ports.
+
+        - ICMP is allowed to every listed CIDR, regardless of protocol or ports.
+        - An empty rules array (``cidrs: []``) blocks all IP egress, including
+          ICMP
+          and traffic to the host.
+
+        - ARP is blocked for all policies.
+
+        **Limits**
+
+        The same limit of 16384 units applies before and after normalization.
+        Sum the number of ports across all rules, counting an empty or omitted
+        port list (all ports) as 1. The limit covers the entire policy, across
+        all IP versions and protocols.
+        Duplicates count toward the limit before normalization. Exceeding the
+        limit returns 400, even if normalization would remove redundant rules or
+        ports.
+
+        **Normalization**
+
+        Before storage, duplicate rules and ports are removed, CIDRs are merged
+        per protocol and port, and rules and ports are sorted. This preserves
+        the
+        allowed traffic. The response contains the normalized rules.
+
+        **Policy identity**
+
+        Equivalent normalized policies in the same namespace reuse the same
+        UUID,
+        including concurrent requests. The UUID is UUIDv5 derived from the
+        namespace
+        and the normalized policy hash. Resubmitting a deleted policy restores
+        it
+        without restoring its tags. To change the rules, create a new policy.
+        """
+        spec = operations.build_create_network_policy(cidrs=cidrs)
+        self.log_request(spec)
+        response = await self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_create_network_policy(response)
+
+    async def get_network_policy(self, uuid: str) -> NetworkPolicy:
+        """Get a network policy.
+
+        Returns an accessible policy, including deleted policies.
+        Returns 404 if the policy does not exist.
+        Requires ``spawn`` or ``spawn_disposable`` permission.
+
+        Args:
+            uuid: Network policy UUID Example:
+                ``12345678-9abc-baba-deda-0123456789ab``.
+        """
+        spec = operations.build_get_network_policy(uuid=uuid)
+        self.log_request(spec)
+        response = await self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_get_network_policy(response)
+
+    async def delete_network_policy(self, uuid: str) -> None:
+        """Remove a network policy.
+
+        Removes a policy in your namespace. Requires ``network_policy``
+        permission.
+        Returns 204 if the policy is removed or was already removed.
+        Returns 404 if the policy does not exist in your namespace.
+        Removes its tags and excludes it from listings. The policy remains
+        accessible
+        and usable by UUID, but cannot be assigned to tags.
+
+        Args:
+            uuid: Network policy UUID Example:
+                ``12345678-9abc-baba-deda-0123456789ab``.
+        """
+        spec = operations.build_delete_network_policy(uuid=uuid)
+        self.log_request(spec)
+        response = await self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_delete_network_policy(response)
+
+    async def list_network_policy_tags(
+        self, *, limit: int | None = None, offset: int | None = None
+    ) -> ListNetworkPolicyTagsResponse:
+        """List network policy tags.
+
+        Returns your tags and shared tags, ordered by name. Your tag takes
+        precedence
+        when a shared tag has the same name. Requires ``spawn`` or
+        ``spawn_disposable`` permission.
+
+        Args:
+            limit: Maximum number of results to return. Invalid values raise
+                400 error.
+            offset: Number of results to skip. Invalid values raise 400
+                error.
+        """
+        spec = operations.build_list_network_policy_tags(limit=limit, offset=offset)
+        self.log_request(spec)
+        response = await self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_list_network_policy_tags(response)
+
+    async def get_network_policy_tag(self, tag: str) -> NetworkPolicyTag:
+        """Get a network policy tag.
+
+        Redirects to the policy referenced by your tag, or the shared tag if you
+        have no tag with that name.
+        The redirect response includes the effective tag binding as JSON.
+        Requires ``spawn`` or ``spawn_disposable`` permission. Returns 404 if
+        the tag or its target
+        policy does not exist or is removed.
+
+        Args:
+            tag: Network policy tag name
+        """
+        spec = operations.build_get_network_policy_tag(tag=tag)
+        self.log_request(spec)
+        response = await self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_get_network_policy_tag(response)
+
+    async def set_network_policy_tag(self, tag: str, uuid: str) -> NetworkPolicyTag:
+        """Bind a tag to a network policy.
+
+        Creates or replaces your tag's binding to an active policy in your
+        namespace or the shared namespace.
+        Repeating the same binding has no effect. Returns 404 if the target
+        policy
+        does not exist, is inaccessible, or is removed. The tag belongs to your
+        namespace.
+        Requires ``network_policy`` permission.
+
+        Args:
+            tag: Network policy tag name
+        """
+        spec = operations.build_set_network_policy_tag(tag=tag, uuid=uuid)
+        self.log_request(spec)
+        response = await self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_set_network_policy_tag(response)
+
+    async def delete_network_policy_tag(self, tag: str) -> None:
+        """Remove a network policy tag.
+
+        Removes your tag, including when operations use its policy. Repeated
+        deletion succeeds.
+        If a shared tag has the same name, it becomes visible again.
+        Requires ``network_policy`` permission.
+
+        Args:
+            tag: Network policy tag name
+        """
+        spec = operations.build_delete_network_policy_tag(tag=tag)
+        self.log_request(spec)
+        response = await self.call(spec)
+        self.log_response(spec, response)
+        return operations.parse_delete_network_policy_tag(response)
 
     async def list_images(
         self,

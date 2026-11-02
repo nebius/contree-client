@@ -17,6 +17,11 @@ import type {
   InstanceResourcesLimits,
   InstanceResult,
   InstanceSpawnResponse,
+  ListNetworkPolicyTagsResponse,
+  NetworkPolicy,
+  NetworkPolicyCIDRRule,
+  NetworkPolicyListResponse,
+  NetworkPolicyTag,
   OperationEvent,
   OperationResponse,
   OperationStatus,
@@ -101,6 +106,21 @@ export declare class ContreeClient {
     pageSize?: number;
     limit?: number | null;
   }): AsyncGenerator<File>;
+  listNetworkPolicies(options?: {
+    search?: string | null;
+    limit?: number | null;
+    offset?: number | null;
+  }): Promise<NetworkPolicyListResponse>;
+  createNetworkPolicy(cidrs: NetworkPolicyCIDRRule[]): Promise<NetworkPolicy>;
+  getNetworkPolicy(uuid: string): Promise<NetworkPolicy>;
+  deleteNetworkPolicy(uuid: string): Promise<null>;
+  listNetworkPolicyTags(options?: {
+    limit?: number | null;
+    offset?: number | null;
+  }): Promise<ListNetworkPolicyTagsResponse>;
+  getNetworkPolicyTag(tag: string): Promise<NetworkPolicyTag>;
+  setNetworkPolicyTag(tag: string, uuid: string): Promise<NetworkPolicyTag>;
+  deleteNetworkPolicyTag(tag: string): Promise<null>;
   listImages(options?: {
     limit?: number | null;
     offset?: number | null;

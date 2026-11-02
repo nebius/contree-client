@@ -46,7 +46,7 @@ def sanitize_doc(text: str, escape: bool = True) -> str:
     """Prepare a spec description for a docstring or reST document."""
     if escape:
         text = text.replace("\\", "\\\\").replace('"""', '\\"""')
-    text = text.replace("\u2011", "-")
+    text = text.replace("\u2011", "-").replace("\u2013", "-")
     return INLINE_CODE_RE.sub(r"``\1``", text)
 
 

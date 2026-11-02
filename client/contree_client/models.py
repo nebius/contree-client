@@ -865,6 +865,212 @@ class InstanceNetworking(ContreeModel):
             "default": True,
         },
     )
+    policy: list[str] | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Network policies to apply, referenced by UUID or by tag prefixed with "
+                "`tag:`.\n\n**References**\n\n- You can use your own policies and "
+                "shared policies.\n- Your tag takes precedence over a shared tag with "
+                "the same name.\n- Duplicate references and resolved policy UUIDs are "
+                "removed while preserving first occurrence order.\n- Unknown or "
+                "unavailable references return 404.\n- Deleted policies remain usable "
+                "by UUID.\n\n**Permissions**\n\nUsing policies requires only the "
+                "permission to create the instance;\n`network_policy` is not "
+                "required.\n\n**Limits**\n\n- At most 512 references may be supplied, "
+                "including duplicates.\n- Before and after merging, the rules are "
+                "limited to 16384 units in total:\n  sum the number of ports across "
+                "all rules, counting an all-port rule as 1.\n  All IP versions and "
+                "protocols share this limit. Repeated rules and ports\n  across "
+                "policies count again before merging.\n- Exceeding either limit "
+                "returns 400.\n\n**No policies**\n\nOmitting this field or passing "
+                "`policy: []` allows all IPv4 destinations and\nglobal unicast IPv6 "
+                "destinations on all ports.\nThe API adds four explicit rules to "
+                "`effective_policy`:\nTCP and UDP for IPv4 `0.0.0.0/0` and IPv6 "
+                "`2000::/3`, each with `ports: []`\n(all ports). ICMP is also allowed "
+                "to these destinations.\nIPv6 destinations outside `2000::/3`, "
+                "including unique-local and link-local\naddresses, require explicit "
+                "policy rules.\n\n**Empty policies**\n\nA selected policy with no "
+                'rules (`{"cidrs": []}`) allows nothing.\nIf all selected policies are '
+                'empty, `effective_policy` is `{"cidrs": []}`\nand all network traffic '
+                "is denied.\nAn empty policy combined with non-empty policies adds no "
+                "permissions;\nthe other policies' rules still apply.\n\n**Effective "
+                "policy**\n\n`effective_policy` contains the final combined network "
+                "rules that will be\napplied to the operation.\nRules are combined by "
+                "merging CIDRs per protocol and port, then grouping\nports for "
+                "matching CIDRs and protocols."
+            ),
+            "example": ["12345678-9abc-baba-deda-0123456789ab", "tag:github"],
+            "default": [],
+        },
+    )
+
+
+@dataclass
+class NetworkPolicyCIDRRule(ContreeModel):
+    cidr: str = field(
+        metadata={
+            "description": "IPv4 or IPv6 destination network in CIDR notation.",
+            "example": "192.0.2.0/24",
+        }
+    )
+    proto: Literal["tcp", "udp"]
+    ports: list[int] | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Allowed destination ports. Omitted or empty means all ports."
+            ),
+            "default": [],
+        },
+    )
+
+
+@dataclass
+class NetworkPolicyCreateRequest(ContreeModel):
+    """An allowlist of destination networks, protocols, and ports. A policy
+    with ``{"cidrs": []}``.
+
+    allows nothing. Selecting only empty policies denies all network
+    traffic.
+    This differs from selecting no policies (``networking.policy: []``),
+    which allows
+    all IPv4 destinations (``0.0.0.0/0``) and global unicast IPv6
+    destinations (``2000::/3``)
+    on all ports and adds these explicit rules to ``effective_policy``.
+    """
+
+    cidrs: list[NetworkPolicyCIDRRule]
+
+    @classmethod
+    def parse_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "cidrs": [NetworkPolicyCIDRRule.from_dict(item) for item in data["cidrs"]],
+        }
+
+
+@dataclass
+class InstanceNetworkingResponse(ContreeModel):
+    enabled: bool | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Enable network access for the instance. When `false`, the VM starts "
+                "without a guest network interface."
+            ),
+            "default": True,
+        },
+    )
+    policy: list[str] | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Unique applied policy UUIDs in first occurrence order. Tag references "
+                "are returned as UUIDs."
+            )
+        },
+    )
+    effective_policy: NetworkPolicyCreateRequest | None | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "The final combined network rules that will be applied to the "
+                "operation.\nNew instances always include an explicit effective "
+                "policy, including when\nno policy references are specified. Omitting "
+                "`networking.policy` or passing\n`policy: []` allows all IPv4 and "
+                "global unicast IPv6 destinations on all ports:\nthis field contains "
+                "four rules, TCP and UDP for both `0.0.0.0/0` (IPv4)\nand `2000::/3` "
+                "(IPv6), with `ports: []` on each rule.\nICMP is also allowed to these "
+                "destinations.\nIPv6 destinations outside `2000::/3` require explicit "
+                'policy rules.\nSelecting only empty policies (`{"cidrs": []}`) '
+                'instead produces `{"cidrs": []}`,\nwhich denies all network traffic. '
+                "Empty policies add no permissions when\ncombined with non-empty "
+                "policies.\nHistorical instance metadata may omit this field or "
+                "contain null."
+            )
+        },
+    )
+
+    @classmethod
+    def parse_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "enabled": data.get("enabled", ...),
+            "policy": data.get("policy", ...),
+            "effective_policy": (
+                NetworkPolicyCreateRequest.from_dict(data["effective_policy"])
+            )
+            if data.get("effective_policy") is not None
+            else data.get("effective_policy", ...),
+        }
+
+
+@dataclass
+class NetworkPolicyTag(ContreeModel):
+    tag: str = field(metadata={"description": "Network policy tag name"})
+    uuid: str
+
+
+@dataclass
+class NetworkPolicy(ContreeModel):
+    uuid: str
+    cidrs: list[NetworkPolicyCIDRRule]
+
+    @classmethod
+    def parse_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "uuid": data["uuid"],
+            "cidrs": [NetworkPolicyCIDRRule.from_dict(item) for item in data["cidrs"]],
+        }
+
+
+@dataclass
+class NetworkPolicyListItemSummary(ContreeModel):
+    cidrs: int = field(
+        metadata={
+            "description": (
+                "Number of CIDR rules in the policy, including repeated CIDRs."
+            )
+        }
+    )
+
+
+@dataclass
+class NetworkPolicyListItem(ContreeModel):
+    uuid: str
+    created_at: datetime = field(
+        metadata={"description": "Time when the policy was created."}
+    )
+    tags: list[str] = field(
+        metadata={
+            "description": (
+                "Accessible tag names resolving to this policy, sorted by name. Empty "
+                "when none exist."
+            )
+        }
+    )
+    summary: NetworkPolicyListItemSummary
+
+    @classmethod
+    def parse_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "uuid": data["uuid"],
+            "created_at": parse_datetime(data["created_at"]),
+            "tags": data["tags"],
+            "summary": NetworkPolicyListItemSummary.from_dict(data["summary"]),
+        }
+
+
+@dataclass
+class NetworkPolicyListResponse(ContreeModel):
+    policies: list[NetworkPolicyListItem]
+
+    @classmethod
+    def parse_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "policies": [
+                NetworkPolicyListItem.from_dict(item) for item in data["policies"]
+            ],
+        }
 
 
 @dataclass
@@ -1334,7 +1540,7 @@ class InstanceSpawnResponse(ContreeModel):
     uid: int | EllipsisType = ...
     gid: int | EllipsisType = ...
     resources_limits: InstanceResourcesLimits | EllipsisType = ...
-    networking: InstanceNetworking | EllipsisType = ...
+    networking: InstanceNetworkingResponse | EllipsisType = ...
     stdin: ClosableStreamRepr | EllipsisType = ...
     timeout: int | EllipsisType = ...
     truncate_output_at: int | EllipsisType = ...
@@ -1361,7 +1567,7 @@ class InstanceSpawnResponse(ContreeModel):
             )
             if data.get("resources_limits") is not None
             else data.get("resources_limits", ...),
-            "networking": (InstanceNetworking.from_dict(data["networking"]))
+            "networking": (InstanceNetworkingResponse.from_dict(data["networking"]))
             if data.get("networking") is not None
             else data.get("networking", ...),
             "stdin": (ClosableStreamRepr.from_dict(data["stdin"]))
@@ -1607,7 +1813,7 @@ class OperationInstanceMetadata(ContreeModel):
         },
     )
     resources_limits: InstanceResourcesLimits | EllipsisType = ...
-    networking: InstanceNetworking | EllipsisType = ...
+    networking: InstanceNetworkingResponse | EllipsisType = ...
     stdin: ClosableStreamRepr | EllipsisType = ...
     timeout: int | EllipsisType = field(
         default=...,
@@ -1669,7 +1875,7 @@ class OperationInstanceMetadata(ContreeModel):
             )
             if data.get("resources_limits") is not None
             else data.get("resources_limits", ...),
-            "networking": (InstanceNetworking.from_dict(data["networking"]))
+            "networking": (InstanceNetworkingResponse.from_dict(data["networking"]))
             if data.get("networking") is not None
             else data.get("networking", ...),
             "stdin": (ClosableStreamRepr.from_dict(data["stdin"]))
@@ -1897,6 +2103,7 @@ class WhoAmIResponse(ContreeModel):
                 "list": True,
                 "cancel": False,
                 "set_image_tag": False,
+                "network_policy": False,
             },
         }
     )
@@ -2701,6 +2908,17 @@ class EventDataCompletion(ContreeModel):
             "image_size_bytes": data.get("image_size_bytes", ...),
             "consumed_cpu": data.get("consumed_cpu", ...),
             "consumed_memory": data.get("consumed_memory", ...),
+        }
+
+
+@dataclass
+class ListNetworkPolicyTagsResponse(ContreeModel):
+    tags: list[NetworkPolicyTag]
+
+    @classmethod
+    def parse_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "tags": [NetworkPolicyTag.from_dict(item) for item in data["tags"]],
         }
 
 

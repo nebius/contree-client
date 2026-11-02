@@ -29,6 +29,12 @@ from .models import (
     InstanceResult,
     InstanceSpawnRequest,
     InstanceSpawnResponse,
+    ListNetworkPolicyTagsResponse,
+    NetworkPolicy,
+    NetworkPolicyCIDRRule,
+    NetworkPolicyCreateRequest,
+    NetworkPolicyListResponse,
+    NetworkPolicyTag,
     OperationResponse,
     OperationStatus,
     OperationSummary,
@@ -43,6 +49,143 @@ from .runtime import (
     json_object,
     quote_path,
 )
+
+
+def build_list_network_policies(
+    *, search: str | None = None, limit: int | None = None, offset: int | None = None
+) -> RequestSpec:
+    """Build the request for `GET /network/policies`."""
+    query: dict[str, str] = {}
+    if search is not None:
+        query["search"] = search
+    if limit is not None:
+        query["limit"] = str(limit)
+    if offset is not None:
+        query["offset"] = str(offset)
+    request_path = "/network/policies"
+    return RequestSpec(method="GET", path=request_path, idempotent=True, query=query)
+
+
+def parse_list_network_policies(response: ResponseData) -> NetworkPolicyListResponse:
+    """Parse the response of `GET /network/policies`."""
+    if 200 <= response.status < 300:
+        return NetworkPolicyListResponse.from_dict(json_object(response))
+    raise ValueError(f"unexpected HTTP status {response.status}")
+
+
+def build_create_network_policy(cidrs: list[NetworkPolicyCIDRRule]) -> RequestSpec:
+    """Build the request for `POST /network/policies`."""
+    payload = NetworkPolicyCreateRequest(cidrs=cidrs).to_dict()
+    request_path = "/network/policies"
+    return RequestSpec(
+        method="POST",
+        path=request_path,
+        idempotent=False,
+        body=json.dumps(payload).encode(),
+        content_type="application/json",
+    )
+
+
+def parse_create_network_policy(response: ResponseData) -> NetworkPolicy:
+    """Parse the response of `POST /network/policies`."""
+    if 200 <= response.status < 300:
+        return NetworkPolicy.from_dict(json_object(response))
+    raise ValueError(f"unexpected HTTP status {response.status}")
+
+
+def build_get_network_policy(uuid: str) -> RequestSpec:
+    """Build the request for `GET /network/policies/{uuid}`."""
+    request_path = f"/network/policies/{quote_path(uuid)}"
+    return RequestSpec(method="GET", path=request_path, idempotent=True)
+
+
+def parse_get_network_policy(response: ResponseData) -> NetworkPolicy:
+    """Parse the response of `GET /network/policies/{uuid}`."""
+    if 200 <= response.status < 300:
+        return NetworkPolicy.from_dict(json_object(response))
+    raise ValueError(f"unexpected HTTP status {response.status}")
+
+
+def build_delete_network_policy(uuid: str) -> RequestSpec:
+    """Build the request for `DELETE /network/policies/{uuid}`."""
+    request_path = f"/network/policies/{quote_path(uuid)}"
+    return RequestSpec(method="DELETE", path=request_path, idempotent=True)
+
+
+def parse_delete_network_policy(response: ResponseData) -> None:
+    """Parse the response of `DELETE /network/policies/{uuid}`."""
+    if 200 <= response.status < 300:
+        return
+    raise ValueError(f"unexpected HTTP status {response.status}")
+
+
+def build_list_network_policy_tags(
+    *, limit: int | None = None, offset: int | None = None
+) -> RequestSpec:
+    """Build the request for `GET /network/tags`."""
+    query: dict[str, str] = {}
+    if limit is not None:
+        query["limit"] = str(limit)
+    if offset is not None:
+        query["offset"] = str(offset)
+    request_path = "/network/tags"
+    return RequestSpec(method="GET", path=request_path, idempotent=True, query=query)
+
+
+def parse_list_network_policy_tags(
+    response: ResponseData,
+) -> ListNetworkPolicyTagsResponse:
+    """Parse the response of `GET /network/tags`."""
+    if 200 <= response.status < 300:
+        return ListNetworkPolicyTagsResponse.from_dict(json_object(response))
+    raise ValueError(f"unexpected HTTP status {response.status}")
+
+
+def build_get_network_policy_tag(tag: str) -> RequestSpec:
+    """Build the request for `GET /network/tags/{tag}`."""
+    request_path = f"/network/tags/{quote_path(tag)}"
+    return RequestSpec(method="GET", path=request_path, idempotent=True)
+
+
+def parse_get_network_policy_tag(response: ResponseData) -> NetworkPolicyTag:
+    """Parse the response of `GET /network/tags/{tag}`."""
+    if response.status == 302:
+        return NetworkPolicyTag.from_dict(json_object(response))
+    raise ValueError(f"unexpected HTTP status {response.status}")
+
+
+def build_set_network_policy_tag(tag: str, uuid: str) -> RequestSpec:
+    """Build the request for `PUT /network/tags/{tag}`."""
+    payload: dict[str, Any] = {}
+    payload["uuid"] = uuid
+    request_path = f"/network/tags/{quote_path(tag)}"
+    return RequestSpec(
+        method="PUT",
+        path=request_path,
+        idempotent=True,
+        body=json.dumps(payload).encode(),
+        content_type="application/json",
+    )
+
+
+def parse_set_network_policy_tag(response: ResponseData) -> NetworkPolicyTag:
+    """Parse the response of `PUT /network/tags/{tag}`."""
+    if 200 <= response.status < 300:
+        return NetworkPolicyTag.from_dict(json_object(response))
+    raise ValueError(f"unexpected HTTP status {response.status}")
+
+
+def build_delete_network_policy_tag(tag: str) -> RequestSpec:
+    """Build the request for `DELETE /network/tags/{tag}`."""
+    request_path = f"/network/tags/{quote_path(tag)}"
+    return RequestSpec(method="DELETE", path=request_path, idempotent=True)
+
+
+def parse_delete_network_policy_tag(response: ResponseData) -> None:
+    """Parse the response of `DELETE /network/tags/{tag}`."""
+    if 200 <= response.status < 300:
+        return
+    raise ValueError(f"unexpected HTTP status {response.status}")
 
 
 def build_list_images(

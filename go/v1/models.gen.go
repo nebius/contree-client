@@ -275,6 +275,12 @@ const ClosableStreamReprEncodingAscii = "ascii"
 // ClosableStreamReprEncodingBase64 is a documented ClosableStreamReprEncoding value.
 const ClosableStreamReprEncodingBase64 = "base64"
 
+// NetworkPolicyCidrRuleProtoTcp is a documented NetworkPolicyCidrRuleProto value.
+const NetworkPolicyCidrRuleProtoTcp = "tcp"
+
+// NetworkPolicyCidrRuleProtoUdp is a documented NetworkPolicyCidrRuleProto value.
+const NetworkPolicyCidrRuleProtoUdp = "udp"
+
 // OperationSummaryKindImageImport is a documented OperationSummaryKind value.
 const OperationSummaryKindImageImport = "image_import"
 
@@ -1932,15 +1938,21 @@ func (m *ProcessResourcesLimits) UnmarshalJSON(data []byte) error {
 
 // InstanceNetworking is generated from the InstanceNetworking schema.
 type InstanceNetworking struct {
-	Enabled Optional[bool] `json:"enabled"`
+	Enabled Optional[bool]     `json:"enabled"`
+	Policy  Optional[[]string] `json:"policy"`
 }
 
 // MarshalJSON encodes InstanceNetworking with exact wire names.
 func (m InstanceNetworking) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 1)
+	object := make(map[string]json.RawMessage, 2)
 	if m.Enabled.IsSet() {
 		if err := putJSONField(object, "enabled", m.Enabled); err != nil {
 			return nil, fmt.Errorf("marshal InstanceNetworking.enabled: %w", err)
+		}
+	}
+	if m.Policy.IsSet() {
+		if err := putJSONField(object, "policy", m.Policy); err != nil {
+			return nil, fmt.Errorf("marshal InstanceNetworking.policy: %w", err)
 		}
 	}
 	return json.Marshal(object)
@@ -1964,6 +1976,470 @@ func (m *InstanceNetworking) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(rawEnabled, &decoded.Enabled); err != nil {
 			return fmt.Errorf("unmarshal InstanceNetworking.enabled: %w", err)
 		}
+	}
+	rawPolicy, ok := object["policy"]
+	if ok {
+		if err := json.Unmarshal(rawPolicy, &decoded.Policy); err != nil {
+			return fmt.Errorf("unmarshal InstanceNetworking.policy: %w", err)
+		}
+	}
+	*m = decoded
+	return nil
+}
+
+// NetworkPolicyCidrRule is generated from the NetworkPolicyCIDRRule schema.
+type NetworkPolicyCidrRule struct {
+	Cidr  string            `json:"cidr"`
+	Proto string            `json:"proto"`
+	Ports Optional[[]int64] `json:"ports"`
+}
+
+// MarshalJSON encodes NetworkPolicyCidrRule with exact wire names.
+func (m NetworkPolicyCidrRule) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 3)
+	if err := putJSONField(object, "cidr", m.Cidr); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyCIDRRule.cidr: %w", err)
+	}
+	if err := putJSONField(object, "proto", m.Proto); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyCIDRRule.proto: %w", err)
+	}
+	if m.Ports.IsSet() {
+		if err := putJSONField(object, "ports", m.Ports); err != nil {
+			return nil, fmt.Errorf("marshal NetworkPolicyCIDRRule.ports: %w", err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes NetworkPolicyCidrRule and checks required fields.
+func (m *NetworkPolicyCidrRule) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal NetworkPolicyCIDRRule into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyCIDRRule: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("NetworkPolicyCIDRRule must be a JSON object")
+	}
+	var decoded NetworkPolicyCidrRule
+	rawCidr, ok := object["cidr"]
+	if !ok {
+		return fmt.Errorf("missing required field cidr")
+	}
+	if isJSONNull(rawCidr) {
+		return fmt.Errorf("field cidr must not be null")
+	}
+	if err := json.Unmarshal(rawCidr, &decoded.Cidr); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyCIDRRule.cidr: %w", err)
+	}
+	rawProto, ok := object["proto"]
+	if !ok {
+		return fmt.Errorf("missing required field proto")
+	}
+	if isJSONNull(rawProto) {
+		return fmt.Errorf("field proto must not be null")
+	}
+	if err := json.Unmarshal(rawProto, &decoded.Proto); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyCIDRRule.proto: %w", err)
+	}
+	rawPorts, ok := object["ports"]
+	if ok {
+		if err := json.Unmarshal(rawPorts, &decoded.Ports); err != nil {
+			return fmt.Errorf("unmarshal NetworkPolicyCIDRRule.ports: %w", err)
+		}
+	}
+	*m = decoded
+	return nil
+}
+
+// NetworkPolicyCreateRequest is generated from the NetworkPolicyCreateRequest schema.
+type NetworkPolicyCreateRequest struct {
+	Cidrs []NetworkPolicyCidrRule `json:"cidrs"`
+}
+
+// MarshalJSON encodes NetworkPolicyCreateRequest with exact wire names.
+func (m NetworkPolicyCreateRequest) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 1)
+	if isNilJSONValue(m.Cidrs) {
+		return nil, fmt.Errorf("marshal NetworkPolicyCreateRequest.cidrs: required field is nil")
+	}
+	if err := putJSONField(object, "cidrs", m.Cidrs); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyCreateRequest.cidrs: %w", err)
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes NetworkPolicyCreateRequest and checks required fields.
+func (m *NetworkPolicyCreateRequest) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal NetworkPolicyCreateRequest into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyCreateRequest: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("NetworkPolicyCreateRequest must be a JSON object")
+	}
+	var decoded NetworkPolicyCreateRequest
+	rawCidrs, ok := object["cidrs"]
+	if !ok {
+		return fmt.Errorf("missing required field cidrs")
+	}
+	if isJSONNull(rawCidrs) {
+		return fmt.Errorf("field cidrs must not be null")
+	}
+	if err := json.Unmarshal(rawCidrs, &decoded.Cidrs); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyCreateRequest.cidrs: %w", err)
+	}
+	*m = decoded
+	return nil
+}
+
+// InstanceNetworkingResponse is generated from the InstanceNetworkingResponse schema.
+type InstanceNetworkingResponse struct {
+	Enabled         Optional[bool]                       `json:"enabled"`
+	Policy          Optional[[]string]                   `json:"policy"`
+	EffectivePolicy Optional[NetworkPolicyCreateRequest] `json:"effective_policy"`
+}
+
+// MarshalJSON encodes InstanceNetworkingResponse with exact wire names.
+func (m InstanceNetworkingResponse) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 3)
+	if m.Enabled.IsSet() {
+		if err := putJSONField(object, "enabled", m.Enabled); err != nil {
+			return nil, fmt.Errorf("marshal InstanceNetworkingResponse.enabled: %w", err)
+		}
+	}
+	if m.Policy.IsSet() {
+		if err := putJSONField(object, "policy", m.Policy); err != nil {
+			return nil, fmt.Errorf("marshal InstanceNetworkingResponse.policy: %w", err)
+		}
+	}
+	if m.EffectivePolicy.IsSet() {
+		if err := putJSONField(object, "effective_policy", m.EffectivePolicy); err != nil {
+			return nil, fmt.Errorf("marshal InstanceNetworkingResponse.effective_policy: %w", err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes InstanceNetworkingResponse and checks required fields.
+func (m *InstanceNetworkingResponse) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal InstanceNetworkingResponse into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal InstanceNetworkingResponse: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("InstanceNetworkingResponse must be a JSON object")
+	}
+	var decoded InstanceNetworkingResponse
+	rawEnabled, ok := object["enabled"]
+	if ok {
+		if err := json.Unmarshal(rawEnabled, &decoded.Enabled); err != nil {
+			return fmt.Errorf("unmarshal InstanceNetworkingResponse.enabled: %w", err)
+		}
+	}
+	rawPolicy, ok := object["policy"]
+	if ok {
+		if err := json.Unmarshal(rawPolicy, &decoded.Policy); err != nil {
+			return fmt.Errorf("unmarshal InstanceNetworkingResponse.policy: %w", err)
+		}
+	}
+	rawEffectivePolicy, ok := object["effective_policy"]
+	if ok {
+		if err := json.Unmarshal(rawEffectivePolicy, &decoded.EffectivePolicy); err != nil {
+			return fmt.Errorf("unmarshal InstanceNetworkingResponse.effective_policy: %w", err)
+		}
+	}
+	*m = decoded
+	return nil
+}
+
+// NetworkPolicyTag is generated from the NetworkPolicyTag schema.
+type NetworkPolicyTag struct {
+	Tag  string `json:"tag"`
+	UUID string `json:"uuid"`
+}
+
+// MarshalJSON encodes NetworkPolicyTag with exact wire names.
+func (m NetworkPolicyTag) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 2)
+	if err := putJSONField(object, "tag", m.Tag); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyTag.tag: %w", err)
+	}
+	if err := putJSONField(object, "uuid", m.UUID); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyTag.uuid: %w", err)
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes NetworkPolicyTag and checks required fields.
+func (m *NetworkPolicyTag) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal NetworkPolicyTag into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyTag: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("NetworkPolicyTag must be a JSON object")
+	}
+	var decoded NetworkPolicyTag
+	rawTag, ok := object["tag"]
+	if !ok {
+		return fmt.Errorf("missing required field tag")
+	}
+	if isJSONNull(rawTag) {
+		return fmt.Errorf("field tag must not be null")
+	}
+	if err := json.Unmarshal(rawTag, &decoded.Tag); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyTag.tag: %w", err)
+	}
+	rawUUID, ok := object["uuid"]
+	if !ok {
+		return fmt.Errorf("missing required field uuid")
+	}
+	if isJSONNull(rawUUID) {
+		return fmt.Errorf("field uuid must not be null")
+	}
+	if err := json.Unmarshal(rawUUID, &decoded.UUID); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyTag.uuid: %w", err)
+	}
+	*m = decoded
+	return nil
+}
+
+// NetworkPolicy is generated from the NetworkPolicy schema.
+type NetworkPolicy struct {
+	UUID  string                  `json:"uuid"`
+	Cidrs []NetworkPolicyCidrRule `json:"cidrs"`
+}
+
+// MarshalJSON encodes NetworkPolicy with exact wire names.
+func (m NetworkPolicy) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 2)
+	if err := putJSONField(object, "uuid", m.UUID); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicy.uuid: %w", err)
+	}
+	if isNilJSONValue(m.Cidrs) {
+		return nil, fmt.Errorf("marshal NetworkPolicy.cidrs: required field is nil")
+	}
+	if err := putJSONField(object, "cidrs", m.Cidrs); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicy.cidrs: %w", err)
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes NetworkPolicy and checks required fields.
+func (m *NetworkPolicy) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal NetworkPolicy into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicy: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("NetworkPolicy must be a JSON object")
+	}
+	var decoded NetworkPolicy
+	rawUUID, ok := object["uuid"]
+	if !ok {
+		return fmt.Errorf("missing required field uuid")
+	}
+	if isJSONNull(rawUUID) {
+		return fmt.Errorf("field uuid must not be null")
+	}
+	if err := json.Unmarshal(rawUUID, &decoded.UUID); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicy.uuid: %w", err)
+	}
+	rawCidrs, ok := object["cidrs"]
+	if !ok {
+		return fmt.Errorf("missing required field cidrs")
+	}
+	if isJSONNull(rawCidrs) {
+		return fmt.Errorf("field cidrs must not be null")
+	}
+	if err := json.Unmarshal(rawCidrs, &decoded.Cidrs); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicy.cidrs: %w", err)
+	}
+	*m = decoded
+	return nil
+}
+
+// NetworkPolicyListItemSummary is generated from the NetworkPolicyListItemSummary schema.
+type NetworkPolicyListItemSummary struct {
+	Cidrs int64 `json:"cidrs"`
+}
+
+// MarshalJSON encodes NetworkPolicyListItemSummary with exact wire names.
+func (m NetworkPolicyListItemSummary) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 1)
+	if err := putJSONField(object, "cidrs", m.Cidrs); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyListItemSummary.cidrs: %w", err)
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes NetworkPolicyListItemSummary and checks required fields.
+func (m *NetworkPolicyListItemSummary) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal NetworkPolicyListItemSummary into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyListItemSummary: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("NetworkPolicyListItemSummary must be a JSON object")
+	}
+	var decoded NetworkPolicyListItemSummary
+	rawCidrs, ok := object["cidrs"]
+	if !ok {
+		return fmt.Errorf("missing required field cidrs")
+	}
+	if isJSONNull(rawCidrs) {
+		return fmt.Errorf("field cidrs must not be null")
+	}
+	if err := json.Unmarshal(rawCidrs, &decoded.Cidrs); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyListItemSummary.cidrs: %w", err)
+	}
+	*m = decoded
+	return nil
+}
+
+// NetworkPolicyListItem is generated from the NetworkPolicyListItem schema.
+type NetworkPolicyListItem struct {
+	UUID      string                       `json:"uuid"`
+	CreatedAt time.Time                    `json:"created_at"`
+	Tags      []string                     `json:"tags"`
+	Summary   NetworkPolicyListItemSummary `json:"summary"`
+}
+
+// MarshalJSON encodes NetworkPolicyListItem with exact wire names.
+func (m NetworkPolicyListItem) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 4)
+	if err := putJSONField(object, "uuid", m.UUID); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyListItem.uuid: %w", err)
+	}
+	if err := putJSONField(object, "created_at", m.CreatedAt); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyListItem.created_at: %w", err)
+	}
+	if isNilJSONValue(m.Tags) {
+		return nil, fmt.Errorf("marshal NetworkPolicyListItem.tags: required field is nil")
+	}
+	if err := putJSONField(object, "tags", m.Tags); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyListItem.tags: %w", err)
+	}
+	if err := putJSONField(object, "summary", m.Summary); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyListItem.summary: %w", err)
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes NetworkPolicyListItem and checks required fields.
+func (m *NetworkPolicyListItem) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal NetworkPolicyListItem into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyListItem: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("NetworkPolicyListItem must be a JSON object")
+	}
+	var decoded NetworkPolicyListItem
+	rawUUID, ok := object["uuid"]
+	if !ok {
+		return fmt.Errorf("missing required field uuid")
+	}
+	if isJSONNull(rawUUID) {
+		return fmt.Errorf("field uuid must not be null")
+	}
+	if err := json.Unmarshal(rawUUID, &decoded.UUID); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyListItem.uuid: %w", err)
+	}
+	rawCreatedAt, ok := object["created_at"]
+	if !ok {
+		return fmt.Errorf("missing required field created_at")
+	}
+	if isJSONNull(rawCreatedAt) {
+		return fmt.Errorf("field created_at must not be null")
+	}
+	if err := json.Unmarshal(rawCreatedAt, &decoded.CreatedAt); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyListItem.created_at: %w", err)
+	}
+	rawTags, ok := object["tags"]
+	if !ok {
+		return fmt.Errorf("missing required field tags")
+	}
+	if isJSONNull(rawTags) {
+		return fmt.Errorf("field tags must not be null")
+	}
+	if err := json.Unmarshal(rawTags, &decoded.Tags); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyListItem.tags: %w", err)
+	}
+	rawSummary, ok := object["summary"]
+	if !ok {
+		return fmt.Errorf("missing required field summary")
+	}
+	if isJSONNull(rawSummary) {
+		return fmt.Errorf("field summary must not be null")
+	}
+	if err := json.Unmarshal(rawSummary, &decoded.Summary); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyListItem.summary: %w", err)
+	}
+	*m = decoded
+	return nil
+}
+
+// NetworkPolicyListResponse is generated from the NetworkPolicyListResponse schema.
+type NetworkPolicyListResponse struct {
+	Policies []NetworkPolicyListItem `json:"policies"`
+}
+
+// MarshalJSON encodes NetworkPolicyListResponse with exact wire names.
+func (m NetworkPolicyListResponse) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 1)
+	if isNilJSONValue(m.Policies) {
+		return nil, fmt.Errorf("marshal NetworkPolicyListResponse.policies: required field is nil")
+	}
+	if err := putJSONField(object, "policies", m.Policies); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyListResponse.policies: %w", err)
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes NetworkPolicyListResponse and checks required fields.
+func (m *NetworkPolicyListResponse) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal NetworkPolicyListResponse into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyListResponse: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("NetworkPolicyListResponse must be a JSON object")
+	}
+	var decoded NetworkPolicyListResponse
+	rawPolicies, ok := object["policies"]
+	if !ok {
+		return fmt.Errorf("missing required field policies")
+	}
+	if isJSONNull(rawPolicies) {
+		return fmt.Errorf("field policies must not be null")
+	}
+	if err := json.Unmarshal(rawPolicies, &decoded.Policies); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyListResponse.policies: %w", err)
 	}
 	*m = decoded
 	return nil
@@ -2882,25 +3358,25 @@ func (m *InstanceResult) UnmarshalJSON(data []byte) error {
 
 // InstanceSpawnResponse is generated from the InstanceSpawnResponse schema.
 type InstanceSpawnResponse struct {
-	UUID             Optional[string]                  `json:"uuid"`
-	Command          Optional[string]                  `json:"command"`
-	Image            Optional[string]                  `json:"image"`
-	Hostname         Optional[string]                  `json:"hostname"`
-	Args             Optional[[]string]                `json:"args"`
-	Shell            Optional[bool]                    `json:"shell"`
-	Env              Optional[map[string]string]       `json:"env"`
-	PreserveEnv      Optional[bool]                    `json:"preserve_env"`
-	Cwd              Optional[string]                  `json:"cwd"`
-	UID              Optional[int64]                   `json:"uid"`
-	GID              Optional[int64]                   `json:"gid"`
-	ResourcesLimits  Optional[InstanceResourcesLimits] `json:"resources_limits"`
-	Networking       Optional[InstanceNetworking]      `json:"networking"`
-	Stdin            Optional[ClosableStreamRepr]      `json:"stdin"`
-	Timeout          Optional[int64]                   `json:"timeout"`
-	TruncateOutputAt Optional[int64]                   `json:"truncate_output_at"`
-	Disposable       Optional[bool]                    `json:"disposable"`
-	Files            Optional[map[string]FileSpec]     `json:"files"`
-	Result           Optional[InstanceResult]          `json:"result"`
+	UUID             Optional[string]                     `json:"uuid"`
+	Command          Optional[string]                     `json:"command"`
+	Image            Optional[string]                     `json:"image"`
+	Hostname         Optional[string]                     `json:"hostname"`
+	Args             Optional[[]string]                   `json:"args"`
+	Shell            Optional[bool]                       `json:"shell"`
+	Env              Optional[map[string]string]          `json:"env"`
+	PreserveEnv      Optional[bool]                       `json:"preserve_env"`
+	Cwd              Optional[string]                     `json:"cwd"`
+	UID              Optional[int64]                      `json:"uid"`
+	GID              Optional[int64]                      `json:"gid"`
+	ResourcesLimits  Optional[InstanceResourcesLimits]    `json:"resources_limits"`
+	Networking       Optional[InstanceNetworkingResponse] `json:"networking"`
+	Stdin            Optional[ClosableStreamRepr]         `json:"stdin"`
+	Timeout          Optional[int64]                      `json:"timeout"`
+	TruncateOutputAt Optional[int64]                      `json:"truncate_output_at"`
+	Disposable       Optional[bool]                       `json:"disposable"`
+	Files            Optional[map[string]FileSpec]        `json:"files"`
+	Result           Optional[InstanceResult]             `json:"result"`
 }
 
 // MarshalJSON encodes InstanceSpawnResponse with exact wire names.
@@ -3296,25 +3772,25 @@ func (m *OperationSummary) UnmarshalJSON(data []byte) error {
 
 // OperationInstanceMetadata is generated from the OperationInstanceMetadata schema.
 type OperationInstanceMetadata struct {
-	Command          string                            `json:"command"`
-	Disposable       Optional[bool]                    `json:"disposable"`
-	Hostname         Optional[string]                  `json:"hostname"`
-	Image            string                            `json:"image"`
-	Args             Optional[[]string]                `json:"args"`
-	Shell            Optional[bool]                    `json:"shell"`
-	Env              Optional[map[string]string]       `json:"env"`
-	PreserveEnv      Optional[bool]                    `json:"preserve_env"`
-	PreserveCwd      Optional[bool]                    `json:"preserve_cwd"`
-	Cwd              Optional[string]                  `json:"cwd"`
-	UID              Optional[int64]                   `json:"uid"`
-	GID              Optional[int64]                   `json:"gid"`
-	ResourcesLimits  Optional[InstanceResourcesLimits] `json:"resources_limits"`
-	Networking       Optional[InstanceNetworking]      `json:"networking"`
-	Stdin            Optional[ClosableStreamRepr]      `json:"stdin"`
-	Timeout          Optional[int64]                   `json:"timeout"`
-	TruncateOutputAt Optional[int64]                   `json:"truncate_output_at"`
-	Files            Optional[map[string]FileSpec]     `json:"files"`
-	Result           Optional[InstanceResult]          `json:"result"`
+	Command          string                               `json:"command"`
+	Disposable       Optional[bool]                       `json:"disposable"`
+	Hostname         Optional[string]                     `json:"hostname"`
+	Image            string                               `json:"image"`
+	Args             Optional[[]string]                   `json:"args"`
+	Shell            Optional[bool]                       `json:"shell"`
+	Env              Optional[map[string]string]          `json:"env"`
+	PreserveEnv      Optional[bool]                       `json:"preserve_env"`
+	PreserveCwd      Optional[bool]                       `json:"preserve_cwd"`
+	Cwd              Optional[string]                     `json:"cwd"`
+	UID              Optional[int64]                      `json:"uid"`
+	GID              Optional[int64]                      `json:"gid"`
+	ResourcesLimits  Optional[InstanceResourcesLimits]    `json:"resources_limits"`
+	Networking       Optional[InstanceNetworkingResponse] `json:"networking"`
+	Stdin            Optional[ClosableStreamRepr]         `json:"stdin"`
+	Timeout          Optional[int64]                      `json:"timeout"`
+	TruncateOutputAt Optional[int64]                      `json:"truncate_output_at"`
+	Files            Optional[map[string]FileSpec]        `json:"files"`
+	Result           Optional[InstanceResult]             `json:"result"`
 }
 
 // MarshalJSON encodes OperationInstanceMetadata with exact wire names.
@@ -6354,6 +6830,50 @@ func (m *EventDataCompletion) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(rawConsumedMemory, &decoded.ConsumedMemory); err != nil {
 			return fmt.Errorf("unmarshal EventDataCompletion.consumed_memory: %w", err)
 		}
+	}
+	*m = decoded
+	return nil
+}
+
+// ListNetworkPolicyTagsResponse is generated from the ListNetworkPolicyTagsResponse schema.
+type ListNetworkPolicyTagsResponse struct {
+	Tags []NetworkPolicyTag `json:"tags"`
+}
+
+// MarshalJSON encodes ListNetworkPolicyTagsResponse with exact wire names.
+func (m ListNetworkPolicyTagsResponse) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 1)
+	if isNilJSONValue(m.Tags) {
+		return nil, fmt.Errorf("marshal ListNetworkPolicyTagsResponse.tags: required field is nil")
+	}
+	if err := putJSONField(object, "tags", m.Tags); err != nil {
+		return nil, fmt.Errorf("marshal ListNetworkPolicyTagsResponse.tags: %w", err)
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes ListNetworkPolicyTagsResponse and checks required fields.
+func (m *ListNetworkPolicyTagsResponse) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal ListNetworkPolicyTagsResponse into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal ListNetworkPolicyTagsResponse: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("ListNetworkPolicyTagsResponse must be a JSON object")
+	}
+	var decoded ListNetworkPolicyTagsResponse
+	rawTags, ok := object["tags"]
+	if !ok {
+		return fmt.Errorf("missing required field tags")
+	}
+	if isJSONNull(rawTags) {
+		return fmt.Errorf("field tags must not be null")
+	}
+	if err := json.Unmarshal(rawTags, &decoded.Tags); err != nil {
+		return fmt.Errorf("unmarshal ListNetworkPolicyTagsResponse.tags: %w", err)
 	}
 	*m = decoded
 	return nil

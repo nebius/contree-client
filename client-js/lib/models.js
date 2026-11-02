@@ -856,11 +856,13 @@ export class ProcessResourcesLimits {
 export class InstanceNetworking {
   constructor(fields = {}) {
     this.enabled = fields.enabled;
+    this.policy = fields.policy;
   }
 
   static fromWire(data) {
     return new InstanceNetworking({
       enabled: data["enabled"],
+      policy: data["policy"],
     });
   }
 
@@ -868,6 +870,227 @@ export class InstanceNetworking {
     const data = {};
     if (this.enabled !== undefined) {
       data["enabled"] = this.enabled;
+    }
+    if (this.policy !== undefined) {
+      data["policy"] = this.policy;
+    }
+    return data;
+  }
+}
+
+export class NetworkPolicyCIDRRule {
+  constructor(fields = {}) {
+    this.cidr = fields.cidr;
+    this.proto = fields.proto;
+    this.ports = fields.ports;
+  }
+
+  static fromWire(data) {
+    return new NetworkPolicyCIDRRule({
+      cidr: data["cidr"],
+      proto: data["proto"],
+      ports: data["ports"],
+    });
+  }
+
+  toWire() {
+    const data = {};
+    if (this.cidr !== undefined) {
+      data["cidr"] = this.cidr;
+    }
+    if (this.proto !== undefined) {
+      data["proto"] = this.proto;
+    }
+    if (this.ports !== undefined) {
+      data["ports"] = this.ports;
+    }
+    return data;
+  }
+}
+
+/** An allowlist of destination networks, protocols, and ports. A policy with `{"cidrs": []}` */
+export class NetworkPolicyCreateRequest {
+  constructor(fields = {}) {
+    this.cidrs = fields.cidrs;
+  }
+
+  static fromWire(data) {
+    return new NetworkPolicyCreateRequest({
+      cidrs: data["cidrs"].map((item) => NetworkPolicyCIDRRule.fromWire(item)),
+    });
+  }
+
+  toWire() {
+    const data = {};
+    if (this.cidrs !== undefined) {
+      data["cidrs"] =
+        this.cidrs === null ? null : this.cidrs.map((item) => item.toWire());
+    }
+    return data;
+  }
+}
+
+export class InstanceNetworkingResponse {
+  constructor(fields = {}) {
+    this.enabled = fields.enabled;
+    this.policy = fields.policy;
+    this.effectivePolicy = fields.effectivePolicy;
+  }
+
+  static fromWire(data) {
+    return new InstanceNetworkingResponse({
+      enabled: data["enabled"],
+      policy: data["policy"],
+      effectivePolicy:
+        data["effective_policy"] == null
+          ? data["effective_policy"]
+          : NetworkPolicyCreateRequest.fromWire(data["effective_policy"]),
+    });
+  }
+
+  toWire() {
+    const data = {};
+    if (this.enabled !== undefined) {
+      data["enabled"] = this.enabled;
+    }
+    if (this.policy !== undefined) {
+      data["policy"] = this.policy;
+    }
+    if (this.effectivePolicy !== undefined) {
+      data["effective_policy"] =
+        this.effectivePolicy === null ? null : this.effectivePolicy.toWire();
+    }
+    return data;
+  }
+}
+
+export class NetworkPolicyTag {
+  constructor(fields = {}) {
+    this.tag = fields.tag;
+    this.uuid = fields.uuid;
+  }
+
+  static fromWire(data) {
+    return new NetworkPolicyTag({
+      tag: data["tag"],
+      uuid: data["uuid"],
+    });
+  }
+
+  toWire() {
+    const data = {};
+    if (this.tag !== undefined) {
+      data["tag"] = this.tag;
+    }
+    if (this.uuid !== undefined) {
+      data["uuid"] = this.uuid;
+    }
+    return data;
+  }
+}
+
+export class NetworkPolicy {
+  constructor(fields = {}) {
+    this.uuid = fields.uuid;
+    this.cidrs = fields.cidrs;
+  }
+
+  static fromWire(data) {
+    return new NetworkPolicy({
+      uuid: data["uuid"],
+      cidrs: data["cidrs"].map((item) => NetworkPolicyCIDRRule.fromWire(item)),
+    });
+  }
+
+  toWire() {
+    const data = {};
+    if (this.uuid !== undefined) {
+      data["uuid"] = this.uuid;
+    }
+    if (this.cidrs !== undefined) {
+      data["cidrs"] =
+        this.cidrs === null ? null : this.cidrs.map((item) => item.toWire());
+    }
+    return data;
+  }
+}
+
+export class NetworkPolicyListItemSummary {
+  constructor(fields = {}) {
+    this.cidrs = fields.cidrs;
+  }
+
+  static fromWire(data) {
+    return new NetworkPolicyListItemSummary({
+      cidrs: data["cidrs"],
+    });
+  }
+
+  toWire() {
+    const data = {};
+    if (this.cidrs !== undefined) {
+      data["cidrs"] = this.cidrs;
+    }
+    return data;
+  }
+}
+
+export class NetworkPolicyListItem {
+  constructor(fields = {}) {
+    this.uuid = fields.uuid;
+    this.createdAt = fields.createdAt;
+    this.tags = fields.tags;
+    this.summary = fields.summary;
+  }
+
+  static fromWire(data) {
+    return new NetworkPolicyListItem({
+      uuid: data["uuid"],
+      createdAt: parseDatetime(data["created_at"]),
+      tags: data["tags"],
+      summary: NetworkPolicyListItemSummary.fromWire(data["summary"]),
+    });
+  }
+
+  toWire() {
+    const data = {};
+    if (this.uuid !== undefined) {
+      data["uuid"] = this.uuid;
+    }
+    if (this.createdAt !== undefined) {
+      data["created_at"] =
+        this.createdAt === null ? null : this.createdAt.toISOString();
+    }
+    if (this.tags !== undefined) {
+      data["tags"] = this.tags;
+    }
+    if (this.summary !== undefined) {
+      data["summary"] = this.summary === null ? null : this.summary.toWire();
+    }
+    return data;
+  }
+}
+
+export class NetworkPolicyListResponse {
+  constructor(fields = {}) {
+    this.policies = fields.policies;
+  }
+
+  static fromWire(data) {
+    return new NetworkPolicyListResponse({
+      policies: data["policies"].map((item) =>
+        NetworkPolicyListItem.fromWire(item),
+      ),
+    });
+  }
+
+  toWire() {
+    const data = {};
+    if (this.policies !== undefined) {
+      data["policies"] =
+        this.policies === null
+          ? null
+          : this.policies.map((item) => item.toWire());
     }
     return data;
   }
@@ -1360,7 +1583,7 @@ export class InstanceSpawnResponse {
       networking:
         data["networking"] == null
           ? data["networking"]
-          : InstanceNetworking.fromWire(data["networking"]),
+          : InstanceNetworkingResponse.fromWire(data["networking"]),
       stdin:
         data["stdin"] == null
           ? data["stdin"]
@@ -1571,7 +1794,7 @@ export class OperationInstanceMetadata {
       networking:
         data["networking"] == null
           ? data["networking"]
-          : InstanceNetworking.fromWire(data["networking"]),
+          : InstanceNetworkingResponse.fromWire(data["networking"]),
       stdin:
         data["stdin"] == null
           ? data["stdin"]
@@ -2873,6 +3096,27 @@ export class EventDataCompletion {
     }
     if (this.consumedMemory !== undefined) {
       data["consumed_memory"] = this.consumedMemory;
+    }
+    return data;
+  }
+}
+
+export class ListNetworkPolicyTagsResponse {
+  constructor(fields = {}) {
+    this.tags = fields.tags;
+  }
+
+  static fromWire(data) {
+    return new ListNetworkPolicyTagsResponse({
+      tags: data["tags"].map((item) => NetworkPolicyTag.fromWire(item)),
+    });
+  }
+
+  toWire() {
+    const data = {};
+    if (this.tags !== undefined) {
+      data["tags"] =
+        this.tags === null ? null : this.tags.map((item) => item.toWire());
     }
     return data;
   }

@@ -25,6 +25,62 @@ type mockOperation struct {
 
 var mockOperations = []mockOperation{
 	{
+		name:   "ListNetworkPolicies",
+		method: "GET",
+		path:   "/network/policies",
+		mode:   "JSON",
+		status: 200,
+	},
+	{
+		name:   "CreateNetworkPolicy",
+		method: "POST",
+		path:   "/network/policies",
+		mode:   "JSON",
+		status: 201,
+	},
+	{
+		name:   "GetNetworkPolicy",
+		method: "GET",
+		path:   "/network/policies/{uuid}",
+		mode:   "JSON",
+		status: 200,
+	},
+	{
+		name:   "DeleteNetworkPolicy",
+		method: "DELETE",
+		path:   "/network/policies/{uuid}",
+		mode:   "EMPTY",
+		status: 204,
+	},
+	{
+		name:   "ListNetworkPolicyTags",
+		method: "GET",
+		path:   "/network/tags",
+		mode:   "JSON",
+		status: 200,
+	},
+	{
+		name:   "GetNetworkPolicyTag",
+		method: "GET",
+		path:   "/network/tags/{tag}",
+		mode:   "JSON",
+		status: 302,
+	},
+	{
+		name:   "SetNetworkPolicyTag",
+		method: "PUT",
+		path:   "/network/tags/{tag}",
+		mode:   "JSON",
+		status: 200,
+	},
+	{
+		name:   "DeleteNetworkPolicyTag",
+		method: "DELETE",
+		path:   "/network/tags/{tag}",
+		mode:   "EMPTY",
+		status: 204,
+	},
+	{
 		name:   "ListImages",
 		method: "GET",
 		path:   "/images",
@@ -269,6 +325,30 @@ var mockOperations = []mockOperation{
 		status: 200,
 	},
 }
+
+// OpListNetworkPolicies configures the mock result for ListNetworkPolicies.
+var OpListNetworkPolicies = Operation[NetworkPolicyListResponse]{name: "ListNetworkPolicies"}
+
+// OpCreateNetworkPolicy configures the mock result for CreateNetworkPolicy.
+var OpCreateNetworkPolicy = Operation[NetworkPolicy]{name: "CreateNetworkPolicy"}
+
+// OpGetNetworkPolicy configures the mock result for GetNetworkPolicy.
+var OpGetNetworkPolicy = Operation[NetworkPolicy]{name: "GetNetworkPolicy"}
+
+// OpDeleteNetworkPolicy configures the mock result for DeleteNetworkPolicy.
+var OpDeleteNetworkPolicy = Operation[struct{}]{name: "DeleteNetworkPolicy"}
+
+// OpListNetworkPolicyTags configures the mock result for ListNetworkPolicyTags.
+var OpListNetworkPolicyTags = Operation[ListNetworkPolicyTagsResponse]{name: "ListNetworkPolicyTags"}
+
+// OpGetNetworkPolicyTag configures the mock result for GetNetworkPolicyTag.
+var OpGetNetworkPolicyTag = Operation[NetworkPolicyTag]{name: "GetNetworkPolicyTag"}
+
+// OpSetNetworkPolicyTag configures the mock result for SetNetworkPolicyTag.
+var OpSetNetworkPolicyTag = Operation[NetworkPolicyTag]{name: "SetNetworkPolicyTag"}
+
+// OpDeleteNetworkPolicyTag configures the mock result for DeleteNetworkPolicyTag.
+var OpDeleteNetworkPolicyTag = Operation[struct{}]{name: "DeleteNetworkPolicyTag"}
 
 // OpListImages configures the mock result for ListImages.
 var OpListImages = Operation[ImageListResponse]{name: "ListImages"}

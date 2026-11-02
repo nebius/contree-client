@@ -414,6 +414,24 @@ ListOperationsKindInstance is a documented ListOperationsKind value.
 const ListOperationsKindInstance = "instance"
 ```
 
+(go-networkpolicycidrruleprototcp)=
+### const NetworkPolicyCidrRuleProtoTcp
+
+NetworkPolicyCidrRuleProtoTcp is a documented NetworkPolicyCidrRuleProto value.
+
+```go
+const NetworkPolicyCidrRuleProtoTcp = "tcp"
+```
+
+(go-networkpolicycidrruleprotoudp)=
+### const NetworkPolicyCidrRuleProtoUdp
+
+NetworkPolicyCidrRuleProtoUdp is a documented NetworkPolicyCidrRuleProto value.
+
+```go
+const NetworkPolicyCidrRuleProtoUdp = "udp"
+```
+
 (go-operationresponsekindimageimport)=
 ### const OperationResponseKindImageImport
 
@@ -474,7 +492,7 @@ const OperationSummaryKindInstance = "instance"
 SpecSHA256 identifies the exact OpenAPI input document.
 
 ```go
-const SpecSHA256 = "0542fe1844fdd205315854e9b6d4b61fa0d2c53302f95457beb328573102492c"
+const SpecSHA256 = "0c77136174a41b99c59fb4b98e5d8b1e660dee2243a24cff2da56fa84b836a0d"
 ```
 
 (go-streamreprencodingascii)=
@@ -560,6 +578,15 @@ OpCheckInstanceFile configures the mock result for CheckInstanceFile.
 var OpCheckInstanceFile Operation[bool]
 ```
 
+(go-opcreatenetworkpolicy)=
+### var OpCreateNetworkPolicy
+
+OpCreateNetworkPolicy configures the mock result for CreateNetworkPolicy.
+
+```go
+var OpCreateNetworkPolicy Operation[NetworkPolicy]
+```
+
 (go-opdeleteimagetag)=
 ### var OpDeleteImageTag
 
@@ -569,6 +596,24 @@ OpDeleteImageTag configures the mock result for DeleteImageTag.
 var OpDeleteImageTag Operation[struct{}]
 ```
 
+(go-opdeletenetworkpolicy)=
+### var OpDeleteNetworkPolicy
+
+OpDeleteNetworkPolicy configures the mock result for DeleteNetworkPolicy.
+
+```go
+var OpDeleteNetworkPolicy Operation[struct{}]
+```
+
+(go-opdeletenetworkpolicytag)=
+### var OpDeleteNetworkPolicyTag
+
+OpDeleteNetworkPolicyTag configures the mock result for DeleteNetworkPolicyTag.
+
+```go
+var OpDeleteNetworkPolicyTag Operation[struct{}]
+```
+
 (go-opgetfile)=
 ### var OpGetFile
 
@@ -576,6 +621,24 @@ OpGetFile configures the mock result for GetFile.
 
 ```go
 var OpGetFile Operation[File]
+```
+
+(go-opgetnetworkpolicy)=
+### var OpGetNetworkPolicy
+
+OpGetNetworkPolicy configures the mock result for GetNetworkPolicy.
+
+```go
+var OpGetNetworkPolicy Operation[NetworkPolicy]
+```
+
+(go-opgetnetworkpolicytag)=
+### var OpGetNetworkPolicyTag
+
+OpGetNetworkPolicyTag configures the mock result for GetNetworkPolicyTag.
+
+```go
+var OpGetNetworkPolicyTag Operation[NetworkPolicyTag]
 ```
 
 (go-opgetoperationstatus)=
@@ -713,6 +776,24 @@ OpListImages configures the mock result for ListImages.
 var OpListImages Operation[ImageListResponse]
 ```
 
+(go-oplistnetworkpolicies)=
+### var OpListNetworkPolicies
+
+OpListNetworkPolicies configures the mock result for ListNetworkPolicies.
+
+```go
+var OpListNetworkPolicies Operation[NetworkPolicyListResponse]
+```
+
+(go-oplistnetworkpolicytags)=
+### var OpListNetworkPolicyTags
+
+OpListNetworkPolicyTags configures the mock result for ListNetworkPolicyTags.
+
+```go
+var OpListNetworkPolicyTags Operation[ListNetworkPolicyTagsResponse]
+```
+
 (go-oplistoperations)=
 ### var OpListOperations
 
@@ -756,6 +837,15 @@ OpOperationSubprocessStdin configures the mock result for OperationSubprocessStd
 
 ```go
 var OpOperationSubprocessStdin Operation[struct{}]
+```
+
+(go-opsetnetworkpolicytag)=
+### var OpSetNetworkPolicyTag
+
+OpSetNetworkPolicyTag configures the mock result for SetNetworkPolicyTag.
+
+```go
+var OpSetNetworkPolicyTag Operation[NetworkPolicyTag]
 ```
 
 (go-opspawninstance)=
@@ -1175,6 +1265,18 @@ func (c *Client) CheckInstanceFile(
 ) (bool, error)
 ```
 
+(go-client-createnetworkpolicy)=
+#### Client.CreateNetworkPolicy
+
+CreateNetworkPolicy calls POST /network/policies.
+
+```go
+func (c *Client) CreateNetworkPolicy(
+	ctx context.Context,
+	cidrs []NetworkPolicyCidrRule,
+) (NetworkPolicy, error)
+```
+
 (go-client-deleteimagetag)=
 #### Client.DeleteImageTag
 
@@ -1185,6 +1287,30 @@ func (c *Client) DeleteImageTag(
 	ctx context.Context,
 	imageUUID string,
 	options *DeleteImageTagOptions,
+) error
+```
+
+(go-client-deletenetworkpolicy)=
+#### Client.DeleteNetworkPolicy
+
+DeleteNetworkPolicy calls DELETE /network/policies/{uuid}.
+
+```go
+func (c *Client) DeleteNetworkPolicy(
+	ctx context.Context,
+	uuid string,
+) error
+```
+
+(go-client-deletenetworkpolicytag)=
+#### Client.DeleteNetworkPolicyTag
+
+DeleteNetworkPolicyTag calls DELETE /network/tags/{tag}.
+
+```go
+func (c *Client) DeleteNetworkPolicyTag(
+	ctx context.Context,
+	tag string,
 ) error
 ```
 
@@ -1226,6 +1352,30 @@ func (c *Client) GetFile(
 	ctx context.Context,
 	sha256 string,
 ) (File, error)
+```
+
+(go-client-getnetworkpolicy)=
+#### Client.GetNetworkPolicy
+
+GetNetworkPolicy calls GET /network/policies/{uuid}.
+
+```go
+func (c *Client) GetNetworkPolicy(
+	ctx context.Context,
+	uuid string,
+) (NetworkPolicy, error)
+```
+
+(go-client-getnetworkpolicytag)=
+#### Client.GetNetworkPolicyTag
+
+GetNetworkPolicyTag calls GET /network/tags/{tag}.
+
+```go
+func (c *Client) GetNetworkPolicyTag(
+	ctx context.Context,
+	tag string,
+) (NetworkPolicyTag, error)
 ```
 
 (go-client-getoperationstatus)=
@@ -1509,6 +1659,30 @@ func (c *Client) ListImages(
 ) (ImageListResponse, error)
 ```
 
+(go-client-listnetworkpolicies)=
+#### Client.ListNetworkPolicies
+
+ListNetworkPolicies calls GET /network/policies.
+
+```go
+func (c *Client) ListNetworkPolicies(
+	ctx context.Context,
+	options *ListNetworkPoliciesOptions,
+) (NetworkPolicyListResponse, error)
+```
+
+(go-client-listnetworkpolicytags)=
+#### Client.ListNetworkPolicyTags
+
+ListNetworkPolicyTags calls GET /network/tags.
+
+```go
+func (c *Client) ListNetworkPolicyTags(
+	ctx context.Context,
+	options *ListNetworkPolicyTagsOptions,
+) (ListNetworkPolicyTagsResponse, error)
+```
+
 (go-client-listoperations)=
 #### Client.ListOperations
 
@@ -1596,6 +1770,19 @@ ResolveImage resolves a UUID, a tag:NAME reference, or a bare tag to an image UU
 
 ```go
 func (c *Client) ResolveImage(ctx context.Context, ref string) (string, error)
+```
+
+(go-client-setnetworkpolicytag)=
+#### Client.SetNetworkPolicyTag
+
+SetNetworkPolicyTag calls PUT /network/tags/{tag}.
+
+```go
+func (c *Client) SetNetworkPolicyTag(
+	ctx context.Context,
+	tag string,
+	uuid string,
+) (NetworkPolicyTag, error)
 ```
 
 (go-client-spawninstance)=
@@ -3317,7 +3504,8 @@ InstanceNetworking is generated from the InstanceNetworking schema.
 
 ```go
 type InstanceNetworking struct {
-	Enabled Optional[bool] `json:"enabled"`
+	Enabled Optional[bool]     `json:"enabled"`
+	Policy  Optional[[]string] `json:"policy"`
 }
 ```
 
@@ -3337,6 +3525,37 @@ UnmarshalJSON decodes InstanceNetworking and checks required fields.
 
 ```go
 func (m *InstanceNetworking) UnmarshalJSON(data []byte) error
+```
+
+(go-instancenetworkingresponse)=
+### type InstanceNetworkingResponse
+
+InstanceNetworkingResponse is generated from the InstanceNetworkingResponse schema.
+
+```go
+type InstanceNetworkingResponse struct {
+	Enabled         Optional[bool]                       `json:"enabled"`
+	Policy          Optional[[]string]                   `json:"policy"`
+	EffectivePolicy Optional[NetworkPolicyCreateRequest] `json:"effective_policy"`
+}
+```
+
+(go-instancenetworkingresponse-marshaljson)=
+#### InstanceNetworkingResponse.MarshalJSON
+
+MarshalJSON encodes InstanceNetworkingResponse with exact wire names.
+
+```go
+func (m InstanceNetworkingResponse) MarshalJSON() ([]byte, error)
+```
+
+(go-instancenetworkingresponse-unmarshaljson)=
+#### InstanceNetworkingResponse.UnmarshalJSON
+
+UnmarshalJSON decodes InstanceNetworkingResponse and checks required fields.
+
+```go
+func (m *InstanceNetworkingResponse) UnmarshalJSON(data []byte) error
 ```
 
 (go-instanceresourceslimits)=
@@ -3535,25 +3754,25 @@ InstanceSpawnResponse is generated from the InstanceSpawnResponse schema.
 
 ```go
 type InstanceSpawnResponse struct {
-	UUID             Optional[string]                  `json:"uuid"`
-	Command          Optional[string]                  `json:"command"`
-	Image            Optional[string]                  `json:"image"`
-	Hostname         Optional[string]                  `json:"hostname"`
-	Args             Optional[[]string]                `json:"args"`
-	Shell            Optional[bool]                    `json:"shell"`
-	Env              Optional[map[string]string]       `json:"env"`
-	PreserveEnv      Optional[bool]                    `json:"preserve_env"`
-	Cwd              Optional[string]                  `json:"cwd"`
-	UID              Optional[int64]                   `json:"uid"`
-	GID              Optional[int64]                   `json:"gid"`
-	ResourcesLimits  Optional[InstanceResourcesLimits] `json:"resources_limits"`
-	Networking       Optional[InstanceNetworking]      `json:"networking"`
-	Stdin            Optional[ClosableStreamRepr]      `json:"stdin"`
-	Timeout          Optional[int64]                   `json:"timeout"`
-	TruncateOutputAt Optional[int64]                   `json:"truncate_output_at"`
-	Disposable       Optional[bool]                    `json:"disposable"`
-	Files            Optional[map[string]FileSpec]     `json:"files"`
-	Result           Optional[InstanceResult]          `json:"result"`
+	UUID             Optional[string]                     `json:"uuid"`
+	Command          Optional[string]                     `json:"command"`
+	Image            Optional[string]                     `json:"image"`
+	Hostname         Optional[string]                     `json:"hostname"`
+	Args             Optional[[]string]                   `json:"args"`
+	Shell            Optional[bool]                       `json:"shell"`
+	Env              Optional[map[string]string]          `json:"env"`
+	PreserveEnv      Optional[bool]                       `json:"preserve_env"`
+	Cwd              Optional[string]                     `json:"cwd"`
+	UID              Optional[int64]                      `json:"uid"`
+	GID              Optional[int64]                      `json:"gid"`
+	ResourcesLimits  Optional[InstanceResourcesLimits]    `json:"resources_limits"`
+	Networking       Optional[InstanceNetworkingResponse] `json:"networking"`
+	Stdin            Optional[ClosableStreamRepr]         `json:"stdin"`
+	Timeout          Optional[int64]                      `json:"timeout"`
+	TruncateOutputAt Optional[int64]                      `json:"truncate_output_at"`
+	Disposable       Optional[bool]                       `json:"disposable"`
+	Files            Optional[map[string]FileSpec]        `json:"files"`
+	Result           Optional[InstanceResult]             `json:"result"`
 }
 ```
 
@@ -3671,6 +3890,60 @@ type ListImagesOptions struct {
 	Since  *any
 	Until  *any
 }
+```
+
+(go-listnetworkpoliciesoptions)=
+### type ListNetworkPoliciesOptions
+
+ListNetworkPoliciesOptions contains optional arguments for ListNetworkPolicies.
+
+```go
+type ListNetworkPoliciesOptions struct {
+	Search *string
+	Limit  *int64
+	Offset *int64
+}
+```
+
+(go-listnetworkpolicytagsoptions)=
+### type ListNetworkPolicyTagsOptions
+
+ListNetworkPolicyTagsOptions contains optional arguments for ListNetworkPolicyTags.
+
+```go
+type ListNetworkPolicyTagsOptions struct {
+	Limit  *int64
+	Offset *int64
+}
+```
+
+(go-listnetworkpolicytagsresponse)=
+### type ListNetworkPolicyTagsResponse
+
+ListNetworkPolicyTagsResponse is generated from the ListNetworkPolicyTagsResponse schema.
+
+```go
+type ListNetworkPolicyTagsResponse struct {
+	Tags []NetworkPolicyTag `json:"tags"`
+}
+```
+
+(go-listnetworkpolicytagsresponse-marshaljson)=
+#### ListNetworkPolicyTagsResponse.MarshalJSON
+
+MarshalJSON encodes ListNetworkPolicyTagsResponse with exact wire names.
+
+```go
+func (m ListNetworkPolicyTagsResponse) MarshalJSON() ([]byte, error)
+```
+
+(go-listnetworkpolicytagsresponse-unmarshaljson)=
+#### ListNetworkPolicyTagsResponse.UnmarshalJSON
+
+UnmarshalJSON decodes ListNetworkPolicyTagsResponse and checks required fields.
+
+```go
+func (m *ListNetworkPolicyTagsResponse) UnmarshalJSON(data []byte) error
 ```
 
 (go-listoperationsoptions)=
@@ -3834,6 +4107,216 @@ UnmarshalJSON decodes NetworkInterface and checks required fields.
 func (m *NetworkInterface) UnmarshalJSON(data []byte) error
 ```
 
+(go-networkpolicy)=
+### type NetworkPolicy
+
+NetworkPolicy is generated from the NetworkPolicy schema.
+
+```go
+type NetworkPolicy struct {
+	UUID  string                  `json:"uuid"`
+	Cidrs []NetworkPolicyCidrRule `json:"cidrs"`
+}
+```
+
+(go-networkpolicy-marshaljson)=
+#### NetworkPolicy.MarshalJSON
+
+MarshalJSON encodes NetworkPolicy with exact wire names.
+
+```go
+func (m NetworkPolicy) MarshalJSON() ([]byte, error)
+```
+
+(go-networkpolicy-unmarshaljson)=
+#### NetworkPolicy.UnmarshalJSON
+
+UnmarshalJSON decodes NetworkPolicy and checks required fields.
+
+```go
+func (m *NetworkPolicy) UnmarshalJSON(data []byte) error
+```
+
+(go-networkpolicycidrrule)=
+### type NetworkPolicyCidrRule
+
+NetworkPolicyCidrRule is generated from the NetworkPolicyCIDRRule schema.
+
+```go
+type NetworkPolicyCidrRule struct {
+	Cidr  string            `json:"cidr"`
+	Proto string            `json:"proto"`
+	Ports Optional[[]int64] `json:"ports"`
+}
+```
+
+(go-networkpolicycidrrule-marshaljson)=
+#### NetworkPolicyCidrRule.MarshalJSON
+
+MarshalJSON encodes NetworkPolicyCidrRule with exact wire names.
+
+```go
+func (m NetworkPolicyCidrRule) MarshalJSON() ([]byte, error)
+```
+
+(go-networkpolicycidrrule-unmarshaljson)=
+#### NetworkPolicyCidrRule.UnmarshalJSON
+
+UnmarshalJSON decodes NetworkPolicyCidrRule and checks required fields.
+
+```go
+func (m *NetworkPolicyCidrRule) UnmarshalJSON(data []byte) error
+```
+
+(go-networkpolicycreaterequest)=
+### type NetworkPolicyCreateRequest
+
+NetworkPolicyCreateRequest is generated from the NetworkPolicyCreateRequest schema.
+
+```go
+type NetworkPolicyCreateRequest struct {
+	Cidrs []NetworkPolicyCidrRule `json:"cidrs"`
+}
+```
+
+(go-networkpolicycreaterequest-marshaljson)=
+#### NetworkPolicyCreateRequest.MarshalJSON
+
+MarshalJSON encodes NetworkPolicyCreateRequest with exact wire names.
+
+```go
+func (m NetworkPolicyCreateRequest) MarshalJSON() ([]byte, error)
+```
+
+(go-networkpolicycreaterequest-unmarshaljson)=
+#### NetworkPolicyCreateRequest.UnmarshalJSON
+
+UnmarshalJSON decodes NetworkPolicyCreateRequest and checks required fields.
+
+```go
+func (m *NetworkPolicyCreateRequest) UnmarshalJSON(data []byte) error
+```
+
+(go-networkpolicylistitem)=
+### type NetworkPolicyListItem
+
+NetworkPolicyListItem is generated from the NetworkPolicyListItem schema.
+
+```go
+type NetworkPolicyListItem struct {
+	UUID      string                       `json:"uuid"`
+	CreatedAt time.Time                    `json:"created_at"`
+	Tags      []string                     `json:"tags"`
+	Summary   NetworkPolicyListItemSummary `json:"summary"`
+}
+```
+
+(go-networkpolicylistitem-marshaljson)=
+#### NetworkPolicyListItem.MarshalJSON
+
+MarshalJSON encodes NetworkPolicyListItem with exact wire names.
+
+```go
+func (m NetworkPolicyListItem) MarshalJSON() ([]byte, error)
+```
+
+(go-networkpolicylistitem-unmarshaljson)=
+#### NetworkPolicyListItem.UnmarshalJSON
+
+UnmarshalJSON decodes NetworkPolicyListItem and checks required fields.
+
+```go
+func (m *NetworkPolicyListItem) UnmarshalJSON(data []byte) error
+```
+
+(go-networkpolicylistitemsummary)=
+### type NetworkPolicyListItemSummary
+
+NetworkPolicyListItemSummary is generated from the NetworkPolicyListItemSummary schema.
+
+```go
+type NetworkPolicyListItemSummary struct {
+	Cidrs int64 `json:"cidrs"`
+}
+```
+
+(go-networkpolicylistitemsummary-marshaljson)=
+#### NetworkPolicyListItemSummary.MarshalJSON
+
+MarshalJSON encodes NetworkPolicyListItemSummary with exact wire names.
+
+```go
+func (m NetworkPolicyListItemSummary) MarshalJSON() ([]byte, error)
+```
+
+(go-networkpolicylistitemsummary-unmarshaljson)=
+#### NetworkPolicyListItemSummary.UnmarshalJSON
+
+UnmarshalJSON decodes NetworkPolicyListItemSummary and checks required fields.
+
+```go
+func (m *NetworkPolicyListItemSummary) UnmarshalJSON(data []byte) error
+```
+
+(go-networkpolicylistresponse)=
+### type NetworkPolicyListResponse
+
+NetworkPolicyListResponse is generated from the NetworkPolicyListResponse schema.
+
+```go
+type NetworkPolicyListResponse struct {
+	Policies []NetworkPolicyListItem `json:"policies"`
+}
+```
+
+(go-networkpolicylistresponse-marshaljson)=
+#### NetworkPolicyListResponse.MarshalJSON
+
+MarshalJSON encodes NetworkPolicyListResponse with exact wire names.
+
+```go
+func (m NetworkPolicyListResponse) MarshalJSON() ([]byte, error)
+```
+
+(go-networkpolicylistresponse-unmarshaljson)=
+#### NetworkPolicyListResponse.UnmarshalJSON
+
+UnmarshalJSON decodes NetworkPolicyListResponse and checks required fields.
+
+```go
+func (m *NetworkPolicyListResponse) UnmarshalJSON(data []byte) error
+```
+
+(go-networkpolicytag)=
+### type NetworkPolicyTag
+
+NetworkPolicyTag is generated from the NetworkPolicyTag schema.
+
+```go
+type NetworkPolicyTag struct {
+	Tag  string `json:"tag"`
+	UUID string `json:"uuid"`
+}
+```
+
+(go-networkpolicytag-marshaljson)=
+#### NetworkPolicyTag.MarshalJSON
+
+MarshalJSON encodes NetworkPolicyTag with exact wire names.
+
+```go
+func (m NetworkPolicyTag) MarshalJSON() ([]byte, error)
+```
+
+(go-networkpolicytag-unmarshaljson)=
+#### NetworkPolicyTag.UnmarshalJSON
+
+UnmarshalJSON decodes NetworkPolicyTag and checks required fields.
+
+```go
+func (m *NetworkPolicyTag) UnmarshalJSON(data []byte) error
+```
+
 (go-notfounderror)=
 ### type NotFoundError
 
@@ -3979,25 +4462,25 @@ OperationInstanceMetadata is generated from the OperationInstanceMetadata schema
 
 ```go
 type OperationInstanceMetadata struct {
-	Command          string                            `json:"command"`
-	Disposable       Optional[bool]                    `json:"disposable"`
-	Hostname         Optional[string]                  `json:"hostname"`
-	Image            string                            `json:"image"`
-	Args             Optional[[]string]                `json:"args"`
-	Shell            Optional[bool]                    `json:"shell"`
-	Env              Optional[map[string]string]       `json:"env"`
-	PreserveEnv      Optional[bool]                    `json:"preserve_env"`
-	PreserveCwd      Optional[bool]                    `json:"preserve_cwd"`
-	Cwd              Optional[string]                  `json:"cwd"`
-	UID              Optional[int64]                   `json:"uid"`
-	GID              Optional[int64]                   `json:"gid"`
-	ResourcesLimits  Optional[InstanceResourcesLimits] `json:"resources_limits"`
-	Networking       Optional[InstanceNetworking]      `json:"networking"`
-	Stdin            Optional[ClosableStreamRepr]      `json:"stdin"`
-	Timeout          Optional[int64]                   `json:"timeout"`
-	TruncateOutputAt Optional[int64]                   `json:"truncate_output_at"`
-	Files            Optional[map[string]FileSpec]     `json:"files"`
-	Result           Optional[InstanceResult]          `json:"result"`
+	Command          string                               `json:"command"`
+	Disposable       Optional[bool]                       `json:"disposable"`
+	Hostname         Optional[string]                     `json:"hostname"`
+	Image            string                               `json:"image"`
+	Args             Optional[[]string]                   `json:"args"`
+	Shell            Optional[bool]                       `json:"shell"`
+	Env              Optional[map[string]string]          `json:"env"`
+	PreserveEnv      Optional[bool]                       `json:"preserve_env"`
+	PreserveCwd      Optional[bool]                       `json:"preserve_cwd"`
+	Cwd              Optional[string]                     `json:"cwd"`
+	UID              Optional[int64]                      `json:"uid"`
+	GID              Optional[int64]                      `json:"gid"`
+	ResourcesLimits  Optional[InstanceResourcesLimits]    `json:"resources_limits"`
+	Networking       Optional[InstanceNetworkingResponse] `json:"networking"`
+	Stdin            Optional[ClosableStreamRepr]         `json:"stdin"`
+	Timeout          Optional[int64]                      `json:"timeout"`
+	TruncateOutputAt Optional[int64]                      `json:"truncate_output_at"`
+	Files            Optional[map[string]FileSpec]        `json:"files"`
+	Result           Optional[InstanceResult]             `json:"result"`
 }
 ```
 

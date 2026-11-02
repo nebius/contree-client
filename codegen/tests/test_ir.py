@@ -165,6 +165,38 @@ def test_subprocess_create_returns_spid(ir: SpecIR) -> None:
     assert op.response.json_path == ("spid",)
 
 
+def test_network_policy_tag_list_preserves_envelope(ir: SpecIR) -> None:
+    response = op_by_name(ir, "list_network_policy_tags").response
+    assert response.mode is ResponseMode.JSON
+    assert response.type == TypeRef(
+        TypeKind.MODEL, name="ListNetworkPolicyTagsResponse"
+    )
+    assert response.json_path == ()
+    assert response.success is SuccessPolicy.ANY_2XX
+    assert response.success_statuses == (200,)
+    model = next(
+        model for model in ir.models if model.name == "ListNetworkPolicyTagsResponse"
+    )
+    assert len(model.fields) == 1
+    tags = model.fields[0]
+    assert tags.name == "tags"
+    assert tags.required
+    assert tags.type == TypeRef(
+        TypeKind.LIST,
+        arguments=(TypeRef(TypeKind.MODEL, name="NetworkPolicyTag"),),
+    )
+
+
+def test_network_policy_tag_returns_json_at_exact_302(ir: SpecIR) -> None:
+    response = op_by_name(ir, "get_network_policy_tag").response
+    assert response.mode is ResponseMode.JSON
+    assert response.type == TypeRef(TypeKind.MODEL, name="NetworkPolicyTag")
+    assert response.success is SuccessPolicy.EXACT
+    assert response.success_statuses == (302,)
+    assert response.json_path == ()
+    assert response.header_name is None
+
+
 def test_integer_path_param_is_semantic(ir: SpecIR) -> None:
     op = op_by_name(ir, "operation_subprocess")
     spid = next(arg for arg in op.arguments if arg.name == "spid")
@@ -534,6 +566,141 @@ def make_synthetic_spec(schemas: dict, *, paths: dict | None = None) -> Spec:
         },
         "",
     )
+
+
+def response_spec(
+    schema: dict, *, status: str = "200", schemas: dict | None = None
+) -> Spec:
+    return make_synthetic_spec(
+        schemas or {},
+        paths={
+            "/sample": {
+                "get": {
+                    "operationId": "readSample",
+                    "responses": {
+                        status: {
+                            "content": {"application/json": {"schema": schema}},
+                        },
+                    },
+                },
+            },
+        },
+    )
+
+
+def test_inline_response_preserves_all_declared_fields() -> None:
+    spec = response_spec(
+        {
+            "type": "object",
+            "required": ["count"],
+            "properties": {
+                "count": {"type": "integer"},
+                "next": {"type": "string", "nullable": True},
+                "details": {
+                    "type": "object",
+                    "required": ["ready"],
+                    "properties": {"ready": {"type": "boolean"}},
+                },
+            },
+        }
+    )
+    ir = build_ir(spec)
+    response = op_by_name(ir, "read_sample").response
+    assert response.type == TypeRef(TypeKind.MODEL, name="ReadSampleResponse")
+    assert response.json_path == ()
+    model = next(model for model in ir.models if model.name == "ReadSampleResponse")
+    fields = {field.name: field for field in model.fields}
+    assert set(fields) == {"count", "next", "details"}
+    assert fields["count"].required
+    assert fields["count"].type == TypeRef(TypeKind.INTEGER)
+    assert not fields["next"].required
+    assert fields["next"].nullable
+    assert fields["details"].type == TypeRef(
+        TypeKind.MODEL, name="ReadSampleResponseDetails"
+    )
+    assert "ReadSampleResponseDetails" in ir.model_names
+
+
+def test_inline_optional_scalar_is_not_unwrapped() -> None:
+    ir = build_ir(
+        response_spec(
+            {
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+            }
+        )
+    )
+    response = op_by_name(ir, "read_sample").response
+    assert response.type == TypeRef(TypeKind.MODEL, name="ReadSampleResponse")
+    assert response.json_path == ()
+
+
+def test_inline_map_response_does_not_discard_values() -> None:
+    spec = response_spec(
+        {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+        }
+    )
+    with pytest.raises(ValueError, match="unsupported inline response in readSample"):
+        build_ir(spec)
+
+
+def test_inline_response_name_collision_fails() -> None:
+    spec = response_spec(
+        {"type": "object", "properties": {"value": {"type": "string"}}},
+        schemas={
+            "ReadSampleResponse": {
+                "type": "object",
+                "properties": {"other": {"type": "boolean"}},
+            },
+        },
+    )
+    with pytest.raises(ValueError, match=r"ReadSampleResponse.*already exists"):
+        build_ir(spec)
+
+
+@pytest.mark.parametrize("status", ["200", "201", "302"])
+def test_json_success_policy_preserves_declared_redirect_status(status: str) -> None:
+    schema = {"type": "object", "properties": {"value": {"type": "string"}}}
+    spec = response_spec(
+        {"$ref": "#/components/schemas/Sample"},
+        status=status,
+        schemas={"Sample": schema},
+    )
+    response = op_by_name(build_ir(spec), "read_sample").response
+    assert response.mode is ResponseMode.JSON
+    assert response.type == TypeRef(TypeKind.MODEL, name="Sample")
+    expected = SuccessPolicy.EXACT if status == "302" else SuccessPolicy.ANY_2XX
+    assert response.success is expected
+    assert response.success_statuses == (int(status),)
+
+
+def test_inline_redirect_response_has_exact_status() -> None:
+    spec = response_spec(
+        {"type": "object", "properties": {"value": {"type": "string"}}},
+        status="302",
+    )
+    response = op_by_name(build_ir(spec), "read_sample").response
+    assert response.type == TypeRef(TypeKind.MODEL, name="ReadSampleResponse")
+    assert response.success is SuccessPolicy.EXACT
+    assert response.success_statuses == (302,)
+
+
+def test_untyped_redirect_response_is_not_inferred_as_json() -> None:
+    spec = make_synthetic_spec(
+        {},
+        paths={
+            "/sample": {
+                "get": {
+                    "operationId": "readSample",
+                    "responses": {"302": {"description": "Redirect"}},
+                },
+            },
+        },
+    )
+    with pytest.raises(ValueError, match="cannot infer response kind for readSample"):
+        build_ir(spec)
 
 
 def synthetic_fields(schemas: dict, name: str = "Sample") -> dict[str, TypeRef]:
