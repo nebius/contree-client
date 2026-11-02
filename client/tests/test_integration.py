@@ -207,6 +207,44 @@ def test_whoami(live: Invoke) -> None:
     assert me.permissions  # the server reports all known permissions
 
 
+def test_network_policy_allows_https_blocks_http(
+    live: Invoke,
+    models: ModuleType,
+    live_network_policy: str,
+    network_probe_image: str,
+    network_probe_command: str,
+    track_operation: Callable[[str], None],
+) -> None:
+    spawned = live(
+        "spawn_instance",
+        network_probe_command,
+        network_probe_image,
+        shell=True,
+        disposable=True,
+        timeout=60,
+        networking=models.InstanceNetworking(
+            enabled=True, policy=[live_network_policy]
+        ),
+    )
+    operation_id = str(spawned.uuid)
+    track_operation(operation_id)
+    try:
+        assert spawned.networking.policy == [live_network_policy]
+        assert spawned.networking.effective_policy.to_dict() == {
+            "cidrs": [{"cidr": "1.1.1.1/32", "proto": "tcp", "ports": [443]}]
+        }
+        operation = live("wait_operation", operation_id, timeout=90)
+        assert operation.status is models.OperationStatus.SUCCESS, operation.to_dict()
+        assert (
+            "network-policy-probe-ok" in operation.metadata.result.stdout.as_text()
+        ), operation.to_dict()
+    finally:
+        current = live("get_operation_status", operation_id)
+        if not current.status.is_terminal():
+            live("cancel_operation", operation_id)
+            live("wait_operation", operation_id, timeout=60)
+
+
 def test_list_images(live: Invoke) -> None:
     result = live("list_images", limit=5)
     assert isinstance(result.images, list)

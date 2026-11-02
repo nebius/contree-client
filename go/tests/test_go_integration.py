@@ -175,6 +175,54 @@ def test_go_auth_and_lists(live_go: Callable[..., None]) -> None:
     """)
 
 
+def test_go_network_policy_allows_https_blocks_http(
+    live_go: Callable[..., None],
+    live_network_policy: str,
+    network_probe_image: str,
+    network_probe_command: str,
+) -> None:
+    source = r"""
+    policy := POLICY_UUID
+    response := must(c.SpawnInstance(ctx, PROBE_COMMAND, image(ctx, c), contree.SpawnInstanceOptions{
+        Shell: true,
+        Disposable: true,
+        Timeout: 60 * time.Second,
+        Networking: &contree.InstanceNetworking{
+            Enabled: contree.Some(true),
+            Policy: contree.Some([]string{policy}),
+        },
+    }))
+
+    id, present := response.UUID.Value()
+    check(present && id != "", "spawn response has no operation UUID")
+    defer cleanup(c, id)
+
+    networking, present := response.Networking.Value()
+    check(present, "spawn response has no networking details")
+
+    policies, _ := networking.Policy.Value()
+    check(len(policies) == 1 && policies[0] == policy, "wrong policy UUID")
+
+    effective, present := networking.EffectivePolicy.Value()
+    check(present && len(effective.Cidrs) == 1, "wrong effective policy")
+
+    rule := effective.Cidrs[0]
+    ports, _ := rule.Ports.Value()
+    check(rule.Cidr == "1.1.1.1/32" && rule.Proto == "tcp" && len(ports) == 1 && ports[0] == 443, "wrong effective rule")
+
+    operation := must(c.WaitOperation(ctx, id, contree.WaitOperationOptions{}))
+    check(strings.Contains(stdout(operation), "network-policy-probe-ok"), string(must(json.Marshal(operation))))
+    success(operation)
+    """
+    live_go(
+        source.replace("POLICY_UUID", json.dumps(live_network_policy)).replace(
+            "PROBE_COMMAND", json.dumps(network_probe_command)
+        ),
+        image_uuid=network_probe_image,
+        imports='"strings"',
+    )
+
+
 def test_go_upload_and_dedup(live_go: Callable[..., None]) -> None:
     live_go(
         r"""
