@@ -78,7 +78,7 @@ make check-generated  # refresh the snapshot and regenerate; require no diff
 GitHub Actions publishes the HTML documentation to GitHub Pages after the
 documentation build succeeds on `master`. Pull requests build the site as an
 artifact without publishing it. To republish, run the `Tests` workflow manually
-on `master`. The build uses the repository's `CONTREE_SPEC` secret.
+on `master`. Builds use the committed `api/v1/spec.yaml` snapshot on every event.
 
 `make docs-go` generates the Go reference from the committed package source
 with Go's `go/doc` package. The HTML and Mintlify builds include this step and
@@ -97,11 +97,13 @@ Generation follows the same process for all languages:
 4. Format, lint and compile the generated files.
 5. Replace the previous generated files only after validation succeeds.
 
-CI compiles and tests the committed Go module without the specification. When
-the specification secret is available, CI refreshes `api/v1/spec.yaml` and
-regenerates all client sources and API reference pages from that snapshot.
+CI compiles and tests the committed Go module without fetching a specification.
+Build and documentation jobs regenerate all client sources and API reference
+pages from the committed `api/v1/spec.yaml` snapshot, including on external pull requests.
 It fails if the snapshot or generated files differ from Git, or new files are
 untracked. Commit the snapshot and generated files together after an update.
+To refresh the snapshot from a server or another file, explicitly set `SPEC`
+or `CONTREE_SPEC` when running generation locally.
 `make clean` removes build artifacts and preserves the committed sources.
 
 The existing release workflows regenerate Python and JavaScript packages from
