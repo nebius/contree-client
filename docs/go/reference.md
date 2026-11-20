@@ -492,7 +492,7 @@ const OperationSummaryKindInstance = "instance"
 SpecSHA256 identifies the exact OpenAPI input document.
 
 ```go
-const SpecSHA256 = "0c77136174a41b99c59fb4b98e5d8b1e660dee2243a24cff2da56fa84b836a0d"
+const SpecSHA256 = "7cea6cdfc37fe3213326b542ac1e8981a95482ca15f2c8aa1a4070d87955d1e8"
 ```
 
 (go-streamreprencodingascii)=

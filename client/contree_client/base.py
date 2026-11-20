@@ -1985,9 +1985,28 @@ class ContreeSyncClient(ContreeClientBase, ABC):
         With unpack omitted or false, path is the full destination filename.
         Missing parent directories are created. The file is published atomically
         after
-        transfer and SHA256 verification. The new file has mode 0644 and is
-        owned by the guest runtime user. With replace true, an existing leaf
-        symlink is replaced.
+        transfer and SHA256 verification. New files use creation mode 0644 and
+        filesystem
+        creation defaults, including the parent directory's set-group-ID and
+        default ACL.
+        With replace true, replacing an existing regular file preserves its UID,
+        GID,
+        full mode bits (07777, including set-user-ID, set-group-ID and sticky),
+        and access ACL.
+        File capabilities, other extended attributes and timestamps are not
+        copied.
+        Preserved metadata is applied before publication. If it cannot be read
+        or applied,
+        the upload fails without replacing the original file; metadata defaults
+        are not a fallback.
+        An existing leaf symlink is replaced without following it. Replacing a
+        hardlink creates
+        an independent inode; other links and existing open descriptors retain
+        the old inode.
+        Detected target changes before publication return 409. This check is not
+        an atomic
+        compare-and-swap against concurrent guest writers and does not provide a
+        filesystem snapshot.
         Directories and special files are not regular file destinations.
 
         With unpack true, path is the destination directory. Supports tar,
@@ -4377,9 +4396,28 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
         With unpack omitted or false, path is the full destination filename.
         Missing parent directories are created. The file is published atomically
         after
-        transfer and SHA256 verification. The new file has mode 0644 and is
-        owned by the guest runtime user. With replace true, an existing leaf
-        symlink is replaced.
+        transfer and SHA256 verification. New files use creation mode 0644 and
+        filesystem
+        creation defaults, including the parent directory's set-group-ID and
+        default ACL.
+        With replace true, replacing an existing regular file preserves its UID,
+        GID,
+        full mode bits (07777, including set-user-ID, set-group-ID and sticky),
+        and access ACL.
+        File capabilities, other extended attributes and timestamps are not
+        copied.
+        Preserved metadata is applied before publication. If it cannot be read
+        or applied,
+        the upload fails without replacing the original file; metadata defaults
+        are not a fallback.
+        An existing leaf symlink is replaced without following it. Replacing a
+        hardlink creates
+        an independent inode; other links and existing open descriptors retain
+        the old inode.
+        Detected target changes before publication return 409. This check is not
+        an atomic
+        compare-and-swap against concurrent guest writers and does not provide a
+        filesystem snapshot.
         Directories and special files are not regular file destinations.
 
         With unpack true, path is the destination directory. Supports tar,
