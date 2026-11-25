@@ -62,7 +62,7 @@ func TestSpawnInstanceRequest(t *testing.T) {
 				TruncateOutputAt: &zero,
 				Files: map[string]FileSpec{
 					"/work/data.txt": {
-						UUID: Some(convenienceFileUUID),
+						UUID: convenienceFileUUID,
 						Mode: Some(StringOrInt64FromInt64(0o644)),
 					},
 				},

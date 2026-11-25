@@ -19,7 +19,8 @@ const client = new ContreeClient(process.env.CONTREE_TOKEN, {
   project: "my-project",
 });
 
-const spawned = await client.spawnInstance("echo hello", "tag:ubuntu:latest", {
+const spawned = await client.spawnInstance("tag:ubuntu:latest", {
+  command: "echo hello",
   shell: true,
 });
 const operation = await client.waitOperation(spawned.uuid);

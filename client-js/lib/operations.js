@@ -59,8 +59,8 @@ export function parseListNetworkPolicies(response) {
 }
 
 /** Build the request for `POST /network/policies`. */
-export function buildCreateNetworkPolicy(cidrs) {
-  const payload = new NetworkPolicyCreateRequest({ cidrs }).toWire();
+export function buildCreateNetworkPolicy({ cidrs, domains } = {}) {
+  const payload = new NetworkPolicyCreateRequest({ cidrs, domains }).toWire();
   return {
     method: "POST",
     path: `/network/policies`,
@@ -382,9 +382,10 @@ export function parseCheckFileExists(response) {
 
 /** Build the request for `POST /instances`. */
 export function buildSpawnInstance(
-  command,
   image,
   {
+    command,
+    keepAlive,
     disposable,
     hostname,
     args,
@@ -404,8 +405,9 @@ export function buildSpawnInstance(
   } = {},
 ) {
   const payload = new InstanceSpawnRequest({
-    command,
     image,
+    command,
+    keepAlive,
     disposable,
     hostname,
     args,
@@ -563,6 +565,7 @@ export function buildOperationSubprocessCreate(
     uid,
     gid,
     stdin,
+    timeout,
     truncateOutputAt,
   } = {},
 ) {
@@ -577,6 +580,7 @@ export function buildOperationSubprocessCreate(
     uid,
     gid,
     stdin,
+    timeout,
     truncateOutputAt,
   }).toWire();
   return {

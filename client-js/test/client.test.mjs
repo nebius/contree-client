@@ -160,7 +160,8 @@ test("operation status is a typed model", async () => {
 });
 
 test("spawnInstance posts the body and returns the uuid", async () => {
-  const response = await client.spawnInstance("echo hi", "tag:busybox:latest", {
+  const response = await client.spawnInstance("tag:busybox:latest", {
+    command: "echo hi",
     shell: true,
     env: { KEY: "value" },
     timeout: 30,
@@ -251,12 +252,13 @@ test("425/429 replay a POST even without retryUnsafe", async () => {
     baseUrl: stub.baseUrl,
     retry: new RetryPolicy({ delays: [0] }),
   });
-  const early = await retrying.spawnInstance("flaky-425", "tag:busybox:latest");
+  const early = await retrying.spawnInstance("tag:busybox:latest", {
+    command: "flaky-425",
+  });
   assert.equal(early.uuid, OPERATION_UUID);
-  const throttled = await retrying.spawnInstance(
-    "flaky-429",
-    "tag:busybox:latest",
-  );
+  const throttled = await retrying.spawnInstance("tag:busybox:latest", {
+    command: "flaky-429",
+  });
   assert.equal(throttled.uuid, OPERATION_UUID);
   await retrying.close();
 });

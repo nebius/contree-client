@@ -106,9 +106,8 @@ test("tutorial subprocesses start after readiness and wait for operation complet
     ],
   );
   assert.deepEqual(client.callsFor("spawnInstance")[0].args, [
-    "sleep 60",
     "tag:ubuntu:latest",
-    { shell: true, timeout: 60, disposable: true },
+    { command: "sleep 60", shell: true, timeout: 60, disposable: true },
   ]);
   assert.deepEqual(client.callsFor("operationSubprocessCreate")[0].args, [
     "operation-1",

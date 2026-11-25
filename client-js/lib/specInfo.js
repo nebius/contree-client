@@ -5,4 +5,4 @@ export const DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/sandboxes";
 // sha256 of the exact OpenAPI document this package was built
 // from - the build input provenance
 export const SPEC_SHA256 =
-  "0c77136174a41b99c59fb4b98e5d8b1e660dee2243a24cff2da56fa84b836a0d";
+  "a204733b148c6df576f6c5e6904f438860fac88160d205ce9e7fe15e0459e825";

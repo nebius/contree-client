@@ -713,8 +713,8 @@ export class ContreeClient {
   }
 
   /** Create a network policy (POST /network/policies) */
-  async createNetworkPolicy(cidrs) {
-    const spec = operations.buildCreateNetworkPolicy(cidrs);
+  async createNetworkPolicy(options = {}) {
+    const spec = operations.buildCreateNetworkPolicy(options);
     return operations.parseCreateNetworkPolicy(await this.call(spec));
   }
 
@@ -892,8 +892,8 @@ export class ContreeClient {
   }
 
   /** Spawn a new container instance (POST /instances) */
-  async spawnInstance(command, image, options = {}) {
-    const spec = operations.buildSpawnInstance(command, image, options);
+  async spawnInstance(image, options = {}) {
+    const spec = operations.buildSpawnInstance(image, options);
     return operations.parseSpawnInstance(await this.call(spec));
   }
 

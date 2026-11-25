@@ -107,7 +107,9 @@ def live_network_policy(live_network_client: Any) -> Iterator[str]:
             break
         offset += len(page.policies)
     policy = live_network_client.create_network_policy(
-        [models.NetworkPolicyCIDRRule(cidr="1.1.1.1/32", proto="tcp", ports=[443])]
+        cidrs=[
+            models.NetworkPolicyCIDRRule(cidr="1.1.1.1/32", proto="tcp", ports=[443])
+        ]
     )
     try:
         assert [rule.to_dict() for rule in policy.cidrs] == [
@@ -131,8 +133,8 @@ def network_probe_image(
         "probe http://1.1.1.1/ blocked", "probe http://1.1.1.1/ allowed"
     )
     spawned = live_network_client.spawn_instance(
-        "set -e\napk add --no-cache curl ca-certificates\n" + baseline,
-        live_image_uuid,
+        command="set -e\napk add --no-cache curl ca-certificates\n" + baseline,
+        image=live_image_uuid,
         shell=True,
         timeout=180,
         networking=models.InstanceNetworking(enabled=True, policy=[]),

@@ -51,7 +51,7 @@ CREATED_AT = "2024-01-01T12:00:00+00:00"
 
 NETWORK_POLICY_UUID = "e166a653-c0ec-4c66-ae86-1463e22f5742"
 NETWORK_RULE = {"cidr": "192.0.2.0/24", "proto": "tcp", "ports": [443]}
-NETWORK_POLICY = {"uuid": NETWORK_POLICY_UUID, "cidrs": [NETWORK_RULE]}
+NETWORK_POLICY = {"uuid": NETWORK_POLICY_UUID, "cidrs": [NETWORK_RULE], "domains": []}
 NETWORK_TAG = {"tag": "tests/https", "uuid": NETWORK_POLICY_UUID}
 
 IMAGE = {
@@ -542,7 +542,13 @@ def route(request: Captured, attempts: collections.Counter[str]) -> Reply:
     if path == "/v1/network/policies":
         if method == "POST":
             return json_reply(
-                201, {"uuid": NETWORK_POLICY_UUID, **json.loads(request.body)}
+                201,
+                {
+                    "uuid": NETWORK_POLICY_UUID,
+                    "cidrs": [],
+                    "domains": [],
+                    **json.loads(request.body),
+                },
             )
         if method == "GET":
             return json_reply(
@@ -553,7 +559,7 @@ def route(request: Captured, attempts: collections.Counter[str]) -> Reply:
                             "uuid": NETWORK_POLICY_UUID,
                             "created_at": CREATED_AT,
                             "tags": [NETWORK_TAG["tag"]],
-                            "summary": {"cidrs": 1},
+                            "summary": {"cidrs": 1, "domains": 0},
                         }
                     ]
                 },

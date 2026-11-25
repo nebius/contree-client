@@ -8,6 +8,7 @@ import {
   ListNetworkPolicyTagsResponse,
   NetworkPolicy,
   NetworkPolicyCIDRRule,
+  NetworkPolicyDomainRule,
   NetworkPolicyTag,
   OperationInstanceMetadata,
 } from "../lib/models.js";
@@ -15,7 +16,7 @@ import { startStub } from "./stub.mjs";
 
 const policyUuid = "e166a653-c0ec-4c66-ae86-1463e22f5742";
 const rule = { cidr: "192.0.2.0/24", proto: "tcp", ports: [443] };
-const policy = { uuid: policyUuid, cidrs: [rule] };
+const policy = { uuid: policyUuid, cidrs: [rule], domains: [] };
 const tag = { tag: "tests/https", uuid: policyUuid };
 const requests = [];
 let stub;
@@ -38,9 +39,9 @@ after(async () => {
 });
 
 test("network policy methods preserve typed responses and tag redirect bodies", async () => {
-  const created = await client.createNetworkPolicy([
-    NetworkPolicyCIDRRule.fromWire(rule),
-  ]);
+  const created = await client.createNetworkPolicy({
+    cidrs: [NetworkPolicyCIDRRule.fromWire(rule)],
+  });
   assert.ok(created instanceof NetworkPolicy);
   assert.deepEqual(created.toWire(), policy);
   assert.deepEqual(JSON.parse(requests.at(-1).options.body), { cidrs: [rule] });
@@ -90,11 +91,48 @@ test("network policy methods preserve typed responses and tag redirect bodies", 
   assert.equal(await client.deleteNetworkPolicy(policyUuid), null);
 });
 
+for (const ports of [undefined, [], [443, 8443]]) {
+  for (const includeCidrs of [false, true]) {
+    test(`domain policy request preserves ports=${JSON.stringify(ports)} and cidrs=${includeCidrs}`, async () => {
+      const domain = { domain: "**.example.com", proto: "tcp" };
+      if (ports !== undefined) domain.ports = ports;
+      const options = { domains: [new NetworkPolicyDomainRule(domain)] };
+      const expected = { domains: [domain] };
+      if (includeCidrs) {
+        options.cidrs = [NetworkPolicyCIDRRule.fromWire(rule)];
+        expected.cidrs = [rule];
+      }
+
+      await client.createNetworkPolicy(options);
+
+      assert.deepEqual(JSON.parse(requests.at(-1).options.body), expected);
+    });
+  }
+}
+
+test("empty policy request omits both rule groups", async () => {
+  await client.createNetworkPolicy();
+  assert.deepEqual(JSON.parse(requests.at(-1).options.body), {});
+});
+
+test("domain policy responses preserve typed rules", () => {
+  const payload = {
+    uuid: policyUuid,
+    cidrs: [],
+    domains: [{ domain: "*.example.com", proto: "udp", ports: [53] }],
+  };
+  const decoded = NetworkPolicy.fromWire(payload);
+  assert.ok(decoded.domains[0] instanceof NetworkPolicyDomainRule);
+  assert.equal(decoded.domains[0].domain, "*.example.com");
+  assert.deepEqual(decoded.toWire(), payload);
+});
+
 test("networking responses decode effective policy and preserve optional fields", () => {
+  const domain = { domain: "**.example.com", proto: "tcp", ports: [8443] };
   const networking = {
     enabled: true,
     policy: [policyUuid],
-    effective_policy: { cidrs: [rule] },
+    effective_policy: { cidrs: [rule], domains: [domain] },
   };
   for (const Model of [InstanceSpawnResponse, OperationInstanceMetadata]) {
     const result = Model.fromWire({ networking });
@@ -103,9 +141,22 @@ test("networking responses decode effective policy and preserve optional fields"
       result.networking.effectivePolicy.cidrs[0] instanceof
         NetworkPolicyCIDRRule,
     );
+    assert.ok(
+      result.networking.effectivePolicy.domains[0] instanceof
+        NetworkPolicyDomainRule,
+    );
+    assert.deepEqual(
+      result.networking.effectivePolicy.domains[0].toWire(),
+      domain,
+    );
     assert.deepEqual(result.toWire().networking, networking);
   }
-  for (const extra of [{}, { effective_policy: null }]) {
+  for (const extra of [
+    {},
+    { effective_policy: null },
+    { effective_policy: { cidrs: [rule] } },
+    { effective_policy: { domains: [domain] } },
+  ]) {
     const wire = { enabled: true, ...extra };
     assert.deepEqual(InstanceNetworkingResponse.fromWire(wire).toWire(), wire);
   }

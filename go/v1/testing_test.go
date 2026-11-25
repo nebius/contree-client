@@ -120,7 +120,7 @@ func TestMockSpawnInstanceResponseAlias(t *testing.T) {
 	if id != "first" {
 		t.Fatalf("SpawnInstance = %q", id)
 	}
-	response, err := client.SpawnInstanceWithResponse(context.Background(), "true", "image", nil)
+	response, err := client.SpawnInstanceWithResponse(context.Background(), "image", &SpawnInstanceWithResponseOptions{Command: Some("true")})
 	requireMock(t, err)
 	if id, ok := response.UUID.Value(); !ok || id != "second" {
 		t.Fatalf("SpawnInstanceWithResponse UUID = %q, %v", id, ok)

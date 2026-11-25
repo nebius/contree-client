@@ -60,11 +60,19 @@ func (c *Client) ListNetworkPolicies(
 	return c.doJSON[NetworkPolicyListResponse](ctx, spec, acceptAny2xx)
 }
 
+// CreateNetworkPolicyOptions contains optional arguments for CreateNetworkPolicy.
+type CreateNetworkPolicyOptions struct {
+	Cidrs   Optional[[]NetworkPolicyCidrRule]
+	Domains Optional[[]NetworkPolicyDomainRule]
+}
+
 func buildCreateNetworkPolicy(
-	cidrs []NetworkPolicyCidrRule,
+	options *CreateNetworkPolicyOptions,
 ) (requestSpec, error) {
-	payload := NetworkPolicyCreateRequest{
-		Cidrs: cidrs,
+	payload := NetworkPolicyCreateRequest{}
+	if options != nil {
+		payload.Cidrs = options.Cidrs
+		payload.Domains = options.Domains
 	}
 	body, err := jsonBody(payload)
 	if err != nil {
@@ -83,9 +91,9 @@ func buildCreateNetworkPolicy(
 // CreateNetworkPolicy calls POST /network/policies.
 func (c *Client) CreateNetworkPolicy(
 	ctx context.Context,
-	cidrs []NetworkPolicyCidrRule,
+	options *CreateNetworkPolicyOptions,
 ) (NetworkPolicy, error) {
-	spec, err := buildCreateNetworkPolicy(cidrs)
+	spec, err := buildCreateNetworkPolicy(options)
 	if err != nil {
 		var zero NetworkPolicy
 		return zero, err
@@ -617,6 +625,8 @@ func (c *Client) CheckFileExists(
 
 // SpawnInstanceWithResponseOptions contains optional arguments for SpawnInstanceWithResponse.
 type SpawnInstanceWithResponseOptions struct {
+	Command          Optional[string]
+	KeepAlive        Optional[bool]
 	Disposable       Optional[bool]
 	Hostname         Optional[string]
 	Args             Optional[[]string]
@@ -636,15 +646,15 @@ type SpawnInstanceWithResponseOptions struct {
 }
 
 func buildSpawnInstanceWithResponse(
-	command string,
 	image string,
 	options *SpawnInstanceWithResponseOptions,
 ) (requestSpec, error) {
 	payload := InstanceSpawnRequest{
-		Command: command,
-		Image:   image,
+		Image: image,
 	}
 	if options != nil {
+		payload.Command = options.Command
+		payload.KeepAlive = options.KeepAlive
 		payload.Disposable = options.Disposable
 		payload.Hostname = options.Hostname
 		payload.Args = options.Args
@@ -679,11 +689,10 @@ func buildSpawnInstanceWithResponse(
 // SpawnInstanceWithResponse calls POST /instances.
 func (c *Client) SpawnInstanceWithResponse(
 	ctx context.Context,
-	command string,
 	image string,
 	options *SpawnInstanceWithResponseOptions,
 ) (InstanceSpawnResponse, error) {
-	spec, err := buildSpawnInstanceWithResponse(command, image, options)
+	spec, err := buildSpawnInstanceWithResponse(image, options)
 	if err != nil {
 		var zero InstanceSpawnResponse
 		return zero, err
@@ -911,6 +920,7 @@ type OperationSubprocessCreateOptions struct {
 	UID              Optional[int64]
 	GID              Optional[int64]
 	Stdin            Optional[ClosableStreamRepr]
+	Timeout          Optional[int64]
 	TruncateOutputAt Optional[int64]
 }
 
@@ -931,6 +941,7 @@ func buildOperationSubprocessCreate(
 		payload.UID = options.UID
 		payload.GID = options.GID
 		payload.Stdin = options.Stdin
+		payload.Timeout = options.Timeout
 		payload.TruncateOutputAt = options.TruncateOutputAt
 	}
 	body, err := jsonBody(payload)

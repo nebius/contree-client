@@ -41,39 +41,13 @@ paths:
     post:
       summary: Create a network policy
       description: |
-        Creates a policy with immutable rules in the caller's namespace.
-        Requires `network_policy` permission.
+        Creates, reuses, or restores a policy in the caller's namespace.
+        Requires `network_policy` permission. Rules are immutable; create a new policy to change them.
+        The response contains the normalized rules.
 
-        **Rules**
-
-        - Each rule allows a CIDR for the selected protocol and ports. An empty or
-          omitted port list allows all ports.
-        - ICMP is allowed to every listed CIDR, regardless of protocol or ports.
-        - An empty rules array (`cidrs: []`) blocks all IP egress, including ICMP
-          and traffic to the host.
-        - ARP is blocked for all policies.
-
-        **Limits**
-
-        The same limit of 16384 units applies before and after normalization.
-        Sum the number of ports across all rules, counting an empty or omitted
-        port list (all ports) as 1. The limit covers the entire policy, across
-        all IP versions and protocols.
-        Duplicates count toward the limit before normalization. Exceeding the
-        limit returns 400, even if normalization would remove redundant rules or ports.
-
-        **Normalization**
-
-        Before storage, duplicate rules and ports are removed, CIDRs are merged
-        per protocol and port, and rules and ports are sorted. This preserves the
-        allowed traffic. The response contains the normalized rules.
-
-        **Policy identity**
-
-        Equivalent normalized policies in the same namespace reuse the same UUID,
-        including concurrent requests. The UUID is UUIDv5 derived from the namespace
-        and the normalized policy hash. Resubmitting a deleted policy restores it
-        without restoring its tags. To change the rules, create a new policy.
+        Equivalent normalized policies in the same namespace reuse the same UUID, including
+        concurrent requests. The UUID is UUIDv5 derived from the namespace and the normalized policy hash.
+        Submitting a deleted policy again restores it without restoring its former tags.
       operationId: createNetworkPolicy
       tags:
         - network
@@ -753,12 +727,13 @@ paths:
         
         Common request body rules:
 
-          * The request body must contain at least `command` and `image` fields all other fields can be omitted.
+          * The request body must contain `image`. All other fields can be omitted.
+          * An omitted, null, or empty `command` with empty or omitted `args` creates a keep-alive instance
+            without a primary process. Null `args` also count as empty.
           * If the `command` field is a shell expression, you must set `shell` field to `true`.
           * For specifying the shell binary, you can use `env` field to set `SHELL` variable.
-          * When `shell` is `true`, environment variables defined in the image (via `ENV` directives) are
-            automatically inherited. When `shell` is `false`, image environment variables are not inherited
-            and must be passed explicitly via the `env` field.
+          * Environment variables defined in the image are inherited in both shell and direct execution.
+            The `env` field overrides inherited values; null removes a variable and an empty string keeps it present.
       operationId: spawnInstance
       tags:
         - instances
@@ -1023,6 +998,8 @@ paths:
         | 403    | Auth lacks LIST (or SPAWN for `follow=1`)        | Use a token with the right scope             |
         | 404    | Operation not in this namespace                  | Wrong UUID                                   |
         | 410    | Stream is over but the terminal artifact isn't ready yet | Retry after `Retry-After`                    |
+        | 413    | Archived events exceed a configured size budget | Do not retry the same archive                |
+        | 422    | Archived events contain invalid gzip data       | Do not retry the same archive                |
         | 425    | Not yet ready (operation is still being prepared)| Retry after `Retry-After`                    |
         | 502    | Upstream returned an error opening the stream    | Retry; if persistent, escalate               |
         | 504    | Upstream took too long to respond                | Retry                                        |
@@ -1031,6 +1008,17 @@ paths:
         close is the in-band equivalent of "the stream broke after we
         already committed to a 200" — handle it the same way as 410:
         wait briefly, reconnect with `Last-Event-Id`.
+
+        StoreD validates a private copy of events.gz before publication.
+        Invalid or oversized archives are not written to object storage.
+        Upload retries use the same validated copy.
+
+        Completed-operation archives are checked before SSE headers are sent.
+        The server limits compressed bytes, total decompressed bytes and line
+        length. A budget violation returns HTTP 413. Invalid or truncated gzip
+        data returns HTTP 422. If a live stream switches to an archive after
+        headers were sent, these errors are reported as `sse_error`. Retrying
+        the same oversized or corrupt archive does not resolve the error.
 
         See `OperationEvent` for the per-event shape.
       operationId: getOperationEvents
@@ -1154,6 +1142,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '413':
+          description: |
+            Archived events exceed the configured compressed-size,
+            decompressed-size or line-length budget. The response includes
+            the exceeded budget. Do not retry the same archive automatically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: |
+            Archived events contain invalid or truncated gzip data.
+            Do not retry the same archive automatically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1235,16 +1240,23 @@ paths:
 
         The body is an `ExecSpec` — process-execution fields only.
         VM-level concerns (`image`, `hostname`,
-        `files`, `timeout`, `disposable`, `preserve_env`) are not
+        `files`, `disposable`, `preserve_env`) are not
         accepted here; they were set when the parent operation was
         created.
 
-        `resources_limits.cpu` and `resources_limits.memory_mib` use the
-        same names and units as operation creation. Each omitted or null
-        subprocess limit inherits the corresponding operation limit.
-        Values above the operation limit return 400. Limits apply at
-        launch: memory_mib sets RLIMIT_AS for each process and memory.max
-        for the entire process tree. They cannot be changed through this
+        The command must be a nonempty string, including when `shell=true`.
+        Omitted, null, or empty commands and any supplied `keep_alive` field
+        return 400 before the worker receives a spawn request.
+
+        An omitted or null `resources_limits.cpu` inherits the operation's
+        CPU limit. A CPU value above that limit returns 400.
+        Optional memory limits apply only when explicitly supplied:
+        `memory_mib` sets memory.high, `memory_hard_mib` sets memory.max,
+        and `address_space_mib` sets both RLIMIT_AS bounds before exec.
+        Omitted or null memory fields do not create limits or inherit values
+        from the operation. Explicit operation cgroup limits still constrain
+        all workloads in the VM. `vm_memory_mib` configures VM RAM and is not
+        accepted for a subprocess. Limits cannot be changed through this
         API. Guest root can modify limits; these limits do not
         provide security isolation between processes in one VM.
 
@@ -1320,6 +1332,34 @@ paths:
             Retry-After:
               schema:
                 type: integer
+        '422':
+          description: |
+            Unprocessable Entity — the guest could not resolve the executable
+            for a direct command (`shell=false`). The error includes the
+            requested command and lookup failure. No subprocess started.
+            Correct the command or guest environment before retrying; this
+            response does not include `Retry-After`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: |
+            Bad Gateway — the guest call failed. This includes a missing
+            working directory or interpreter. Do not automatically retry:
+            this status alone does not prove that no subprocess started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: |
+            Service Unavailable — the worker could not complete the request.
+            Do not automatically retry: the execution outcome can be unknown.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '504':
           description: |
             Gateway Timeout — the guest accepted the connection but the
@@ -1600,8 +1640,11 @@ paths:
         Extraction accepts regular files, directories, symlinks and hardlinks to
         regular files already extracted in the staging tree. Parent symlinks inside that tree are
         not followed. Absolute entry names and entries containing '..' are rejected.
-        procfs, sysfs, devices, FIFOs and sockets are unsupported. New directories
-        have mode 0755; regular files retain tar permission bits (0777). Ownership
+        procfs, sysfs, devices, FIFOs and sockets are unsupported. Regular files and
+        explicit directory entries retain tar permission bits (0777). Directory modes
+        are applied after their children; the last entry for a directory sets its mode.
+        An explicit '.' directory sets the destination root mode. Without that entry,
+        a new or replaced root has mode 0755. Implicit new directories have mode 0755. Ownership
         and timestamps are not restored. Other entries fail explicitly.
         With replace omitted or false, any existing destination returns 409, including
         a symlink or empty directory. This condition is checked again atomically at publication.
@@ -1618,6 +1661,9 @@ paths:
         and verification, it combines directories and atomically replaces individual
         files and symlinks. Existing entries absent from the archive remain. Destination
         directory symlinks are not followed; directory/file conflicts fail explicitly.
+        Explicit directory entries update existing directory modes after their children
+        are merged. Existing directories without an explicit entry retain their modes,
+        including the destination root when the archive has no '.' directory entry.
         Same-filesystem hardlinks are retained. Crossing a destination mount requires
         copying file bytes and does not preserve hardlinks across filesystems.
         Merge is not atomic for the whole tree: errors, cancellation or timeout after
@@ -3200,19 +3246,19 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Launch-time limits. CPU sets the VM's vCPU count. memory_mib limits
-        each process's address space (RLIMIT_AS, soft and hard) and the
-        whole process tree's memory (cgroup memory.max). A request for
-        1 MiB is valid and enforces that limit on the workload. The backend
-        independently selects a minimum VM RAM allocation for guest boot,
-        networking and runtime services, for example 128 or 256 MiB.
-        This minimum is an implementation detail and can change. It does
-        not increase the requested workload limit.
-        A small address-space limit can prevent the executable or runtime
-        from loading. It includes stacks, libraries and reserved mappings;
-        allocations can fail with ENOMEM even with overcommit enabled.
-        Guest kernel and runtime consume part of VM RAM.
-        Limits are maxima, not reservations.
+        Launch-time VM resources and optional workload limits. CPU sets the
+        VM's vCPU count. vm_memory_mib requests VM RAM; the backend can raise it
+        to its minimum boot allocation. It does not set workload memory limits.
+        memory_mib sets memory.high and memory_hard_mib sets memory.max
+        on the operation's workload cgroup, including additional subprocesses.
+        address_space_mib sets both RLIMIT_AS bounds on the main process
+        before exec. Its descendants inherit that address-space limit.
+        Omitted or null memory limits remain unset. They are never derived
+        from VM RAM, another memory limit, or a default.
+        memory_mib must not exceed memory_hard_mib when both are set.
+        A small address-space limit can prevent the executable from loading.
+        Guest kernel and runtime consume part of VM RAM; VM-wide OOM remains
+        possible without an explicit hard limit. Limits are not reservations.
         Guest root retains permission to modify cgroups.
       properties:
         cpu:
@@ -3221,16 +3267,40 @@ components:
           maximum: 4
           default: 4
           description: Number of guest vCPUs.
-        memory_mib:
+        vm_memory_mib:
           type: integer
           minimum: 1
           maximum: 8192
           default: 4096
-          description: Per-process address-space and process-tree memory limit in MiB (1048576 bytes).
+          description: Requested VM RAM in MiB (1048576 bytes), subject to the backend's minimum boot allocation.
+        memory_mib:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 8192
+          description: Optional operation memory.high threshold in MiB. Reclaim and throttling can occur above this threshold.
+        memory_hard_mib:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 8192
+          description: Optional operation memory.max limit in MiB. It is applied only when explicitly supplied.
+        address_space_mib:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 8796093022207
+          description: Optional RLIMIT_AS for the main process in MiB, with equal soft and hard bounds. It can exceed VM RAM.
         max_layer_bytes:
           type: integer
           minimum: 1
-          description: Maximum writable layer size in bytes.
+          description: |
+            Maximum writable layer size in bytes. Storage rounds this limit
+            down to a multiple of its block size, so the
+            effective quota never exceeds the requested limit. A limit below
+            one storage block fails storage preparation with an error
+            that includes the required block size. Operation metadata retains
+            the requested limit.
           example: 1073741824
           default: 12884901888
 
@@ -3238,16 +3308,19 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Launch-time limits for a subprocess and its descendants. Each omitted
-        or null field inherits the requested operation limit, not the VM's
-        minimum boot memory. CPU/RAM cannot exceed the parent operation.
-        Limits are maxima, not reservations. Concurrent processes share VM
-        resources and can exhaust the aggregate budget. memory_mib sets
-        RLIMIT_AS (soft and hard) before exec and memory.max for the tree.
-        RLIMIT_AS includes reserved mappings, stacks and libraries; allocation
-        or executable loading can fail with ENOMEM. Descendants inherit it.
-        A local cgroup OOM
-        kills this process tree. A VM-wide OOM can affect other processes.
+        Launch-time limits for a subprocess and its descendants. An omitted
+        or null CPU field inherits the operation's CPU limit and cannot exceed
+        it. Omitted or null memory fields remain unset; no memory limit is
+        copied from the operation or derived from VM RAM or another limit.
+        Explicit operation cgroup limits still constrain the subprocess.
+        memory_mib sets memory.high and memory_hard_mib sets memory.max
+        for this process tree. The soft value cannot exceed the hard value
+        when both are set. address_space_mib sets both RLIMIT_AS bounds before
+        exec. Descendants inherit this address-space limit, which includes
+        reserved mappings, stacks and libraries. Allocation or executable
+        loading can fail with ENOMEM. vm_memory_mib is an operation-only VM setting.
+        A local cgroup OOM kills this process tree. An operation cgroup OOM or
+        VM-wide OOM can affect other processes. Limits are not reservations.
         Guest root retains permission to modify cgroups.
       properties:
         cpu:
@@ -3263,7 +3336,19 @@ components:
           nullable: true
           minimum: 1
           maximum: 8192
-          description: Per-process RLIMIT_AS and tree memory.max in MiB. Swap is disabled for this group.
+          description: Optional memory.high threshold for this process tree in MiB. Excess usage triggers reclaim and throttling.
+        memory_hard_mib:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 8192
+          description: Optional memory.max limit for this process tree in MiB. It is applied only when explicitly supplied.
+        address_space_mib:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 8796093022207
+          description: Optional RLIMIT_AS in MiB, with equal soft and hard bounds. It can exceed VM RAM.
 
     InstanceNetworking:
       type: object
@@ -3296,10 +3381,8 @@ components:
             **Limits**
 
             - At most 512 references may be supplied, including duplicates.
-            - Before and after merging, the rules are limited to 16384 units in total:
-              sum the number of ports across all rules, counting an all-port rule as 1.
-              All IP versions and protocols share this limit. Repeated rules and ports
-              across policies count again before merging.
+            - The combined rules and the normalized effective policy must each fit
+              the shared limit of 16384 units across domain and CIDR rules.
             - Exceeding either limit returns 400.
 
             **No policies**
@@ -3381,13 +3464,14 @@ components:
 
     NetworkPolicyCIDRRule:
       type: object
+      additionalProperties: false
       required:
         - cidr
         - proto
       properties:
         cidr:
           type: string
-          description: IPv4 or IPv6 destination network in CIDR notation.
+          description: Only IPv4 or IPv6 destination subnets in CIDR notation (address/prefix length) are supported.
           example: 192.0.2.0/24
         proto:
           type: string
@@ -3401,28 +3485,170 @@ components:
             minimum: 1
             maximum: 65535
 
+    NetworkPolicyDomainRule:
+      type: object
+      additionalProperties: false
+      required:
+        - domain
+        - proto
+      properties:
+        domain:
+          type: string
+          maxLength: 254
+          description: |
+            An exact name or whole-label mask using ASCII letters, digits, hyphens,
+            and underscores in labels. Hyphens and underscores may appear anywhere
+            in a label. Callers must convert internationalized names to ASCII punycode;
+            raw Unicode input is not converted. This policy syntax supports a subset
+            of DNS labels, not arbitrary DNS octets.
+            `*` matches exactly one non-empty label; `**` matches
+            zero or more labels and is allowed only as the first label.
+            `*.**.example.com` and `a.**.com` are invalid; `**.*.example.com` is valid.
+            `*.aaa.com` matches `x.aaa.com`, but not `aaa.com` or `x.y.aaa.com`. `**.ru.*.aaa.com` matches
+            `ru.x.aaa.com` and `a.b.ru.x.aaa.com`, but not `ru.aaa.com`.
+            Names are lowercased and one trailing root dot is removed. Empty labels,
+            partial-label wildcards, and characters outside the supported set are rejected.
+            Normalized labels contain at most 63 bytes, and the complete name or mask
+            at most 253 ASCII bytes without the trailing root dot (255 bytes on the
+            wire for a concrete DNS name). The normalized mask is stored.
+          example: '**.ru.*.aaa.com'
+        proto:
+          type: string
+          enum: [tcp, udp]
+        ports:
+          type: array
+          default: []
+          description: Allowed destination ports. Omitted or empty means all ports; null is invalid.
+          items:
+            type: integer
+            minimum: 1
+            maximum: 65535
+
     NetworkPolicyCreateRequest:
       type: object
       description: |
-        An allowlist of destination networks, protocols, and ports. A policy with `{"cidrs": []}`
-        allows nothing. Selecting only empty policies denies all network traffic.
-        This differs from selecting no policies (`networking.policy: []`), which allows
-        all IPv4 destinations (`0.0.0.0/0`) and global unicast IPv6 destinations (`2000::/3`)
-        on all ports and adds these explicit rules to `effective_policy`.
+        An allowlist of destination networks, protocols, and ports.
+
+        **Rule groups**
+
+        - `cidrs` and `domains` are optional and default to empty lists.
+        - Each omitted or empty group grants no permissions.
+        - A policy with both groups omitted or empty, including `{}`, allows nothing.
+        - Responses and policy hashes include both groups, even when empty.
+        - For both rule groups, omitted or empty `ports` allows all ports; `null` is invalid.
+
+        **Policy selection**
+
+        - Selecting only empty policies denies all network traffic.
+        - Selecting no policies (`networking.policy: []`) allows all IPv4 destinations
+          (`0.0.0.0/0`) and global unicast IPv6 destinations (`2000::/3`) on all ports.
+          These explicit rules are included in `effective_policy`.
+
+        **Domain masks**
+
+        - Literal labels allow ASCII letters, digits, hyphens, and underscores.
+        - Callers supply internationalized names as ASCII punycode, not raw Unicode.
+        - `*` matches one label and may occur anywhere.
+        - `**` matches zero or more labels and may occur only once, as the first label.
+
+        **Normalization**
+
+        - Remove duplicate rules and ports.
+        - Merge CIDRs for each protocol and port.
+        - Combine ports for the same domain mask and protocol.
+        - Remove domain permissions already covered by broader rules.
+        - Lowercase domain names and remove one trailing root dot, preserving wildcard positions:
+          `**.*.EXAMPLE.COM.` becomes `**.*.example.com`.
+        - Sort rules and ports.
+
+        Normalization preserves the allowed traffic and also runs when combining policies.
+
+        **Limits**
+
+        Domain and CIDR rules share a limit of 16384 units, checked before
+        and after normalization:
+
+        - Each explicit port counts as one unit; an all-port rule counts as one unit.
+        - Duplicate rules and ports count toward the input limit.
+        - Exceeding the limit at either stage returns 400.
+
+        **Current enforcement**
+
+        - ICMP traffic is allowed to the CIDRs listed in the policy, regardless of protocol or port selection.
+        - When DNS traffic reaches the configured NetD proxy, matching domain rules grant
+          access to terminal public A/AAAA addresses in the complete CNAME answer chain.
+          The queried name or any chain member may match. All matching masks across the
+          chain contribute ports, independently for TCP and UDP; an all-port rule
+          dominates its protocol. ICMP/ICMPv6 is added automatically for granted addresses.
+        - Missing /32 and /128 permissions are installed atomically before replying,
+          including cache hits. Existing CIDR and host protocol/port coverage is reused.
+        - An empty `cidrs` list grants no static IP access; domain grants can add access
+          during the current operation. Traffic to host services remains blocked except
+          for the configured DNS endpoint.
+        - ARP is blocked for all policies; neighbors are configured statically.
+
+        **DNS behavior and lifetime**
+
+        - Configure the NetD listener and route VM DNS to it to enable domain grants.
+          A direct external resolver does not invoke NetD's permission hooks.
+        - NetD forces upstream recursion (RD=1), including for client RD=0 requests.
+          Complete CNAME chains are bounded to 64 names and the configured request
+          deadline; loops/conflicts fail. Unrelated answer/additional addresses are ignored.
+        - A/AAAA answers, negative answers, and learned permissions are isolated by
+          interface lease. Responses have no TTL expiry but can be evicted by FIFO;
+          a later lookup may return different IPs. Learned permissions remain for the
+          entire operation, independently of response eviction.
+          Complete cache hits make no additional DNS probes. Only initial questions are cached;
+          CNAME members do not create extra response-cache entries.
+          A and AAAA are separate questions. Other DNS types are forwarded without grants
+          or operation answer caching.
+        - Returned assembled/cached A/AAAA record TTLs are zero and their AD flag is clear;
+          A/AAAA lookups use DO=0, CD=0 and no client EDNS options, and assembled responses
+          omit DNSSEC signatures. Client CD is echoed but does not bypass upstream validation.
+          DNSSEC transparency and validation by NetD are not provided.
+        - NXDOMAIN and NODATA are distinct negative entries subject to FIFO eviction.
+          SERVFAIL/timeouts/transport errors are not cached; the next request retries.
+          No extra transient retries
+          occur inside a request. Truncated UDP responses fall back to TCP.
+        - Malformed chains and permission-installation failures return SERVFAIL and never
+          become successful cache entries. Other upstream error codes are returned without
+          answer caching. DNS caches retain at most 16384 responses by default using FIFO,
+          with no separate byte limit; evicted queries can be resolved again.
+          New answers install any uncovered IP/port permissions before being returned.
+          Static CIDR and DNS-derived transport ACL elements share the NetD limit
+          network.max_acl_entries_per_interface, defaulting to 65536.
+          Derived ICMP/ICMPv6 entries are excluded. This setting is separate from
+          the hardcoded 16384-unit policy-normalization limit.
+          ACL limits fail closed without removing existing installed permissions.
+        - Completion removes operation state before interface reuse. IPs cached in a VM
+          during a previous run do not regain domain permissions without DNS activity in
+          the current operation. No DNS prefetch restores those old permissions.
+        - DNS-derived destinations must be public unicast. Infrastructure must block DC
+          destinations, including publicly numbered DC ranges; this is a deployment assumption.
+        - Shared-IP grants do not enforce HTTP/TLS hostname identity. Other hostnames on
+          an allowed IP/protocol/port remain reachable.
       additionalProperties: false
-      required:
-        - cidrs
       properties:
         cidrs:
           type: array
+          default: []
+          description: CIDR permissions. Omitted or empty means no CIDR permissions.
           items:
             $ref: '#/components/schemas/NetworkPolicyCIDRRule'
+
+        domains:
+          type: array
+          default: []
+          description: Domain permissions. Omitted or empty means no domain permissions.
+          items:
+            $ref: '#/components/schemas/NetworkPolicyDomainRule'
 
     NetworkPolicy:
       type: object
       required:
         - uuid
         - cidrs
+        - domains
       properties:
         uuid:
           $ref: '#/components/schemas/UUIDSchema'
@@ -3430,6 +3656,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NetworkPolicyCIDRRule'
+
+        domains:
+          type: array
+          description: Normalized domain rules. Empty when absent. Grant operation-scoped access through the NetD DNS proxy.
+          items:
+            $ref: '#/components/schemas/NetworkPolicyDomainRule'
 
     NetworkPolicyListItem:
       type: object
@@ -3454,11 +3686,16 @@ components:
           type: object
           required:
             - cidrs
+            - domains
           properties:
             cidrs:
               type: integer
               minimum: 0
-              description: Number of CIDR rules in the policy, including repeated CIDRs.
+              description: Number of normalized CIDR rules in the policy.
+            domains:
+              type: integer
+              minimum: 0
+              description: Number of normalized domain rules in the policy.
 
     NetworkPolicyListResponse:
       type: object
@@ -3472,13 +3709,11 @@ components:
 
     ExecSpec:
       type: object
+      additionalProperties: false
       description: |
-        Process-execution surface shared between `InstanceSpawnRequest`
-        (the main process) and
-        `POST /operations/{operationId}/subprocesses` (additional
-        subprocesses).  VM-level concerns (image, hostname,
-        disk limits, files, timeout, disposable, preserve_env)
-        live on `InstanceSpawnRequest` only.
+        Execution parameters for `POST /operations/{operationId}/subprocesses`.
+        Only the listed fields are accepted. Instance-only fields such as
+        keep_alive, image, hostname, files, disposable, and preserve_env are rejected.
       required:
         - command
       properties:
@@ -3486,10 +3721,11 @@ components:
           $ref: '#/components/schemas/ProcessResourcesLimits'
         command:
           type: string
+          minLength: 1
           description: >
-            The command to execute.  Same semantics as in
-            `InstanceSpawnRequest.command` — when `shell=true` it is a
-            shell expression, otherwise a path to an executable.
+            Required nonempty command for a subprocess. With shell=true, use a shell expression;
+            otherwise, use a path to an executable. Subprocess requests reject the keep_alive field,
+            including false and null values.
           example: /bin/app
         args:
           type: array
@@ -3500,29 +3736,44 @@ components:
           default: []
         shell:
           type: boolean
-          description: Run command through a shell expression (args must be empty).
+          description: Run command through a shell expression; args are ignored when shell is true.
           default: false
         env:
           nullable: true
           type: object
           additionalProperties:
             type: string
-          description: Environment variables to set in the child process.
+            nullable: true
+          description: >
+            Environment overrides for the child process. Image-defined variables are inherited
+            in both shell and direct execution. Omitted keys retain their inherited values.
+            A null value removes a variable; an empty string keeps it present with an empty value.
+            Omitting env or setting the whole field to null applies no overrides.
         cwd:
           type: string
+          nullable: true
+          default: null
           pattern: "^((/[^/]*)+/?)?$"
-          description: Working directory; empty string means image / server default.
-          default: ""
+          description: >
+            Working directory. Omission or null inherits the keep-alive instance's resolved working directory;
+            otherwise, it uses the image or server default. An explicit empty string selects the image
+            or server default even inside a keep-alive instance.
         uid:
           type: integer
+          nullable: true
+          default: null
           minimum: 0
-          default: 0
-          description: User ID to run the process as.
+          description: >
+            User ID for the subprocess. Omission or null inherits the keep-alive instance's user ID,
+            or uses zero in an ordinary instance. An explicit zero overrides inheritance.
         gid:
           type: integer
+          nullable: true
+          default: null
           minimum: 0
-          default: 0
-          description: Group ID to run the process as.
+          description: >
+            Group ID for the subprocess. Omission or null inherits the keep-alive instance's group ID,
+            or uses zero in an ordinary instance. An explicit zero overrides inheritance.
         stdin:
           allOf:
             - $ref: '#/components/schemas/ClosableStreamRepr'
@@ -3531,8 +3782,25 @@ components:
             process and exec'd subprocesses.  With `close=false` the
             pipe stays open and more data can be written via
             `POST /operations/{operationId}/subprocesses/{spid}/stdin`.
+        timeout:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 0
+          maximum: 9223372036
+          default: null
+          description: |
+            Execution timeout in seconds, measured from command startup.
+            A positive value sends SIGKILL to the command's process tree
+            when the timer expires, including commands started without waiting.
+            The timer stops when the command's main process exits; descendants
+            can outlive that process without this timer terminating them.
+            Null, zero, or omission disables the command timer. The parent VM can
+            stop earlier; this field does not extend its lifetime.
         truncate_output_at:
           type: integer
+          minimum: 1
+          maximum: 10485760
           description: |
             Maximum number of bytes to keep per stream (stdout,
             stderr, and stdin) in the subprocess event log.  Does not
@@ -3545,31 +3813,34 @@ components:
     InstanceSpawnRequest:
       type: object
       required:
-        - command
         - image
       properties:
         command:
           type: string
+          nullable: true
+          default: ""
           description: >
-            The command to execute. In case if `shell` is set to `true`, this MUST contain
-            shell expression. 
-            
-            For example `echo hello world` or `ls -l /app`. 
-            
-            If `shell` is set to `false`, this must be a relative or absolute path to the executable inside the
-            image rootfs. 
-            
-            For example: `/bin/app` or `/usr/bin/find`.
-            
-            Do not forget pass necessary `PATH` variable to env field, by default `PATH` is set to 
-            `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`.
+            Command to execute. With shell=true, use a shell expression; otherwise, use an executable path.
+            An omitted, null, or empty command with omitted, null, or empty args creates a keep-alive instance
+            without a primary process, regardless of shell or an omitted or false keep_alive flag.
+            A nonempty command is required when args are nonempty. Whitespace counts as a nonempty command.
+            Stored metadata and responses normalize an omitted or null command to an empty string.
           example: /bin/app
+        keep_alive:
+          type: boolean
+          default: false
+          description: >
+            Keep the instance available for subprocess requests without starting a primary process.
+            True rejects a nonempty command or nonempty args. An empty command and empty args always
+            normalize this flag to true before metadata is stored, even when the request sets false.
+            The instance timeout still limits its lifetime. Subprocess requests continue to require a command.
         disposable:
           type: boolean
           description: Creates a disposable execution environment no any state will be saved.
           default: false
         hostname:
           type: string
+          pattern: '^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.[A-Za-z0-9-]{1,63})*(\.[A-Za-z]{2,})?$'
           description: Hostname to set when execution.
           example: container-name
           default: linuxkit
@@ -3577,10 +3848,12 @@ components:
           $ref: '#/components/schemas/ImageSource'
         args:
           type: array
+          nullable: true
           items:
             type: string
           description: >
-            Arguments to pass to the command if shell is set to false.
+            Arguments to pass to the command if shell is false. Omitted or null args normalize to an empty list.
+            Nonempty args require a nonempty command and cannot be combined with keep_alive=true.
           example: [arg1, arg2]
           default: []
         shell:
@@ -3588,18 +3861,19 @@ components:
           description: >
             Whether to run the command through a shell. If `true`, the command must be a shell expression and all
             values from args will be ignored. If `false`, the command field must be a path to an executable and
-            args will be used. When `true`, environment variables from the image are automatically inherited.
-            When `false`, they are not - use the `env` field to pass them explicitly.
+            args will be used. Environment variables from the image are inherited in both modes.
           default: false
         env:
           nullable: true
           type: object
           additionalProperties:
             type: string
+            nullable: true
           description: >
-            Environment variables to set in the container. These are merged with image-defined
-            variables when `shell` is `true`. When `shell` is `false`, only variables specified
-            here are available - image-defined variables are not inherited.
+            Environment overrides for the main process. Image-defined variables are inherited
+            in both shell and direct execution. Omitted keys retain their inherited values.
+            A null value removes a variable; an empty string keeps it present with an empty value.
+            Omitting env or setting the whole field to null applies no overrides.
           example:
             KEY1: value1
             KEY2: value2
@@ -3610,7 +3884,8 @@ components:
             When `true`, the image's existing environment variables from `metadata/env` are merged
             with user-provided `env` values (user values take priority on conflicts), and the
             combined result is written back to `metadata/env` after command execution.
-            Setting a variable to an empty string or `null` removes it from the preserved environment.
+            A null value removes a variable from the preserved environment.
+            An empty string preserves the variable with an empty value; omitted keys remain unchanged.
           default: false
         preserve_cwd:
           type: boolean
@@ -3651,10 +3926,20 @@ components:
           $ref: '#/components/schemas/ClosableStreamRepr'
         timeout:
           type: integer
-          description: Maximum execution time in seconds
+          minimum: 1
+          default: 60
+          description: >
+            Guest execution timeout in seconds, always passed to the guest.
+            Expiry records timed_out and follows normal finalization, including
+            image persistence when disposable is false. The host VM watchdog
+            allows 15 additional seconds for boot and guest shutdown; this does
+            not extend the guest execution timeout. A host failure or an expired
+            watchdog can still prevent result and image publication.
           example: 60
         truncate_output_at:
           type: integer
+          minimum: 1
+          maximum: 10485760
           description: >
             Maximum number of bytes to keep per stream (stdout,
             stderr, and stdin) in the subprocess event log.
@@ -3669,19 +3954,24 @@ components:
           description: Map of absolute file paths to file metadata
           additionalProperties:
             type: object
+            required:
+              - uuid
             properties:
               uuid:
                 $ref: '#/components/schemas/UUIDSchema'
               uid:
                 type: integer
+                default: 0
                 description: User ID
                 example: 0
               gid:
                 type: integer
+                default: 0
                 description: Group ID
                 example: 0
               mode:
                 type: string
+                default: "0644"
                 description: File mode in octal format (e.g., "0644")
                 example: "0644"
           example:
@@ -3703,10 +3993,16 @@ components:
           $ref: '#/components/schemas/UUIDSchema'
         command:
           type: string
+          description: Canonical command; an empty string identifies an instance without a primary process.
+        keep_alive:
+          type: boolean
+          default: false
+          description: True when the instance was normalized to run without a primary process.
         image:
           $ref: '#/components/schemas/UUIDSchema'
         hostname:
           type: string
+          pattern: '^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.[A-Za-z0-9-]{1,63})*(\.[A-Za-z]{2,})?$'
         args:
           type: array
           items:
@@ -3714,11 +4010,13 @@ components:
         shell:
           type: boolean
         env:
-          nullable: true
           type: object
           additionalProperties:
             type: string
+            nullable: true
         preserve_env:
+          type: boolean
+        preserve_cwd:
           type: boolean
         cwd:
           type: string
@@ -3736,12 +4034,19 @@ components:
           type: integer
         truncate_output_at:
           type: integer
+          minimum: 1
+          maximum: 10485760
         disposable:
           type: boolean
         files:
           type: object
           additionalProperties:
             type: object
+            required:
+              - uuid
+              - uid
+              - gid
+              - mode
             properties:
               uuid:
                 $ref: '#/components/schemas/UUIDSchema'
@@ -3822,6 +4127,9 @@ components:
       properties:
         resources:
           type: object
+          description: >
+            Resource usage of the primary process. A keep-alive instance has no primary process;
+            its process usage fields are -1, while monotonic_time records its lifetime in seconds.
           properties:
             block_input:
               type: integer
@@ -3886,13 +4194,15 @@ components:
               description: Whether a core dump was generated
             exit_code:
               type: integer
-              description: Process exit code
+              nullable: true
+              description: Process exit code; null for a keep-alive instance without a primary process.
             pid:
               type: integer
-              description: Process ID
+              nullable: true
+              description: Process ID; null for a keep-alive instance without a primary process.
             signal:
               type: integer
-              description: Signal that caused termination, if any
+              description: Signal that caused termination, including a requested keep-alive shutdown; -1 while running.
             stopped:
               type: boolean
               description: Whether the process was stopped
@@ -4223,7 +4533,7 @@ components:
           minimum: 0
           description: |
             Spawned Process ID — present on process-scoped events
-            (`init`, `spawn`, `stdin`, `stdout`, `stderr`, `exit`,
+            (`init`, `spawn`, `lifecycle`, `stdin`, `stdout`, `stderr`, `exit`,
             `truncated`, `size_cap`, `network`, `shutdown`, `inspect`, `file_upload`).
             Absent on operation-scoped system events
             (`completion`), which don't tie to a specific child.
@@ -4237,6 +4547,7 @@ components:
           oneOf:
             - $ref: '#/components/schemas/EventDataInit'
             - $ref: '#/components/schemas/EventDataSpawn'
+            - $ref: '#/components/schemas/EventDataLifecycle'
             - $ref: '#/components/schemas/EventDataStream'
             - $ref: '#/components/schemas/EventDataExit'
             - $ref: '#/components/schemas/EventDataTruncated'
@@ -4252,6 +4563,7 @@ components:
       enum:
         - init
         - spawn
+        - lifecycle
         - stdin
         - stdout
         - stderr
@@ -4277,8 +4589,12 @@ components:
           * `init` — emitted first; operation-level startup snapshot.
           * `spawn` — emitted when a process starts; payload is the
             spawn parameters.
+          * `lifecycle` — emitted when a keep-alive instance is ready.
+            Uses `spid=1`, with `pid=null` and `keep_alive=true` because no primary process exists.
           * `exit` — emitted once per process when it exits; carries
             exit code, signal, timed_out flag, and resource usage.
+            A keep-alive instance also emits this event for its lifecycle root,
+            with null pid/code and no process resource usage.
           * `truncated` — emitted on stream EOF if a per-stream
             byte cap was crossed during the stream's lifetime.
           * `size_cap` — emitted once if the operation's overall
@@ -4552,6 +4868,32 @@ components:
             PATH: "/usr/bin:/bin"
             DATABASE_PASSWORD: "<MASKED>"
 
+    EventDataLifecycle:
+      type: object
+      description: Keep-alive readiness event for lifecycle root spid=1, without a primary process.
+      required: [keep_alive, pid, cwd, uid, gid, truncate_at]
+      properties:
+        keep_alive:
+          type: boolean
+          enum: [true]
+        pid:
+          type: integer
+          nullable: true
+          enum: [null]
+          description: Always null because no primary process exists.
+        cwd:
+          type: string
+          description: Resolved working directory for subprocess defaults.
+        uid:
+          type: integer
+          description: Default user ID for subprocesses.
+        gid:
+          type: integer
+          description: Default group ID for subprocesses.
+        truncate_at:
+          type: integer
+          description: Output capture limit stored on the lifecycle root; subprocesses use their own capture limits.
+
     EventDataStream:
       type: object
       description: |
@@ -4585,8 +4927,27 @@ components:
         flag (true only when the process's per-process timeout fired
         — distinguishes from an external signal/kill), wall-clock
         duration, and a snapshot of resource usage.
-      required: [pid, code, signal, timed_out, duration_ms, resources]
+        For a keep-alive lifecycle root, keep_alive is true, pid and code are null,
+        resources is absent, and signal identifies the requested termination or timeout.
+      required: [pid, code, signal, timed_out, duration_ms]
+      oneOf:
+        - required: [resources]
+          properties:
+            keep_alive:
+              enum: [false]
+        - required: [keep_alive]
+          properties:
+            keep_alive:
+              enum: [true]
+            pid:
+              enum: [null]
+            code:
+              enum: [null]
       properties:
+        keep_alive:
+          type: boolean
+          default: false
+          description: True for a keep-alive lifecycle root without a primary process.
         oom_killed:
           type: boolean
           default: false
@@ -4594,11 +4955,13 @@ components:
         pid:
           type: integer
           minimum: 1
-          description: PID of the process that just exited.
+          nullable: true
+          description: PID of the process that exited; null for a keep-alive lifecycle root.
           example: 4242
         code:
           type: integer
-          description: Exit code (0..255) if the process exited normally; -1 if killed by signal.
+          nullable: true
+          description: Exit code (0..255) if normal, -1 if killed by signal, or null for a keep-alive lifecycle root.
           example: 0
         signal:
           type: integer
@@ -4624,7 +4987,9 @@ components:
           description: Wall-clock time from spawn to exit.
           example: 1234
         resources:
-          $ref: '#/components/schemas/EventResources'
+          allOf:
+            - $ref: '#/components/schemas/EventResources'
+          description: Required for process exits; absent for a keep-alive lifecycle root.
 
     EventResources:
       type: object

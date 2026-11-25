@@ -56,7 +56,7 @@ func (c *Client) SpawnInstance(
 		return InstanceSpawnResponse{}, errors.New("contree: spawn timeout must not be negative")
 	}
 
-	wire := SpawnInstanceWithResponseOptions{}
+	wire := SpawnInstanceWithResponseOptions{Command: Some(command)}
 	if options.Disposable {
 		wire.Disposable = Some(true)
 	}
@@ -110,5 +110,5 @@ func (c *Client) SpawnInstance(
 		wire.Files = Some(options.Files)
 	}
 
-	return c.SpawnInstanceWithResponse(ctx, command, image, &wire)
+	return c.SpawnInstanceWithResponse(ctx, image, &wire)
 }

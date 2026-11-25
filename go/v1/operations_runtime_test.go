@@ -81,9 +81,9 @@ func TestGeneratedSpawnInstancePreservesOptionalJSONStates(t *testing.T) {
 	}
 	_, err = client.SpawnInstanceWithResponse(
 		context.Background(),
-		"printf ok",
 		"ubuntu:latest",
 		&SpawnInstanceWithResponseOptions{
+			Command:  Some("printf ok"),
 			Hostname: Null[string](),
 			Shell:    Some(false),
 		},

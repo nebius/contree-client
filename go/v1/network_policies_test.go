@@ -14,7 +14,7 @@ func TestNetworkPolicyOperations(t *testing.T) {
 	const policyID = "01900000-0000-7000-8000-000000000001"
 	const tag = "team/policy with space"
 	const tagPath = "/v1/network/tags/team%2Fpolicy%20with%20space"
-	const policyJSON = `{"uuid":"` + policyID + `","cidrs":[{"cidr":"192.0.2.0/24","proto":"tcp","ports":[443]}]}`
+	const policyJSON = `{"uuid":"` + policyID + `","cidrs":[{"cidr":"192.0.2.0/24","proto":"tcp","ports":[443]}],"domains":[]}`
 	const tagJSON = `{"tag":"` + tag + `","uuid":"` + policyID + `"}`
 	type call struct {
 		method, path, search, limit, offset string
@@ -34,7 +34,7 @@ func TestNetworkPolicyOperations(t *testing.T) {
 			writer.WriteHeader(http.StatusCreated)
 			io.WriteString(writer, policyJSON)
 		case "GET /v1/network/policies":
-			io.WriteString(writer, `{"policies":[{"uuid":"`+policyID+`","created_at":"2026-11-02T00:00:00Z","tags":["`+tag+`"],"summary":{"cidrs":1}}]}`)
+			io.WriteString(writer, `{"policies":[{"uuid":"`+policyID+`","created_at":"2026-11-02T00:00:00Z","tags":["`+tag+`"],"summary":{"cidrs":1,"domains":0}}]}`)
 		case "GET /v1/network/policies/" + policyID:
 			io.WriteString(writer, policyJSON)
 		case "GET /v1/network/tags":
@@ -71,8 +71,10 @@ func TestNetworkPolicyOperations(t *testing.T) {
 			return call{}
 		}
 	}
-	created, err := client.CreateNetworkPolicy(ctx, []NetworkPolicyCidrRule{
-		{Cidr: "192.0.2.0/24", Proto: "tcp", Ports: Some([]int64{443})},
+	created, err := client.CreateNetworkPolicy(ctx, &CreateNetworkPolicyOptions{
+		Cidrs: Some([]NetworkPolicyCidrRule{
+			{Cidr: "192.0.2.0/24", Proto: "tcp", Ports: Some([]int64{443})},
+		}),
 	})
 	if err != nil || created.UUID != policyID || len(created.Cidrs) != 1 {
 		t.Fatalf("CreateNetworkPolicy = %#v, %v", created, err)
@@ -82,8 +84,12 @@ func TestNetworkPolicyOperations(t *testing.T) {
 	if err := json.Unmarshal(request.body, &createPayload); err != nil {
 		t.Fatal(err)
 	}
-	ports, present := createPayload.Cidrs[0].Ports.Value()
-	if createPayload.Cidrs[0].Cidr != "192.0.2.0/24" || !present || !reflect.DeepEqual(ports, []int64{443}) {
+	cidrs, present := createPayload.Cidrs.Value()
+	if !present || len(cidrs) != 1 {
+		t.Fatalf("create payload = %s", request.body)
+	}
+	ports, present := cidrs[0].Ports.Value()
+	if cidrs[0].Cidr != "192.0.2.0/24" || !present || !reflect.DeepEqual(ports, []int64{443}) {
 		t.Fatalf("create payload = %s", request.body)
 	}
 	search, limit, offset := "udp://[2001:db8::/64]:53", int64(7), int64(0)
@@ -138,14 +144,100 @@ func TestNetworkPolicyOperations(t *testing.T) {
 	}
 }
 
+func TestDomainPolicyRequests(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		options *CreateNetworkPolicyOptions
+		body    string
+	}{
+		{"empty", nil, `{}`},
+		{
+			"domain only",
+			&CreateNetworkPolicyOptions{Domains: Some([]NetworkPolicyDomainRule{
+				{Domain: "**.example.com", Proto: "tcp", Ports: Some([]int64{443, 8443})},
+			})},
+			`{"domains":[{"domain":"**.example.com","proto":"tcp","ports":[443,8443]}]}`,
+		},
+		{
+			"all ports omitted",
+			&CreateNetworkPolicyOptions{Domains: Some([]NetworkPolicyDomainRule{
+				{Domain: "*.example.com", Proto: "udp"},
+			})},
+			`{"domains":[{"domain":"*.example.com","proto":"udp"}]}`,
+		},
+		{
+			"mixed with explicit all ports",
+			&CreateNetworkPolicyOptions{
+				Cidrs: Some([]NetworkPolicyCidrRule{{Cidr: "192.0.2.0/24", Proto: "tcp"}}),
+				Domains: Some([]NetworkPolicyDomainRule{
+					{Domain: "example.com", Proto: "udp", Ports: Some([]int64{})},
+				}),
+			},
+			`{"cidrs":[{"cidr":"192.0.2.0/24","proto":"tcp"}],"domains":[{"domain":"example.com","proto":"udp","ports":[]}]}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests := make(chan []byte, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Method != http.MethodPost || request.URL.Path != "/v1/network/policies" {
+					t.Errorf("unexpected request: %s %s", request.Method, request.URL.Path)
+				}
+				requestBody, err := io.ReadAll(request.Body)
+				if err != nil {
+					t.Error(err)
+				}
+				requests <- requestBody
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusCreated)
+				io.WriteString(writer, `{"uuid":"policy","cidrs":[],"domains":[{"domain":"*.example.com","proto":"udp","ports":[53]}]}`)
+			}))
+			defer server.Close()
+			client, err := NewClient("test", WithBaseURL(server.URL))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			policy, err := client.CreateNetworkPolicy(context.Background(), test.options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requestBody := <-requests
+			var got, want any
+			if err := json.Unmarshal(requestBody, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(test.body), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("request body = %s, want %s", requestBody, test.body)
+			}
+			if len(policy.Domains) != 1 || policy.Domains[0].Domain != "*.example.com" || policy.Domains[0].Proto != "udp" {
+				t.Fatalf("domain response = %#v", policy.Domains)
+			}
+			ports, present := policy.Domains[0].Ports.Value()
+			if !present || !reflect.DeepEqual(ports, []int64{53}) {
+				t.Fatalf("domain response ports = %#v", policy.Domains[0].Ports)
+			}
+		})
+	}
+}
+
 func TestInstanceNetworkingResponseEffectivePolicy(t *testing.T) {
 	for _, test := range []struct {
 		name, field string
 		set, null   bool
+		domains     []NetworkPolicyDomainRule
 	}{
-		{"omitted", "", false, false},
-		{"null", `,"effective_policy":null`, true, true},
-		{"empty", `,"effective_policy":{"cidrs":[]}`, true, false},
+		{"omitted", "", false, false, nil},
+		{"null", `,"effective_policy":null`, true, true, nil},
+		{"empty", `,"effective_policy":{"cidrs":[]}`, true, false, nil},
+		{
+			"domain",
+			`,"effective_policy":{"cidrs":[],"domains":[{"domain":"**.example.com","proto":"tcp","ports":[8443]}]}`,
+			true, false,
+			[]NetworkPolicyDomainRule{{Domain: "**.example.com", Proto: "tcp", Ports: Some([]int64{8443})}},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			payload := []byte(`{"networking":{"enabled":true,"policy":[]` + test.field + `}}`)
@@ -157,8 +249,15 @@ func TestInstanceNetworkingResponseEffectivePolicy(t *testing.T) {
 			if !present || networking.EffectivePolicy.IsSet() != test.set || networking.EffectivePolicy.IsNull() != test.null {
 				t.Fatalf("networking field state = %#v", networking)
 			}
-			if policy, present := networking.EffectivePolicy.Value(); present && (policy.Cidrs == nil || len(policy.Cidrs) != 0) {
-				t.Fatalf("empty effective policy = %#v", policy)
+			if policy, present := networking.EffectivePolicy.Value(); present {
+				cidrs, present := policy.Cidrs.Value()
+				if !present || cidrs == nil || len(cidrs) != 0 {
+					t.Fatalf("effective CIDRs = %#v, want an empty list", policy.Cidrs)
+				}
+				domains, present := policy.Domains.Value()
+				if present != (test.domains != nil) || !reflect.DeepEqual(domains, test.domains) {
+					t.Fatalf("effective domains = %#v, want %#v", policy.Domains, test.domains)
+				}
 			}
 			encoded, err := json.Marshal(response)
 			if err != nil {

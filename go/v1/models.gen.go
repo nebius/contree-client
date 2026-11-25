@@ -241,6 +241,7 @@ type OperationEventType string
 const (
 	OperationEventTypeInit       OperationEventType = "init"
 	OperationEventTypeSpawn      OperationEventType = "spawn"
+	OperationEventTypeLifecycle  OperationEventType = "lifecycle"
 	OperationEventTypeStdin      OperationEventType = "stdin"
 	OperationEventTypeStdout     OperationEventType = "stdout"
 	OperationEventTypeStderr     OperationEventType = "stderr"
@@ -280,6 +281,12 @@ const NetworkPolicyCidrRuleProtoTcp = "tcp"
 
 // NetworkPolicyCidrRuleProtoUdp is a documented NetworkPolicyCidrRuleProto value.
 const NetworkPolicyCidrRuleProtoUdp = "udp"
+
+// NetworkPolicyDomainRuleProtoTcp is a documented NetworkPolicyDomainRuleProto value.
+const NetworkPolicyDomainRuleProtoTcp = "tcp"
+
+// NetworkPolicyDomainRuleProtoUdp is a documented NetworkPolicyDomainRuleProto value.
+const NetworkPolicyDomainRuleProtoUdp = "udp"
 
 // OperationSummaryKindImageImport is a documented OperationSummaryKind value.
 const OperationSummaryKindImageImport = "image_import"
@@ -1824,22 +1831,40 @@ func NewClosableStreamReprFromText(value string) ClosableStreamRepr {
 
 // InstanceResourcesLimits is generated from the InstanceResourcesLimits schema.
 type InstanceResourcesLimits struct {
-	CPU           Optional[int64] `json:"cpu"`
-	MemoryMib     Optional[int64] `json:"memory_mib"`
-	MaxLayerBytes Optional[int64] `json:"max_layer_bytes"`
+	CPU             Optional[int64] `json:"cpu"`
+	VMMemoryMib     Optional[int64] `json:"vm_memory_mib"`
+	MemoryMib       Optional[int64] `json:"memory_mib"`
+	MemoryHardMib   Optional[int64] `json:"memory_hard_mib"`
+	AddressSpaceMib Optional[int64] `json:"address_space_mib"`
+	MaxLayerBytes   Optional[int64] `json:"max_layer_bytes"`
 }
 
 // MarshalJSON encodes InstanceResourcesLimits with exact wire names.
 func (m InstanceResourcesLimits) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 3)
+	object := make(map[string]json.RawMessage, 6)
 	if m.CPU.IsSet() {
 		if err := putJSONField(object, "cpu", m.CPU); err != nil {
 			return nil, fmt.Errorf("marshal InstanceResourcesLimits.cpu: %w", err)
 		}
 	}
+	if m.VMMemoryMib.IsSet() {
+		if err := putJSONField(object, "vm_memory_mib", m.VMMemoryMib); err != nil {
+			return nil, fmt.Errorf("marshal InstanceResourcesLimits.vm_memory_mib: %w", err)
+		}
+	}
 	if m.MemoryMib.IsSet() {
 		if err := putJSONField(object, "memory_mib", m.MemoryMib); err != nil {
 			return nil, fmt.Errorf("marshal InstanceResourcesLimits.memory_mib: %w", err)
+		}
+	}
+	if m.MemoryHardMib.IsSet() {
+		if err := putJSONField(object, "memory_hard_mib", m.MemoryHardMib); err != nil {
+			return nil, fmt.Errorf("marshal InstanceResourcesLimits.memory_hard_mib: %w", err)
+		}
+	}
+	if m.AddressSpaceMib.IsSet() {
+		if err := putJSONField(object, "address_space_mib", m.AddressSpaceMib); err != nil {
+			return nil, fmt.Errorf("marshal InstanceResourcesLimits.address_space_mib: %w", err)
 		}
 	}
 	if m.MaxLayerBytes.IsSet() {
@@ -1869,10 +1894,28 @@ func (m *InstanceResourcesLimits) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("unmarshal InstanceResourcesLimits.cpu: %w", err)
 		}
 	}
+	rawVMMemoryMib, ok := object["vm_memory_mib"]
+	if ok {
+		if err := json.Unmarshal(rawVMMemoryMib, &decoded.VMMemoryMib); err != nil {
+			return fmt.Errorf("unmarshal InstanceResourcesLimits.vm_memory_mib: %w", err)
+		}
+	}
 	rawMemoryMib, ok := object["memory_mib"]
 	if ok {
 		if err := json.Unmarshal(rawMemoryMib, &decoded.MemoryMib); err != nil {
 			return fmt.Errorf("unmarshal InstanceResourcesLimits.memory_mib: %w", err)
+		}
+	}
+	rawMemoryHardMib, ok := object["memory_hard_mib"]
+	if ok {
+		if err := json.Unmarshal(rawMemoryHardMib, &decoded.MemoryHardMib); err != nil {
+			return fmt.Errorf("unmarshal InstanceResourcesLimits.memory_hard_mib: %w", err)
+		}
+	}
+	rawAddressSpaceMib, ok := object["address_space_mib"]
+	if ok {
+		if err := json.Unmarshal(rawAddressSpaceMib, &decoded.AddressSpaceMib); err != nil {
+			return fmt.Errorf("unmarshal InstanceResourcesLimits.address_space_mib: %w", err)
 		}
 	}
 	rawMaxLayerBytes, ok := object["max_layer_bytes"]
@@ -1887,13 +1930,15 @@ func (m *InstanceResourcesLimits) UnmarshalJSON(data []byte) error {
 
 // ProcessResourcesLimits is generated from the ProcessResourcesLimits schema.
 type ProcessResourcesLimits struct {
-	CPU       Optional[int64] `json:"cpu"`
-	MemoryMib Optional[int64] `json:"memory_mib"`
+	CPU             Optional[int64] `json:"cpu"`
+	MemoryMib       Optional[int64] `json:"memory_mib"`
+	MemoryHardMib   Optional[int64] `json:"memory_hard_mib"`
+	AddressSpaceMib Optional[int64] `json:"address_space_mib"`
 }
 
 // MarshalJSON encodes ProcessResourcesLimits with exact wire names.
 func (m ProcessResourcesLimits) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 2)
+	object := make(map[string]json.RawMessage, 4)
 	if m.CPU.IsSet() {
 		if err := putJSONField(object, "cpu", m.CPU); err != nil {
 			return nil, fmt.Errorf("marshal ProcessResourcesLimits.cpu: %w", err)
@@ -1902,6 +1947,16 @@ func (m ProcessResourcesLimits) MarshalJSON() ([]byte, error) {
 	if m.MemoryMib.IsSet() {
 		if err := putJSONField(object, "memory_mib", m.MemoryMib); err != nil {
 			return nil, fmt.Errorf("marshal ProcessResourcesLimits.memory_mib: %w", err)
+		}
+	}
+	if m.MemoryHardMib.IsSet() {
+		if err := putJSONField(object, "memory_hard_mib", m.MemoryHardMib); err != nil {
+			return nil, fmt.Errorf("marshal ProcessResourcesLimits.memory_hard_mib: %w", err)
+		}
+	}
+	if m.AddressSpaceMib.IsSet() {
+		if err := putJSONField(object, "address_space_mib", m.AddressSpaceMib); err != nil {
+			return nil, fmt.Errorf("marshal ProcessResourcesLimits.address_space_mib: %w", err)
 		}
 	}
 	return json.Marshal(object)
@@ -1930,6 +1985,18 @@ func (m *ProcessResourcesLimits) UnmarshalJSON(data []byte) error {
 	if ok {
 		if err := json.Unmarshal(rawMemoryMib, &decoded.MemoryMib); err != nil {
 			return fmt.Errorf("unmarshal ProcessResourcesLimits.memory_mib: %w", err)
+		}
+	}
+	rawMemoryHardMib, ok := object["memory_hard_mib"]
+	if ok {
+		if err := json.Unmarshal(rawMemoryHardMib, &decoded.MemoryHardMib); err != nil {
+			return fmt.Errorf("unmarshal ProcessResourcesLimits.memory_hard_mib: %w", err)
+		}
+	}
+	rawAddressSpaceMib, ok := object["address_space_mib"]
+	if ok {
+		if err := json.Unmarshal(rawAddressSpaceMib, &decoded.AddressSpaceMib); err != nil {
+			return fmt.Errorf("unmarshal ProcessResourcesLimits.address_space_mib: %w", err)
 		}
 	}
 	*m = decoded
@@ -2054,19 +2121,91 @@ func (m *NetworkPolicyCidrRule) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// NetworkPolicyDomainRule is generated from the NetworkPolicyDomainRule schema.
+type NetworkPolicyDomainRule struct {
+	Domain string            `json:"domain"`
+	Proto  string            `json:"proto"`
+	Ports  Optional[[]int64] `json:"ports"`
+}
+
+// MarshalJSON encodes NetworkPolicyDomainRule with exact wire names.
+func (m NetworkPolicyDomainRule) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 3)
+	if err := putJSONField(object, "domain", m.Domain); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyDomainRule.domain: %w", err)
+	}
+	if err := putJSONField(object, "proto", m.Proto); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyDomainRule.proto: %w", err)
+	}
+	if m.Ports.IsSet() {
+		if err := putJSONField(object, "ports", m.Ports); err != nil {
+			return nil, fmt.Errorf("marshal NetworkPolicyDomainRule.ports: %w", err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes NetworkPolicyDomainRule and checks required fields.
+func (m *NetworkPolicyDomainRule) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal NetworkPolicyDomainRule into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyDomainRule: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("NetworkPolicyDomainRule must be a JSON object")
+	}
+	var decoded NetworkPolicyDomainRule
+	rawDomain, ok := object["domain"]
+	if !ok {
+		return fmt.Errorf("missing required field domain")
+	}
+	if isJSONNull(rawDomain) {
+		return fmt.Errorf("field domain must not be null")
+	}
+	if err := json.Unmarshal(rawDomain, &decoded.Domain); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyDomainRule.domain: %w", err)
+	}
+	rawProto, ok := object["proto"]
+	if !ok {
+		return fmt.Errorf("missing required field proto")
+	}
+	if isJSONNull(rawProto) {
+		return fmt.Errorf("field proto must not be null")
+	}
+	if err := json.Unmarshal(rawProto, &decoded.Proto); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyDomainRule.proto: %w", err)
+	}
+	rawPorts, ok := object["ports"]
+	if ok {
+		if err := json.Unmarshal(rawPorts, &decoded.Ports); err != nil {
+			return fmt.Errorf("unmarshal NetworkPolicyDomainRule.ports: %w", err)
+		}
+	}
+	*m = decoded
+	return nil
+}
+
 // NetworkPolicyCreateRequest is generated from the NetworkPolicyCreateRequest schema.
 type NetworkPolicyCreateRequest struct {
-	Cidrs []NetworkPolicyCidrRule `json:"cidrs"`
+	Cidrs   Optional[[]NetworkPolicyCidrRule]   `json:"cidrs"`
+	Domains Optional[[]NetworkPolicyDomainRule] `json:"domains"`
 }
 
 // MarshalJSON encodes NetworkPolicyCreateRequest with exact wire names.
 func (m NetworkPolicyCreateRequest) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 1)
-	if isNilJSONValue(m.Cidrs) {
-		return nil, fmt.Errorf("marshal NetworkPolicyCreateRequest.cidrs: required field is nil")
+	object := make(map[string]json.RawMessage, 2)
+	if m.Cidrs.IsSet() {
+		if err := putJSONField(object, "cidrs", m.Cidrs); err != nil {
+			return nil, fmt.Errorf("marshal NetworkPolicyCreateRequest.cidrs: %w", err)
+		}
 	}
-	if err := putJSONField(object, "cidrs", m.Cidrs); err != nil {
-		return nil, fmt.Errorf("marshal NetworkPolicyCreateRequest.cidrs: %w", err)
+	if m.Domains.IsSet() {
+		if err := putJSONField(object, "domains", m.Domains); err != nil {
+			return nil, fmt.Errorf("marshal NetworkPolicyCreateRequest.domains: %w", err)
+		}
 	}
 	return json.Marshal(object)
 }
@@ -2085,14 +2224,16 @@ func (m *NetworkPolicyCreateRequest) UnmarshalJSON(data []byte) error {
 	}
 	var decoded NetworkPolicyCreateRequest
 	rawCidrs, ok := object["cidrs"]
-	if !ok {
-		return fmt.Errorf("missing required field cidrs")
+	if ok {
+		if err := json.Unmarshal(rawCidrs, &decoded.Cidrs); err != nil {
+			return fmt.Errorf("unmarshal NetworkPolicyCreateRequest.cidrs: %w", err)
+		}
 	}
-	if isJSONNull(rawCidrs) {
-		return fmt.Errorf("field cidrs must not be null")
-	}
-	if err := json.Unmarshal(rawCidrs, &decoded.Cidrs); err != nil {
-		return fmt.Errorf("unmarshal NetworkPolicyCreateRequest.cidrs: %w", err)
+	rawDomains, ok := object["domains"]
+	if ok {
+		if err := json.Unmarshal(rawDomains, &decoded.Domains); err != nil {
+			return fmt.Errorf("unmarshal NetworkPolicyCreateRequest.domains: %w", err)
+		}
 	}
 	*m = decoded
 	return nil
@@ -2218,13 +2359,14 @@ func (m *NetworkPolicyTag) UnmarshalJSON(data []byte) error {
 
 // NetworkPolicy is generated from the NetworkPolicy schema.
 type NetworkPolicy struct {
-	UUID  string                  `json:"uuid"`
-	Cidrs []NetworkPolicyCidrRule `json:"cidrs"`
+	UUID    string                    `json:"uuid"`
+	Cidrs   []NetworkPolicyCidrRule   `json:"cidrs"`
+	Domains []NetworkPolicyDomainRule `json:"domains"`
 }
 
 // MarshalJSON encodes NetworkPolicy with exact wire names.
 func (m NetworkPolicy) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 2)
+	object := make(map[string]json.RawMessage, 3)
 	if err := putJSONField(object, "uuid", m.UUID); err != nil {
 		return nil, fmt.Errorf("marshal NetworkPolicy.uuid: %w", err)
 	}
@@ -2233,6 +2375,12 @@ func (m NetworkPolicy) MarshalJSON() ([]byte, error) {
 	}
 	if err := putJSONField(object, "cidrs", m.Cidrs); err != nil {
 		return nil, fmt.Errorf("marshal NetworkPolicy.cidrs: %w", err)
+	}
+	if isNilJSONValue(m.Domains) {
+		return nil, fmt.Errorf("marshal NetworkPolicy.domains: required field is nil")
+	}
+	if err := putJSONField(object, "domains", m.Domains); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicy.domains: %w", err)
 	}
 	return json.Marshal(object)
 }
@@ -2270,20 +2418,34 @@ func (m *NetworkPolicy) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(rawCidrs, &decoded.Cidrs); err != nil {
 		return fmt.Errorf("unmarshal NetworkPolicy.cidrs: %w", err)
 	}
+	rawDomains, ok := object["domains"]
+	if !ok {
+		return fmt.Errorf("missing required field domains")
+	}
+	if isJSONNull(rawDomains) {
+		return fmt.Errorf("field domains must not be null")
+	}
+	if err := json.Unmarshal(rawDomains, &decoded.Domains); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicy.domains: %w", err)
+	}
 	*m = decoded
 	return nil
 }
 
 // NetworkPolicyListItemSummary is generated from the NetworkPolicyListItemSummary schema.
 type NetworkPolicyListItemSummary struct {
-	Cidrs int64 `json:"cidrs"`
+	Cidrs   int64 `json:"cidrs"`
+	Domains int64 `json:"domains"`
 }
 
 // MarshalJSON encodes NetworkPolicyListItemSummary with exact wire names.
 func (m NetworkPolicyListItemSummary) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 1)
+	object := make(map[string]json.RawMessage, 2)
 	if err := putJSONField(object, "cidrs", m.Cidrs); err != nil {
 		return nil, fmt.Errorf("marshal NetworkPolicyListItemSummary.cidrs: %w", err)
+	}
+	if err := putJSONField(object, "domains", m.Domains); err != nil {
+		return nil, fmt.Errorf("marshal NetworkPolicyListItemSummary.domains: %w", err)
 	}
 	return json.Marshal(object)
 }
@@ -2310,6 +2472,16 @@ func (m *NetworkPolicyListItemSummary) UnmarshalJSON(data []byte) error {
 	}
 	if err := json.Unmarshal(rawCidrs, &decoded.Cidrs); err != nil {
 		return fmt.Errorf("unmarshal NetworkPolicyListItemSummary.cidrs: %w", err)
+	}
+	rawDomains, ok := object["domains"]
+	if !ok {
+		return fmt.Errorf("missing required field domains")
+	}
+	if isJSONNull(rawDomains) {
+		return fmt.Errorf("field domains must not be null")
+	}
+	if err := json.Unmarshal(rawDomains, &decoded.Domains); err != nil {
+		return fmt.Errorf("unmarshal NetworkPolicyListItemSummary.domains: %w", err)
 	}
 	*m = decoded
 	return nil
@@ -2456,12 +2628,13 @@ type ExecSpec struct {
 	UID              Optional[int64]                  `json:"uid"`
 	GID              Optional[int64]                  `json:"gid"`
 	Stdin            Optional[ClosableStreamRepr]     `json:"stdin"`
+	Timeout          Optional[int64]                  `json:"timeout"`
 	TruncateOutputAt Optional[int64]                  `json:"truncate_output_at"`
 }
 
 // MarshalJSON encodes ExecSpec with exact wire names.
 func (m ExecSpec) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 10)
+	object := make(map[string]json.RawMessage, 11)
 	if m.ResourcesLimits.IsSet() {
 		if err := putJSONField(object, "resources_limits", m.ResourcesLimits); err != nil {
 			return nil, fmt.Errorf("marshal ExecSpec.resources_limits: %w", err)
@@ -2503,6 +2676,11 @@ func (m ExecSpec) MarshalJSON() ([]byte, error) {
 	if m.Stdin.IsSet() {
 		if err := putJSONField(object, "stdin", m.Stdin); err != nil {
 			return nil, fmt.Errorf("marshal ExecSpec.stdin: %w", err)
+		}
+	}
+	if m.Timeout.IsSet() {
+		if err := putJSONField(object, "timeout", m.Timeout); err != nil {
+			return nil, fmt.Errorf("marshal ExecSpec.timeout: %w", err)
 		}
 	}
 	if m.TruncateOutputAt.IsSet() {
@@ -2584,6 +2762,12 @@ func (m *ExecSpec) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("unmarshal ExecSpec.stdin: %w", err)
 		}
 	}
+	rawTimeout, ok := object["timeout"]
+	if ok {
+		if err := json.Unmarshal(rawTimeout, &decoded.Timeout); err != nil {
+			return fmt.Errorf("unmarshal ExecSpec.timeout: %w", err)
+		}
+	}
 	rawTruncateOutputAt, ok := object["truncate_output_at"]
 	if ok {
 		if err := json.Unmarshal(rawTruncateOutputAt, &decoded.TruncateOutputAt); err != nil {
@@ -2596,7 +2780,7 @@ func (m *ExecSpec) UnmarshalJSON(data []byte) error {
 
 // FileSpec is generated from the FileSpec schema.
 type FileSpec struct {
-	UUID Optional[string]        `json:"uuid"`
+	UUID string                  `json:"uuid"`
 	UID  Optional[int64]         `json:"uid"`
 	GID  Optional[int64]         `json:"gid"`
 	Mode Optional[StringOrInt64] `json:"mode"`
@@ -2605,10 +2789,8 @@ type FileSpec struct {
 // MarshalJSON encodes FileSpec with exact wire names.
 func (m FileSpec) MarshalJSON() ([]byte, error) {
 	object := make(map[string]json.RawMessage, 4)
-	if m.UUID.IsSet() {
-		if err := putJSONField(object, "uuid", m.UUID); err != nil {
-			return nil, fmt.Errorf("marshal FileSpec.uuid: %w", err)
-		}
+	if err := putJSONField(object, "uuid", m.UUID); err != nil {
+		return nil, fmt.Errorf("marshal FileSpec.uuid: %w", err)
 	}
 	if m.UID.IsSet() {
 		if err := putJSONField(object, "uid", m.UID); err != nil {
@@ -2642,10 +2824,14 @@ func (m *FileSpec) UnmarshalJSON(data []byte) error {
 	}
 	var decoded FileSpec
 	rawUUID, ok := object["uuid"]
-	if ok {
-		if err := json.Unmarshal(rawUUID, &decoded.UUID); err != nil {
-			return fmt.Errorf("unmarshal FileSpec.uuid: %w", err)
-		}
+	if !ok {
+		return fmt.Errorf("missing required field uuid")
+	}
+	if isJSONNull(rawUUID) {
+		return fmt.Errorf("field uuid must not be null")
+	}
+	if err := json.Unmarshal(rawUUID, &decoded.UUID); err != nil {
+		return fmt.Errorf("unmarshal FileSpec.uuid: %w", err)
 	}
 	rawUID, ok := object["uid"]
 	if ok {
@@ -2694,7 +2880,8 @@ func (m *FileSpec) NormalizeMode() {
 
 // InstanceSpawnRequest is generated from the InstanceSpawnRequest schema.
 type InstanceSpawnRequest struct {
-	Command          string                            `json:"command"`
+	Command          Optional[string]                  `json:"command"`
+	KeepAlive        Optional[bool]                    `json:"keep_alive"`
 	Disposable       Optional[bool]                    `json:"disposable"`
 	Hostname         Optional[string]                  `json:"hostname"`
 	Image            string                            `json:"image"`
@@ -2716,9 +2903,16 @@ type InstanceSpawnRequest struct {
 
 // MarshalJSON encodes InstanceSpawnRequest with exact wire names.
 func (m InstanceSpawnRequest) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 18)
-	if err := putJSONField(object, "command", m.Command); err != nil {
-		return nil, fmt.Errorf("marshal InstanceSpawnRequest.command: %w", err)
+	object := make(map[string]json.RawMessage, 19)
+	if m.Command.IsSet() {
+		if err := putJSONField(object, "command", m.Command); err != nil {
+			return nil, fmt.Errorf("marshal InstanceSpawnRequest.command: %w", err)
+		}
+	}
+	if m.KeepAlive.IsSet() {
+		if err := putJSONField(object, "keep_alive", m.KeepAlive); err != nil {
+			return nil, fmt.Errorf("marshal InstanceSpawnRequest.keep_alive: %w", err)
+		}
 	}
 	if m.Disposable.IsSet() {
 		if err := putJSONField(object, "disposable", m.Disposable); err != nil {
@@ -2820,14 +3014,16 @@ func (m *InstanceSpawnRequest) UnmarshalJSON(data []byte) error {
 	}
 	var decoded InstanceSpawnRequest
 	rawCommand, ok := object["command"]
-	if !ok {
-		return fmt.Errorf("missing required field command")
+	if ok {
+		if err := json.Unmarshal(rawCommand, &decoded.Command); err != nil {
+			return fmt.Errorf("unmarshal InstanceSpawnRequest.command: %w", err)
+		}
 	}
-	if isJSONNull(rawCommand) {
-		return fmt.Errorf("field command must not be null")
-	}
-	if err := json.Unmarshal(rawCommand, &decoded.Command); err != nil {
-		return fmt.Errorf("unmarshal InstanceSpawnRequest.command: %w", err)
+	rawKeepAlive, ok := object["keep_alive"]
+	if ok {
+		if err := json.Unmarshal(rawKeepAlive, &decoded.KeepAlive); err != nil {
+			return fmt.Errorf("unmarshal InstanceSpawnRequest.keep_alive: %w", err)
+		}
 	}
 	rawDisposable, ok := object["disposable"]
 	if ok {
@@ -3360,12 +3556,14 @@ func (m *InstanceResult) UnmarshalJSON(data []byte) error {
 type InstanceSpawnResponse struct {
 	UUID             Optional[string]                     `json:"uuid"`
 	Command          Optional[string]                     `json:"command"`
+	KeepAlive        Optional[bool]                       `json:"keep_alive"`
 	Image            Optional[string]                     `json:"image"`
 	Hostname         Optional[string]                     `json:"hostname"`
 	Args             Optional[[]string]                   `json:"args"`
 	Shell            Optional[bool]                       `json:"shell"`
 	Env              Optional[map[string]string]          `json:"env"`
 	PreserveEnv      Optional[bool]                       `json:"preserve_env"`
+	PreserveCwd      Optional[bool]                       `json:"preserve_cwd"`
 	Cwd              Optional[string]                     `json:"cwd"`
 	UID              Optional[int64]                      `json:"uid"`
 	GID              Optional[int64]                      `json:"gid"`
@@ -3381,7 +3579,7 @@ type InstanceSpawnResponse struct {
 
 // MarshalJSON encodes InstanceSpawnResponse with exact wire names.
 func (m InstanceSpawnResponse) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 19)
+	object := make(map[string]json.RawMessage, 21)
 	if m.UUID.IsSet() {
 		if err := putJSONField(object, "uuid", m.UUID); err != nil {
 			return nil, fmt.Errorf("marshal InstanceSpawnResponse.uuid: %w", err)
@@ -3390,6 +3588,11 @@ func (m InstanceSpawnResponse) MarshalJSON() ([]byte, error) {
 	if m.Command.IsSet() {
 		if err := putJSONField(object, "command", m.Command); err != nil {
 			return nil, fmt.Errorf("marshal InstanceSpawnResponse.command: %w", err)
+		}
+	}
+	if m.KeepAlive.IsSet() {
+		if err := putJSONField(object, "keep_alive", m.KeepAlive); err != nil {
+			return nil, fmt.Errorf("marshal InstanceSpawnResponse.keep_alive: %w", err)
 		}
 	}
 	if m.Image.IsSet() {
@@ -3420,6 +3623,11 @@ func (m InstanceSpawnResponse) MarshalJSON() ([]byte, error) {
 	if m.PreserveEnv.IsSet() {
 		if err := putJSONField(object, "preserve_env", m.PreserveEnv); err != nil {
 			return nil, fmt.Errorf("marshal InstanceSpawnResponse.preserve_env: %w", err)
+		}
+	}
+	if m.PreserveCwd.IsSet() {
+		if err := putJSONField(object, "preserve_cwd", m.PreserveCwd); err != nil {
+			return nil, fmt.Errorf("marshal InstanceSpawnResponse.preserve_cwd: %w", err)
 		}
 	}
 	if m.Cwd.IsSet() {
@@ -3505,6 +3713,12 @@ func (m *InstanceSpawnResponse) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("unmarshal InstanceSpawnResponse.command: %w", err)
 		}
 	}
+	rawKeepAlive, ok := object["keep_alive"]
+	if ok {
+		if err := json.Unmarshal(rawKeepAlive, &decoded.KeepAlive); err != nil {
+			return fmt.Errorf("unmarshal InstanceSpawnResponse.keep_alive: %w", err)
+		}
+	}
 	rawImage, ok := object["image"]
 	if ok {
 		if err := json.Unmarshal(rawImage, &decoded.Image); err != nil {
@@ -3539,6 +3753,12 @@ func (m *InstanceSpawnResponse) UnmarshalJSON(data []byte) error {
 	if ok {
 		if err := json.Unmarshal(rawPreserveEnv, &decoded.PreserveEnv); err != nil {
 			return fmt.Errorf("unmarshal InstanceSpawnResponse.preserve_env: %w", err)
+		}
+	}
+	rawPreserveCwd, ok := object["preserve_cwd"]
+	if ok {
+		if err := json.Unmarshal(rawPreserveCwd, &decoded.PreserveCwd); err != nil {
+			return fmt.Errorf("unmarshal InstanceSpawnResponse.preserve_cwd: %w", err)
 		}
 	}
 	rawCwd, ok := object["cwd"]
@@ -3772,7 +3992,8 @@ func (m *OperationSummary) UnmarshalJSON(data []byte) error {
 
 // OperationInstanceMetadata is generated from the OperationInstanceMetadata schema.
 type OperationInstanceMetadata struct {
-	Command          string                               `json:"command"`
+	Command          Optional[string]                     `json:"command"`
+	KeepAlive        Optional[bool]                       `json:"keep_alive"`
 	Disposable       Optional[bool]                       `json:"disposable"`
 	Hostname         Optional[string]                     `json:"hostname"`
 	Image            string                               `json:"image"`
@@ -3795,9 +4016,16 @@ type OperationInstanceMetadata struct {
 
 // MarshalJSON encodes OperationInstanceMetadata with exact wire names.
 func (m OperationInstanceMetadata) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 19)
-	if err := putJSONField(object, "command", m.Command); err != nil {
-		return nil, fmt.Errorf("marshal OperationInstanceMetadata.command: %w", err)
+	object := make(map[string]json.RawMessage, 20)
+	if m.Command.IsSet() {
+		if err := putJSONField(object, "command", m.Command); err != nil {
+			return nil, fmt.Errorf("marshal OperationInstanceMetadata.command: %w", err)
+		}
+	}
+	if m.KeepAlive.IsSet() {
+		if err := putJSONField(object, "keep_alive", m.KeepAlive); err != nil {
+			return nil, fmt.Errorf("marshal OperationInstanceMetadata.keep_alive: %w", err)
+		}
 	}
 	if m.Disposable.IsSet() {
 		if err := putJSONField(object, "disposable", m.Disposable); err != nil {
@@ -3904,14 +4132,16 @@ func (m *OperationInstanceMetadata) UnmarshalJSON(data []byte) error {
 	}
 	var decoded OperationInstanceMetadata
 	rawCommand, ok := object["command"]
-	if !ok {
-		return fmt.Errorf("missing required field command")
+	if ok {
+		if err := json.Unmarshal(rawCommand, &decoded.Command); err != nil {
+			return fmt.Errorf("unmarshal OperationInstanceMetadata.command: %w", err)
+		}
 	}
-	if isJSONNull(rawCommand) {
-		return fmt.Errorf("field command must not be null")
-	}
-	if err := json.Unmarshal(rawCommand, &decoded.Command); err != nil {
-		return fmt.Errorf("unmarshal OperationInstanceMetadata.command: %w", err)
+	rawKeepAlive, ok := object["keep_alive"]
+	if ok {
+		if err := json.Unmarshal(rawKeepAlive, &decoded.KeepAlive); err != nil {
+			return fmt.Errorf("unmarshal OperationInstanceMetadata.keep_alive: %w", err)
+		}
 	}
 	rawDisposable, ok := object["disposable"]
 	if ok {
@@ -4776,6 +5006,13 @@ func decodeOperationEventData(kind string, raw json.RawMessage) (EventData, erro
 		}
 	case "spawn":
 		var value EventDataSpawn
+		if err := json.Unmarshal(raw, &value); err == nil {
+			return value, nil
+		} else {
+			break
+		}
+	case "lifecycle":
+		var value EventDataLifecycle
 		if err := json.Unmarshal(raw, &value); err == nil {
 			return value, nil
 		} else {
@@ -5734,6 +5971,114 @@ func (m *EventDataSpawn) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// EventDataLifecycle is generated from the EventDataLifecycle schema.
+type EventDataLifecycle struct {
+	KeepAlive  bool   `json:"keep_alive"`
+	Pid        *int64 `json:"pid"`
+	Cwd        string `json:"cwd"`
+	UID        int64  `json:"uid"`
+	GID        int64  `json:"gid"`
+	TruncateAt int64  `json:"truncate_at"`
+}
+
+// MarshalJSON encodes EventDataLifecycle with exact wire names.
+func (m EventDataLifecycle) MarshalJSON() ([]byte, error) {
+	object := make(map[string]json.RawMessage, 6)
+	if err := putJSONField(object, "keep_alive", m.KeepAlive); err != nil {
+		return nil, fmt.Errorf("marshal EventDataLifecycle.keep_alive: %w", err)
+	}
+	if err := putJSONField(object, "pid", m.Pid); err != nil {
+		return nil, fmt.Errorf("marshal EventDataLifecycle.pid: %w", err)
+	}
+	if err := putJSONField(object, "cwd", m.Cwd); err != nil {
+		return nil, fmt.Errorf("marshal EventDataLifecycle.cwd: %w", err)
+	}
+	if err := putJSONField(object, "uid", m.UID); err != nil {
+		return nil, fmt.Errorf("marshal EventDataLifecycle.uid: %w", err)
+	}
+	if err := putJSONField(object, "gid", m.GID); err != nil {
+		return nil, fmt.Errorf("marshal EventDataLifecycle.gid: %w", err)
+	}
+	if err := putJSONField(object, "truncate_at", m.TruncateAt); err != nil {
+		return nil, fmt.Errorf("marshal EventDataLifecycle.truncate_at: %w", err)
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalJSON decodes EventDataLifecycle and checks required fields.
+func (m *EventDataLifecycle) UnmarshalJSON(data []byte) error {
+	if m == nil {
+		return fmt.Errorf("unmarshal EventDataLifecycle into nil receiver")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return fmt.Errorf("unmarshal EventDataLifecycle: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("EventDataLifecycle must be a JSON object")
+	}
+	var decoded EventDataLifecycle
+	rawKeepAlive, ok := object["keep_alive"]
+	if !ok {
+		return fmt.Errorf("missing required field keep_alive")
+	}
+	if isJSONNull(rawKeepAlive) {
+		return fmt.Errorf("field keep_alive must not be null")
+	}
+	if err := json.Unmarshal(rawKeepAlive, &decoded.KeepAlive); err != nil {
+		return fmt.Errorf("unmarshal EventDataLifecycle.keep_alive: %w", err)
+	}
+	rawPid, ok := object["pid"]
+	if !ok {
+		return fmt.Errorf("missing required field pid")
+	}
+	if err := json.Unmarshal(rawPid, &decoded.Pid); err != nil {
+		return fmt.Errorf("unmarshal EventDataLifecycle.pid: %w", err)
+	}
+	rawCwd, ok := object["cwd"]
+	if !ok {
+		return fmt.Errorf("missing required field cwd")
+	}
+	if isJSONNull(rawCwd) {
+		return fmt.Errorf("field cwd must not be null")
+	}
+	if err := json.Unmarshal(rawCwd, &decoded.Cwd); err != nil {
+		return fmt.Errorf("unmarshal EventDataLifecycle.cwd: %w", err)
+	}
+	rawUID, ok := object["uid"]
+	if !ok {
+		return fmt.Errorf("missing required field uid")
+	}
+	if isJSONNull(rawUID) {
+		return fmt.Errorf("field uid must not be null")
+	}
+	if err := json.Unmarshal(rawUID, &decoded.UID); err != nil {
+		return fmt.Errorf("unmarshal EventDataLifecycle.uid: %w", err)
+	}
+	rawGID, ok := object["gid"]
+	if !ok {
+		return fmt.Errorf("missing required field gid")
+	}
+	if isJSONNull(rawGID) {
+		return fmt.Errorf("field gid must not be null")
+	}
+	if err := json.Unmarshal(rawGID, &decoded.GID); err != nil {
+		return fmt.Errorf("unmarshal EventDataLifecycle.gid: %w", err)
+	}
+	rawTruncateAt, ok := object["truncate_at"]
+	if !ok {
+		return fmt.Errorf("missing required field truncate_at")
+	}
+	if isJSONNull(rawTruncateAt) {
+		return fmt.Errorf("field truncate_at must not be null")
+	}
+	if err := json.Unmarshal(rawTruncateAt, &decoded.TruncateAt); err != nil {
+		return fmt.Errorf("unmarshal EventDataLifecycle.truncate_at: %w", err)
+	}
+	*m = decoded
+	return nil
+}
+
 // EventDataStream is generated from the EventDataStream schema.
 type EventDataStream struct {
 	Value     string         `json:"value"`
@@ -6088,19 +6433,25 @@ func (m *EventResources) UnmarshalJSON(data []byte) error {
 
 // EventDataExit is generated from the EventDataExit schema.
 type EventDataExit struct {
-	OomKilled  Optional[bool] `json:"oom_killed"`
-	Pid        int64          `json:"pid"`
-	Code       int64          `json:"code"`
-	Signal     int64          `json:"signal"`
-	CoreDump   Optional[bool] `json:"core_dump"`
-	TimedOut   bool           `json:"timed_out"`
-	DurationMs int64          `json:"duration_ms"`
-	Resources  EventResources `json:"resources"`
+	KeepAlive  Optional[bool]           `json:"keep_alive"`
+	OomKilled  Optional[bool]           `json:"oom_killed"`
+	Pid        *int64                   `json:"pid"`
+	Code       *int64                   `json:"code"`
+	Signal     int64                    `json:"signal"`
+	CoreDump   Optional[bool]           `json:"core_dump"`
+	TimedOut   bool                     `json:"timed_out"`
+	DurationMs int64                    `json:"duration_ms"`
+	Resources  Optional[EventResources] `json:"resources"`
 }
 
 // MarshalJSON encodes EventDataExit with exact wire names.
 func (m EventDataExit) MarshalJSON() ([]byte, error) {
-	object := make(map[string]json.RawMessage, 8)
+	object := make(map[string]json.RawMessage, 9)
+	if m.KeepAlive.IsSet() {
+		if err := putJSONField(object, "keep_alive", m.KeepAlive); err != nil {
+			return nil, fmt.Errorf("marshal EventDataExit.keep_alive: %w", err)
+		}
+	}
 	if m.OomKilled.IsSet() {
 		if err := putJSONField(object, "oom_killed", m.OomKilled); err != nil {
 			return nil, fmt.Errorf("marshal EventDataExit.oom_killed: %w", err)
@@ -6126,8 +6477,10 @@ func (m EventDataExit) MarshalJSON() ([]byte, error) {
 	if err := putJSONField(object, "duration_ms", m.DurationMs); err != nil {
 		return nil, fmt.Errorf("marshal EventDataExit.duration_ms: %w", err)
 	}
-	if err := putJSONField(object, "resources", m.Resources); err != nil {
-		return nil, fmt.Errorf("marshal EventDataExit.resources: %w", err)
+	if m.Resources.IsSet() {
+		if err := putJSONField(object, "resources", m.Resources); err != nil {
+			return nil, fmt.Errorf("marshal EventDataExit.resources: %w", err)
+		}
 	}
 	return json.Marshal(object)
 }
@@ -6145,6 +6498,12 @@ func (m *EventDataExit) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("EventDataExit must be a JSON object")
 	}
 	var decoded EventDataExit
+	rawKeepAlive, ok := object["keep_alive"]
+	if ok {
+		if err := json.Unmarshal(rawKeepAlive, &decoded.KeepAlive); err != nil {
+			return fmt.Errorf("unmarshal EventDataExit.keep_alive: %w", err)
+		}
+	}
 	rawOomKilled, ok := object["oom_killed"]
 	if ok {
 		if err := json.Unmarshal(rawOomKilled, &decoded.OomKilled); err != nil {
@@ -6155,18 +6514,12 @@ func (m *EventDataExit) UnmarshalJSON(data []byte) error {
 	if !ok {
 		return fmt.Errorf("missing required field pid")
 	}
-	if isJSONNull(rawPid) {
-		return fmt.Errorf("field pid must not be null")
-	}
 	if err := json.Unmarshal(rawPid, &decoded.Pid); err != nil {
 		return fmt.Errorf("unmarshal EventDataExit.pid: %w", err)
 	}
 	rawCode, ok := object["code"]
 	if !ok {
 		return fmt.Errorf("missing required field code")
-	}
-	if isJSONNull(rawCode) {
-		return fmt.Errorf("field code must not be null")
 	}
 	if err := json.Unmarshal(rawCode, &decoded.Code); err != nil {
 		return fmt.Errorf("unmarshal EventDataExit.code: %w", err)
@@ -6208,14 +6561,10 @@ func (m *EventDataExit) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("unmarshal EventDataExit.duration_ms: %w", err)
 	}
 	rawResources, ok := object["resources"]
-	if !ok {
-		return fmt.Errorf("missing required field resources")
-	}
-	if isJSONNull(rawResources) {
-		return fmt.Errorf("field resources must not be null")
-	}
-	if err := json.Unmarshal(rawResources, &decoded.Resources); err != nil {
-		return fmt.Errorf("unmarshal EventDataExit.resources: %w", err)
+	if ok {
+		if err := json.Unmarshal(rawResources, &decoded.Resources); err != nil {
+			return fmt.Errorf("unmarshal EventDataExit.resources: %w", err)
+		}
 	}
 	*m = decoded
 	return nil

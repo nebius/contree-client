@@ -20,6 +20,7 @@ import type {
   ListNetworkPolicyTagsResponse,
   NetworkPolicy,
   NetworkPolicyCIDRRule,
+  NetworkPolicyDomainRule,
   NetworkPolicyListResponse,
   NetworkPolicyTag,
   OperationResponse,
@@ -39,9 +40,10 @@ export declare function parseListNetworkPolicies(
   response: ResponseData,
 ): NetworkPolicyListResponse;
 
-export declare function buildCreateNetworkPolicy(
-  cidrs: NetworkPolicyCIDRRule[],
-): RequestSpec;
+export declare function buildCreateNetworkPolicy(options?: {
+  cidrs?: NetworkPolicyCIDRRule[] | undefined;
+  domains?: NetworkPolicyDomainRule[] | undefined;
+}): RequestSpec;
 
 export declare function parseCreateNetworkPolicy(
   response: ResponseData,
@@ -148,12 +150,13 @@ export declare function buildCheckFileExists(sha256: string): RequestSpec;
 export declare function parseCheckFileExists(response: ResponseData): boolean;
 
 export declare function buildSpawnInstance(
-  command: string,
   image: string,
   options?: {
+    command?: string | null | undefined;
+    keepAlive?: boolean | undefined;
     disposable?: boolean | undefined;
     hostname?: string | undefined;
-    args?: string[] | undefined;
+    args?: string[] | null | undefined;
     shell?: boolean | undefined;
     env?: Record<string, string> | null | undefined;
     preserveEnv?: boolean | undefined;
@@ -218,10 +221,11 @@ export declare function buildOperationSubprocessCreate(
     args?: string[] | undefined;
     shell?: boolean | undefined;
     env?: Record<string, string> | null | undefined;
-    cwd?: string | undefined;
-    uid?: number | undefined;
-    gid?: number | undefined;
+    cwd?: string | null | undefined;
+    uid?: number | null | undefined;
+    gid?: number | null | undefined;
     stdin?: ClosableStreamRepr | undefined;
+    timeout?: number | null | undefined;
     truncateOutputAt?: number | undefined;
   },
 ): RequestSpec;

@@ -262,7 +262,7 @@ def test_post_is_not_retried_by_default(
     """P1-05: a lost/failed response after POST could mean the server
     already executed it - replaying must be an explicit opt-in."""
     with pytest.raises(exceptions.ServerError):
-        invoke_retry("spawn_instance", "flaky", "tag:busybox:latest")
+        invoke_retry("spawn_instance", command="flaky", image="tag:busybox:latest")
 
     spawns = [c for c in stub_server.captured if c.path == "/v1/instances"]
     assert len(spawns) == 1
@@ -276,7 +276,9 @@ def test_post_retried_on_425_and_429_without_retry_unsafe(
 ) -> None:
     """425/429 are a backend contract: the request was rejected before
     any processing, so even a POST replays without `retry_unsafe`."""
-    response = invoke_retry("spawn_instance", command, "tag:busybox:latest")
+    response = invoke_retry(
+        "spawn_instance", command=command, image="tag:busybox:latest"
+    )
     assert str(response.uuid)
 
     spawns = [c for c in stub_server.captured if c.path == "/v1/instances"]
@@ -293,7 +295,7 @@ def test_post_retried_with_explicit_retry_unsafe(
     with http.ContreeClient(
         TOKEN, base_url=stub_server.base_url, retry=policy
     ) as client:
-        response = client.spawn_instance("flaky", "tag:busybox:latest")
+        response = client.spawn_instance(command="flaky", image="tag:busybox:latest")
     assert str(response.uuid)
 
     spawns = [c for c in stub_server.captured if c.path == "/v1/instances"]

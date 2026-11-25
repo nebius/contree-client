@@ -13,6 +13,8 @@ func TestLiveInstanceEventPayloads(t *testing.T) {
 		payload  string
 		expected any
 	}{
+		{"keep-alive lifecycle", "lifecycle", `{"keep_alive":true,"pid":null,"cwd":"/work","uid":1000,"gid":1001,"truncate_at":1048576}`, EventDataLifecycle{}},
+		{"keep-alive exit", "exit", `{"keep_alive":true,"pid":null,"code":null,"signal":-1,"timed_out":false,"duration_ms":0}`, EventDataExit{}},
 		{"inspect started", "inspect", `{"request_id":"rpc-1","method":"upload","phase":"started","params":{"path":"/workspace","file_uuid":"file-1","unpack":true,"replace":true,"merge":false}}`, EventDataInspect{}},
 		{"inspect completed", "inspect", `{"request_id":"rpc-1","method":"upload","phase":"completed","status":"success","error":null,"handle":"upload-1"}`, EventDataInspect{}},
 		{"file upload", "file_upload", `{"handle":"upload-1","file_uuid":"file-1","path":"/workspace","unpack":true,"replace":true,"merge":false,"bytes":512,"status":"success","error":null}`, EventDataFileUpload{}},
