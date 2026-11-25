@@ -14,7 +14,7 @@ func TestNetworkPolicyOperations(t *testing.T) {
 	const policyID = "01900000-0000-7000-8000-000000000001"
 	const tag = "team/policy with space"
 	const tagPath = "/v1/network/tags/team%2Fpolicy%20with%20space"
-	const policyJSON = `{"uuid":"` + policyID + `","cidrs":[{"cidr":"192.0.2.0/24","proto":"tcp","ports":[443]}],"domains":[]}`
+	const policyJSON = `{"uuid":"` + policyID + `","cidrs":[{"cidr":"192.0.2.0/24","proto":"tcp","ports":[443]}],"domains":[{"domain":"**.example.com","proto":"udp","ports":[53]}]}`
 	const tagJSON = `{"tag":"` + tag + `","uuid":"` + policyID + `"}`
 	type call struct {
 		method, path, search, limit, offset string
@@ -34,7 +34,7 @@ func TestNetworkPolicyOperations(t *testing.T) {
 			writer.WriteHeader(http.StatusCreated)
 			io.WriteString(writer, policyJSON)
 		case "GET /v1/network/policies":
-			io.WriteString(writer, `{"policies":[{"uuid":"`+policyID+`","created_at":"2026-11-02T00:00:00Z","tags":["`+tag+`"],"summary":{"cidrs":1,"domains":0}}]}`)
+			io.WriteString(writer, `{"policies":[{"uuid":"`+policyID+`","created_at":"2026-11-02T00:00:00Z","tags":["`+tag+`"],"summary":{"cidrs":1,"domains":1}}]}`)
 		case "GET /v1/network/policies/" + policyID:
 			io.WriteString(writer, policyJSON)
 		case "GET /v1/network/tags":
@@ -71,13 +71,20 @@ func TestNetworkPolicyOperations(t *testing.T) {
 			return call{}
 		}
 	}
+	domainRules := []NetworkPolicyDomainRule{
+		{Domain: "**.example.com", Proto: "udp", Ports: Some([]int64{53})},
+	}
 	created, err := client.CreateNetworkPolicy(ctx, &CreateNetworkPolicyOptions{
 		Cidrs: Some([]NetworkPolicyCidrRule{
 			{Cidr: "192.0.2.0/24", Proto: "tcp", Ports: Some([]int64{443})},
 		}),
+		Domains: Some(domainRules),
 	})
 	if err != nil || created.UUID != policyID || len(created.Cidrs) != 1 {
 		t.Fatalf("CreateNetworkPolicy = %#v, %v", created, err)
+	}
+	if !reflect.DeepEqual(created.Domains, domainRules) {
+		t.Fatalf("created domains = %#v, want %#v", created.Domains, domainRules)
 	}
 	request := checkCall("POST", "/v1/network/policies")
 	var createPayload NetworkPolicyCreateRequest
@@ -92,10 +99,18 @@ func TestNetworkPolicyOperations(t *testing.T) {
 	if cidrs[0].Cidr != "192.0.2.0/24" || !present || !reflect.DeepEqual(ports, []int64{443}) {
 		t.Fatalf("create payload = %s", request.body)
 	}
+	domains, present := createPayload.Domains.Value()
+	if !present || !reflect.DeepEqual(domains, domainRules) {
+		t.Fatalf("create payload domains = %#v, want %#v", domains, domainRules)
+	}
+
 	search, limit, offset := "udp://[2001:db8::/64]:53", int64(7), int64(0)
 	listed, err := client.ListNetworkPolicies(ctx, &ListNetworkPoliciesOptions{Search: &search, Limit: &limit, Offset: &offset})
 	if err != nil || len(listed.Policies) != 1 || listed.Policies[0].Summary.Cidrs != 1 || listed.Policies[0].CreatedAt.Year() != 2026 {
 		t.Fatalf("ListNetworkPolicies = %#v, %v", listed, err)
+	}
+	if listed.Policies[0].Summary.Domains != 1 {
+		t.Fatalf("domain summary = %d, want 1", listed.Policies[0].Summary.Domains)
 	}
 	request = checkCall("GET", "/v1/network/policies")
 	if request.search != search || request.limit != "7" || request.offset != "0" {
@@ -151,6 +166,13 @@ func TestDomainPolicyRequests(t *testing.T) {
 		body    string
 	}{
 		{"empty", nil, `{}`},
+		{
+			"CIDR only",
+			&CreateNetworkPolicyOptions{Cidrs: Some([]NetworkPolicyCidrRule{
+				{Cidr: "192.0.2.0/24", Proto: "tcp", Ports: Some([]int64{443})},
+			})},
+			`{"cidrs":[{"cidr":"192.0.2.0/24","proto":"tcp","ports":[443]}]}`,
+		},
 		{
 			"domain only",
 			&CreateNetworkPolicyOptions{Domains: Some([]NetworkPolicyDomainRule{

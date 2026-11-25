@@ -16,7 +16,8 @@ import { startStub } from "./stub.mjs";
 
 const policyUuid = "e166a653-c0ec-4c66-ae86-1463e22f5742";
 const rule = { cidr: "192.0.2.0/24", proto: "tcp", ports: [443] };
-const policy = { uuid: policyUuid, cidrs: [rule], domains: [] };
+const domainRule = { domain: "**.example.com", proto: "udp", ports: [53] };
+const policy = { uuid: policyUuid, cidrs: [rule], domains: [domainRule] };
 const tag = { tag: "tests/https", uuid: policyUuid };
 const requests = [];
 let stub;
@@ -41,14 +42,20 @@ after(async () => {
 test("network policy methods preserve typed responses and tag redirect bodies", async () => {
   const created = await client.createNetworkPolicy({
     cidrs: [NetworkPolicyCIDRRule.fromWire(rule)],
+    domains: [NetworkPolicyDomainRule.fromWire(domainRule)],
   });
   assert.ok(created instanceof NetworkPolicy);
   assert.deepEqual(created.toWire(), policy);
-  assert.deepEqual(JSON.parse(requests.at(-1).options.body), { cidrs: [rule] });
+  assert.ok(created.domains[0] instanceof NetworkPolicyDomainRule);
+  assert.deepEqual(JSON.parse(requests.at(-1).options.body), {
+    cidrs: [rule],
+    domains: [domainRule],
+  });
 
   const fetched = await client.getNetworkPolicy(policyUuid);
   assert.deepEqual(fetched.toWire(), policy);
   assert.ok(fetched.cidrs[0] instanceof NetworkPolicyCIDRRule);
+  assert.ok(fetched.domains[0] instanceof NetworkPolicyDomainRule);
 
   const search = "tcp://[2001:db8::/64]:443";
   const listing = await client.listNetworkPolicies({
@@ -58,6 +65,7 @@ test("network policy methods preserve typed responses and tag redirect bodies", 
   });
   assert.equal(listing.policies[0].uuid, policyUuid);
   assert.equal(listing.policies[0].summary.cidrs, 1);
+  assert.equal(listing.policies[0].summary.domains, 1);
   assert.equal(listing.policies[0].createdAt.getUTCFullYear(), 2024);
   assert.equal(requests.at(-1).url.searchParams.get("limit"), "2");
   assert.equal(requests.at(-1).url.searchParams.get("offset"), "1");
@@ -89,6 +97,19 @@ test("network policy methods preserve typed responses and tag redirect bodies", 
 
   assert.equal(await client.deleteNetworkPolicyTag("tests/https"), null);
   assert.equal(await client.deleteNetworkPolicy(policyUuid), null);
+});
+
+test("CIDR-only policy requests omit domains", async () => {
+  const created = await client.createNetworkPolicy({
+    cidrs: [NetworkPolicyCIDRRule.fromWire(rule)],
+  });
+
+  assert.deepEqual(JSON.parse(requests.at(-1).options.body), { cidrs: [rule] });
+  assert.deepEqual(created.toWire(), {
+    uuid: policyUuid,
+    cidrs: [rule],
+    domains: [],
+  });
 });
 
 for (const ports of [undefined, [], [443, 8443]]) {

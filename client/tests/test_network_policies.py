@@ -15,15 +15,24 @@ def test_network_policy_methods(
     invoke: Callable[..., Any], models: ModuleType, stub_server: StubServer
 ) -> None:
     rule = models.NetworkPolicyCIDRRule.from_dict(stub.NETWORK_RULE)
-    policy = invoke("create_network_policy", cidrs=[rule])
+    domain = models.NetworkPolicyDomainRule.from_dict(stub.NETWORK_DOMAIN_RULE)
+    policy = invoke("create_network_policy", cidrs=[rule], domains=[domain])
     assert policy.to_dict() == stub.NETWORK_POLICY
-    assert json.loads(stub_server.last.body) == {"cidrs": [stub.NETWORK_RULE]}
-    assert invoke("get_network_policy", policy.uuid).to_dict() == stub.NETWORK_POLICY
+    assert isinstance(policy.domains[0], models.NetworkPolicyDomainRule)
+    assert json.loads(stub_server.last.body) == {
+        "cidrs": [stub.NETWORK_RULE],
+        "domains": [stub.NETWORK_DOMAIN_RULE],
+    }
+
+    fetched = invoke("get_network_policy", policy.uuid)
+    assert fetched.to_dict() == stub.NETWORK_POLICY
+    assert isinstance(fetched.domains[0], models.NetworkPolicyDomainRule)
 
     search = "tcp://[2001:db8::/64]:443"
     listing = invoke("list_network_policies", limit=2, offset=1, search=search)
     assert listing.policies[0].uuid == policy.uuid
     assert listing.policies[0].summary.cidrs == 1
+    assert listing.policies[0].summary.domains == 1
     assert listing.policies[0].created_at.year == 2024
     assert stub_server.last.query == {
         "limit": ["2"],
@@ -42,6 +51,20 @@ def test_network_policy_methods(
     assert stub_server.last.query == {"limit": ["2"], "offset": ["1"]}
     assert invoke("delete_network_policy_tag", "tests/https") is None
     assert invoke("delete_network_policy", policy.uuid) is None
+
+
+def test_cidr_only_policy_request(
+    invoke: Callable[..., Any], models: ModuleType, stub_server: StubServer
+) -> None:
+    rule = models.NetworkPolicyCIDRRule.from_dict(stub.NETWORK_RULE)
+    policy = invoke("create_network_policy", cidrs=[rule])
+
+    assert json.loads(stub_server.last.body) == {"cidrs": [stub.NETWORK_RULE]}
+    assert policy.to_dict() == {
+        "uuid": stub.NETWORK_POLICY_UUID,
+        "cidrs": [stub.NETWORK_RULE],
+        "domains": [],
+    }
 
 
 def test_networking_response_models(models: ModuleType) -> None:
