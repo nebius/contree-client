@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  EventDataExit,
   EventDataInspect,
   EventDataFileUpload,
+  EventDataLifecycle,
   EventInspectParameters,
   ExecSpec,
   OperationEvent,
@@ -12,6 +14,30 @@ import {
 
 test("live instance events decode typed payloads and preserve wire fields", () => {
   const cases = [
+    [
+      "lifecycle",
+      EventDataLifecycle,
+      {
+        keep_alive: true,
+        pid: null,
+        cwd: "/work",
+        uid: 1000,
+        gid: 1001,
+        truncate_at: 1048576,
+      },
+    ],
+    [
+      "exit",
+      EventDataExit,
+      {
+        keep_alive: true,
+        pid: null,
+        code: null,
+        signal: -1,
+        timed_out: false,
+        duration_ms: 0,
+      },
+    ],
     [
       "inspect",
       EventDataInspect,

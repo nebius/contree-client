@@ -104,6 +104,7 @@ class ContreeModel:
 OperationEventType = Literal[
     "init",
     "spawn",
+    "lifecycle",
     "stdin",
     "stdout",
     "stderr",
@@ -777,40 +778,73 @@ class ClosableStreamRepr(ContreeModel):
 
 @dataclass
 class InstanceResourcesLimits(ContreeModel):
-    """Launch-time limits. CPU sets the VM's vCPU count. memory_mib limits.
+    """Launch-time VM resources and optional workload limits. CPU sets the.
 
-    each process's address space (RLIMIT_AS, soft and hard) and the
-    whole process tree's memory (cgroup memory.max). A request for
-    1 MiB is valid and enforces that limit on the workload. The backend
-    independently selects a minimum VM RAM allocation for guest boot,
-    networking and runtime services, for example 128 or 256 MiB.
-    This minimum is an implementation detail and can change. It does
-    not increase the requested workload limit.
-    A small address-space limit can prevent the executable or runtime
-    from loading. It includes stacks, libraries and reserved mappings;
-    allocations can fail with ENOMEM even with overcommit enabled.
-    Guest kernel and runtime consume part of VM RAM.
-    Limits are maxima, not reservations.
+    VM's vCPU count. vm_memory_mib requests VM RAM; the backend can raise it
+    to its minimum boot allocation. It does not set workload memory limits.
+    memory_mib sets memory.high and memory_hard_mib sets memory.max
+    on the operation's workload cgroup, including additional subprocesses.
+    address_space_mib sets both RLIMIT_AS bounds on the main process
+    before exec. Its descendants inherit that address-space limit.
+    Omitted or null memory limits remain unset. They are never derived
+    from VM RAM, another memory limit, or a default.
+    memory_mib must not exceed memory_hard_mib when both are set.
+    A small address-space limit can prevent the executable from loading.
+    Guest kernel and runtime consume part of VM RAM; VM-wide OOM remains
+    possible without an explicit hard limit. Limits are not reservations.
     Guest root retains permission to modify cgroups.
     """
 
     cpu: int | EllipsisType = field(
         default=..., metadata={"description": "Number of guest vCPUs.", "default": 4}
     )
-    memory_mib: int | EllipsisType = field(
+    vm_memory_mib: int | EllipsisType = field(
         default=...,
         metadata={
             "description": (
-                "Per-process address-space and process-tree memory limit in MiB "
-                "(1048576 bytes)."
+                "Requested VM RAM in MiB (1048576 bytes), subject to the backend's "
+                "minimum boot allocation."
             ),
             "default": 4096,
+        },
+    )
+    memory_mib: int | None | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Optional operation memory.high threshold in MiB. Reclaim and "
+                "throttling can occur above this threshold."
+            )
+        },
+    )
+    memory_hard_mib: int | None | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Optional operation memory.max limit in MiB. It is applied only when "
+                "explicitly supplied."
+            )
+        },
+    )
+    address_space_mib: int | None | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Optional RLIMIT_AS for the main process in MiB, with equal soft and "
+                "hard bounds. It can exceed VM RAM."
+            )
         },
     )
     max_layer_bytes: int | EllipsisType = field(
         default=...,
         metadata={
-            "description": "Maximum writable layer size in bytes.",
+            "description": (
+                "Maximum writable layer size in bytes. Storage rounds this limit\ndown "
+                "to a multiple of its block size, so the\neffective quota never "
+                "exceeds the requested limit. A limit below\none storage block fails "
+                "storage preparation with an error\nthat includes the required block "
+                "size. Operation metadata retains\nthe requested limit."
+            ),
             "example": 1073741824,
             "default": 12884901888,
         },
@@ -819,17 +853,21 @@ class InstanceResourcesLimits(ContreeModel):
 
 @dataclass
 class ProcessResourcesLimits(ContreeModel):
-    """Launch-time limits for a subprocess and its descendants. Each omitted.
+    """Launch-time limits for a subprocess and its descendants. An omitted.
 
-    or null field inherits the requested operation limit, not the VM's
-    minimum boot memory. CPU/RAM cannot exceed the parent operation.
-    Limits are maxima, not reservations. Concurrent processes share VM
-    resources and can exhaust the aggregate budget. memory_mib sets
-    RLIMIT_AS (soft and hard) before exec and memory.max for the tree.
-    RLIMIT_AS includes reserved mappings, stacks and libraries; allocation
-    or executable loading can fail with ENOMEM. Descendants inherit it.
-    A local cgroup OOM
-    kills this process tree. A VM-wide OOM can affect other processes.
+    or null CPU field inherits the operation's CPU limit and cannot exceed
+    it. Omitted or null memory fields remain unset; no memory limit is
+    copied from the operation or derived from VM RAM or another limit.
+    Explicit operation cgroup limits still constrain the subprocess.
+    memory_mib sets memory.high and memory_hard_mib sets memory.max
+    for this process tree. The soft value cannot exceed the hard value
+    when both are set. address_space_mib sets both RLIMIT_AS bounds before
+    exec. Descendants inherit this address-space limit, which includes
+    reserved mappings, stacks and libraries. Allocation or executable
+    loading can fail with ENOMEM. vm_memory_mib is an operation-only VM
+    setting.
+    A local cgroup OOM kills this process tree. An operation cgroup OOM or
+    VM-wide OOM can affect other processes. Limits are not reservations.
     Guest root retains permission to modify cgroups.
     """
 
@@ -846,8 +884,26 @@ class ProcessResourcesLimits(ContreeModel):
         default=...,
         metadata={
             "description": (
-                "Per-process RLIMIT_AS and tree memory.max in MiB. Swap is disabled "
-                "for this group."
+                "Optional memory.high threshold for this process tree in MiB. Excess "
+                "usage triggers reclaim and throttling."
+            )
+        },
+    )
+    memory_hard_mib: int | None | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Optional memory.max limit for this process tree in MiB. It is applied "
+                "only when explicitly supplied."
+            )
+        },
+    )
+    address_space_mib: int | None | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Optional RLIMIT_AS in MiB, with equal soft and hard bounds. It can "
+                "exceed VM RAM."
             )
         },
     )
@@ -878,13 +934,11 @@ class InstanceNetworking(ContreeModel):
                 "by UUID.\n\n**Permissions**\n\nUsing policies requires only the "
                 "permission to create the instance;\n`network_policy` is not "
                 "required.\n\n**Limits**\n\n- At most 512 references may be supplied, "
-                "including duplicates.\n- Before and after merging, the rules are "
-                "limited to 16384 units in total:\n  sum the number of ports across "
-                "all rules, counting an all-port rule as 1.\n  All IP versions and "
-                "protocols share this limit. Repeated rules and ports\n  across "
-                "policies count again before merging.\n- Exceeding either limit "
-                "returns 400.\n\n**No policies**\n\nOmitting this field or passing "
-                "`policy: []` allows all IPv4 destinations and\nglobal unicast IPv6 "
+                "including duplicates.\n- The combined rules and the normalized "
+                "effective policy must each fit\n  the shared limit of 16384 units "
+                "across domain and CIDR rules.\n- Exceeding either limit returns "
+                "400.\n\n**No policies**\n\nOmitting this field or passing `policy: "
+                "[]` allows all IPv4 destinations and\nglobal unicast IPv6 "
                 "destinations on all ports.\nThe API adds four explicit rules to "
                 "`effective_policy`:\nTCP and UDP for IPv4 `0.0.0.0/0` and IPv6 "
                 "`2000::/3`, each with `ports: []`\n(all ports). ICMP is also allowed "
@@ -910,7 +964,10 @@ class InstanceNetworking(ContreeModel):
 class NetworkPolicyCIDRRule(ContreeModel):
     cidr: str = field(
         metadata={
-            "description": "IPv4 or IPv6 destination network in CIDR notation.",
+            "description": (
+                "Only IPv4 or IPv6 destination subnets in CIDR notation "
+                "(address/prefix length) are supported."
+            ),
             "example": "192.0.2.0/24",
         }
     )
@@ -927,25 +984,235 @@ class NetworkPolicyCIDRRule(ContreeModel):
 
 
 @dataclass
-class NetworkPolicyCreateRequest(ContreeModel):
-    """An allowlist of destination networks, protocols, and ports. A policy
-    with ``{"cidrs": []}``.
+class NetworkPolicyDomainRule(ContreeModel):
+    domain: str = field(
+        metadata={
+            "description": (
+                "An exact name or whole-label mask using ASCII letters, digits, "
+                "hyphens,\nand underscores in labels. Hyphens and underscores may "
+                "appear anywhere\nin a label. Callers must convert internationalized "
+                "names to ASCII punycode;\nraw Unicode input is not converted. This "
+                "policy syntax supports a subset\nof DNS labels, not arbitrary DNS "
+                "octets.\n`*` matches exactly one non-empty label; `**` matches\nzero "
+                "or more labels and is allowed only as the first "
+                "label.\n`*.**.example.com` and `a.**.com` are invalid; "
+                "`**.*.example.com` is valid.\n`*.aaa.com` matches `x.aaa.com`, but "
+                "not `aaa.com` or `x.y.aaa.com`. `**.ru.*.aaa.com` "
+                "matches\n`ru.x.aaa.com` and `a.b.ru.x.aaa.com`, but not "
+                "`ru.aaa.com`.\nNames are lowercased and one trailing root dot is "
+                "removed. Empty labels,\npartial-label wildcards, and characters "
+                "outside the supported set are rejected.\nNormalized labels contain at "
+                "most 63 bytes, and the complete name or mask\nat most 253 ASCII bytes "
+                "without the trailing root dot (255 bytes on the\nwire for a concrete "
+                "DNS name). The normalized mask is stored."
+            ),
+            "example": "**.ru.*.aaa.com",
+        }
+    )
+    proto: Literal["tcp", "udp"]
+    ports: list[int] | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Allowed destination ports. Omitted or empty means all ports; null is "
+                "invalid."
+            ),
+            "default": [],
+        },
+    )
 
-    allows nothing. Selecting only empty policies denies all network
-    traffic.
-    This differs from selecting no policies (``networking.policy: []``),
-    which allows
-    all IPv4 destinations (``0.0.0.0/0``) and global unicast IPv6
-    destinations (``2000::/3``)
-    on all ports and adds these explicit rules to ``effective_policy``.
+
+@dataclass
+class NetworkPolicyCreateRequest(ContreeModel):
+    """An allowlist of destination networks, protocols, and ports.
+
+    **Rule groups**
+
+    - ``cidrs`` and ``domains`` are optional and default to empty lists.
+    - Each omitted or empty group grants no permissions.
+    - A policy with both groups omitted or empty, including ``{}``, allows
+      nothing.
+    - Responses and policy hashes include both groups, even when empty.
+    - For both rule groups, omitted or empty ``ports`` allows all ports;
+      ``null`` is invalid.
+
+    **Policy selection**
+
+    - Selecting only empty policies denies all network traffic.
+    - Selecting no policies (``networking.policy: []``) allows all IPv4
+      destinations
+      (``0.0.0.0/0``) and global unicast IPv6 destinations (``2000::/3``) on
+      all ports.
+      These explicit rules are included in ``effective_policy``.
+
+    **Domain masks**
+
+    - Literal labels allow ASCII letters, digits, hyphens, and underscores.
+    - Callers supply internationalized names as ASCII punycode, not raw
+      Unicode.
+    - ``*`` matches one label and may occur anywhere.
+    - ``**`` matches zero or more labels and may occur only once, as the
+      first label.
+
+    **Normalization**
+
+    - Remove duplicate rules and ports.
+    - Merge CIDRs for each protocol and port.
+    - Combine ports for the same domain mask and protocol.
+    - Remove domain permissions already covered by broader rules.
+    - Lowercase domain names and remove one trailing root dot, preserving
+      wildcard positions:
+      ``**.*.EXAMPLE.COM.`` becomes ``**.*.example.com``.
+
+    - Sort rules and ports.
+
+    Normalization preserves the allowed traffic and also runs when combining
+    policies.
+
+    **Limits**
+
+    Domain and CIDR rules share a limit of 16384 units, checked before
+    and after normalization:
+
+    - Each explicit port counts as one unit; an all-port rule counts as one
+      unit.
+    - Duplicate rules and ports count toward the input limit.
+    - Exceeding the limit at either stage returns 400.
+
+    **Current enforcement**
+
+    - ICMP traffic is allowed to the CIDRs listed in the policy, regardless
+      of protocol or port selection.
+    - When DNS traffic reaches the configured NetD proxy, matching domain
+      rules grant
+      access to terminal public A/AAAA addresses in the complete CNAME
+      answer chain.
+      The queried name or any chain member may match. All matching masks
+      across the
+      chain contribute ports, independently for TCP and UDP; an all-port
+      rule
+      dominates its protocol. ICMP/ICMPv6 is added automatically for granted
+      addresses.
+
+    - Missing /32 and /128 permissions are installed atomically before
+      replying,
+      including cache hits. Existing CIDR and host protocol/port coverage is
+      reused.
+
+    - An empty ``cidrs`` list grants no static IP access; domain grants can
+      add access
+      during the current operation. Traffic to host services remains blocked
+      except
+      for the configured DNS endpoint.
+
+    - ARP is blocked for all policies; neighbors are configured statically.
+
+    **DNS behavior and lifetime**
+
+    - Configure the NetD listener and route VM DNS to it to enable domain
+      grants.
+      A direct external resolver does not invoke NetD's permission hooks.
+
+    - NetD forces upstream recursion (RD=1), including for client RD=0
+      requests.
+      Complete CNAME chains are bounded to 64 names and the configured
+      request
+      deadline; loops/conflicts fail. Unrelated answer/additional addresses
+      are ignored.
+
+    - A/AAAA answers, negative answers, and learned permissions are isolated
+      by
+      interface lease. Responses have no TTL expiry but can be evicted by
+      FIFO;
+      a later lookup may return different IPs. Learned permissions remain
+      for the
+      entire operation, independently of response eviction.
+      Complete cache hits make no additional DNS probes. Only initial
+      questions are cached;
+      CNAME members do not create extra response-cache entries.
+      A and AAAA are separate questions. Other DNS types are forwarded
+      without grants
+      or operation answer caching.
+
+    - Returned assembled/cached A/AAAA record TTLs are zero and their AD
+      flag is clear;
+      A/AAAA lookups use DO=0, CD=0 and no client EDNS options, and
+      assembled responses
+      omit DNSSEC signatures. Client CD is echoed but does not bypass
+      upstream validation.
+      DNSSEC transparency and validation by NetD are not provided.
+
+    - NXDOMAIN and NODATA are distinct negative entries subject to FIFO
+      eviction.
+      SERVFAIL/timeouts/transport errors are not cached; the next request
+      retries.
+      No extra transient retries
+      occur inside a request. Truncated UDP responses fall back to TCP.
+
+    - Malformed chains and permission-installation failures return SERVFAIL
+      and never
+      become successful cache entries. Other upstream error codes are
+      returned without
+      answer caching. DNS caches retain at most 16384 responses by default
+      using FIFO,
+      with no separate byte limit; evicted queries can be resolved again.
+      New answers install any uncovered IP/port permissions before being
+      returned.
+      Static CIDR and DNS-derived transport ACL elements share the NetD
+      limit
+      network.max_acl_entries_per_interface, defaulting to 65536.
+      Derived ICMP/ICMPv6 entries are excluded. This setting is separate
+      from
+      the hardcoded 16384-unit policy-normalization limit.
+      ACL limits fail closed without removing existing installed
+      permissions.
+
+    - Completion removes operation state before interface reuse. IPs cached
+      in a VM
+      during a previous run do not regain domain permissions without DNS
+      activity in
+      the current operation. No DNS prefetch restores those old permissions.
+
+    - DNS-derived destinations must be public unicast. Infrastructure must
+      block DC
+      destinations, including publicly numbered DC ranges; this is a
+      deployment assumption.
+
+    - Shared-IP grants do not enforce HTTP/TLS hostname identity. Other
+      hostnames on
+      an allowed IP/protocol/port remain reachable.
     """
 
-    cidrs: list[NetworkPolicyCIDRRule]
+    cidrs: list[NetworkPolicyCIDRRule] | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "CIDR permissions. Omitted or empty means no CIDR permissions."
+            ),
+            "default": [],
+        },
+    )
+    domains: list[NetworkPolicyDomainRule] | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Domain permissions. Omitted or empty means no domain permissions."
+            ),
+            "default": [],
+        },
+    )
 
     @classmethod
     def parse_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
         return {
-            "cidrs": [NetworkPolicyCIDRRule.from_dict(item) for item in data["cidrs"]],
+            "cidrs": ([NetworkPolicyCIDRRule.from_dict(item) for item in data["cidrs"]])
+            if data.get("cidrs") is not None
+            else data.get("cidrs", ...),
+            "domains": (
+                [NetworkPolicyDomainRule.from_dict(item) for item in data["domains"]]
+            )
+            if data.get("domains") is not None
+            else data.get("domains", ...),
         }
 
 
@@ -1014,23 +1281,33 @@ class NetworkPolicyTag(ContreeModel):
 class NetworkPolicy(ContreeModel):
     uuid: str
     cidrs: list[NetworkPolicyCIDRRule]
+    domains: list[NetworkPolicyDomainRule] = field(
+        metadata={
+            "description": (
+                "Normalized domain rules. Empty when absent. Grant operation-scoped "
+                "access through the NetD DNS proxy."
+            )
+        }
+    )
 
     @classmethod
     def parse_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
         return {
             "uuid": data["uuid"],
             "cidrs": [NetworkPolicyCIDRRule.from_dict(item) for item in data["cidrs"]],
+            "domains": [
+                NetworkPolicyDomainRule.from_dict(item) for item in data["domains"]
+            ],
         }
 
 
 @dataclass
 class NetworkPolicyListItemSummary(ContreeModel):
     cidrs: int = field(
-        metadata={
-            "description": (
-                "Number of CIDR rules in the policy, including repeated CIDRs."
-            )
-        }
+        metadata={"description": "Number of normalized CIDR rules in the policy."}
+    )
+    domains: int = field(
+        metadata={"description": "Number of normalized domain rules in the policy."}
     )
 
 
@@ -1075,21 +1352,20 @@ class NetworkPolicyListResponse(ContreeModel):
 
 @dataclass
 class ExecSpec(ContreeModel):
-    """Process-execution surface shared between ``InstanceSpawnRequest``.
+    """Execution parameters for ``POST
+    /operations/{operationId}/subprocesses``.
 
-    (the main process) and
-    ``POST /operations/{operationId}/subprocesses`` (additional
-    subprocesses).  VM-level concerns (image, hostname,
-    disk limits, files, timeout, disposable, preserve_env)
-    live on ``InstanceSpawnRequest`` only.
+    Only the listed fields are accepted. Instance-only fields such as
+    keep_alive, image, hostname, files, disposable, and preserve_env are
+    rejected.
     """
 
     command: str = field(
         metadata={
             "description": (
-                "The command to execute.  Same semantics as in "
-                "`InstanceSpawnRequest.command` — when `shell=true` it is a shell "
-                "expression, otherwise a path to an executable."
+                "Required nonempty command for a subprocess. With shell=true, use a "
+                "shell expression; otherwise, use a path to an executable. Subprocess "
+                "requests reject the keep_alive field, including false and null values."
             ),
             "example": "/bin/app",
         }
@@ -1107,31 +1383,57 @@ class ExecSpec(ContreeModel):
         default=...,
         metadata={
             "description": (
-                "Run command through a shell expression (args must be empty)."
+                "Run command through a shell expression; args are ignored when shell "
+                "is true."
             ),
             "default": False,
         },
     )
     env: dict[str, str] | None | EllipsisType = field(
         default=...,
-        metadata={"description": "Environment variables to set in the child process."},
+        metadata={
+            "description": (
+                "Environment overrides for the child process. Image-defined variables "
+                "are inherited in both shell and direct execution. Omitted keys retain "
+                "their inherited values. A null value removes a variable; an empty "
+                "string keeps it present with an empty value. Omitting env or setting "
+                "the whole field to null applies no overrides."
+            )
+        },
     )
-    cwd: str | EllipsisType = field(
+    cwd: str | None | EllipsisType = field(
         default=...,
         metadata={
             "description": (
-                "Working directory; empty string means image / server default."
+                "Working directory. Omission or null inherits the keep-alive "
+                "instance's resolved working directory; otherwise, it uses the image "
+                "or server default. An explicit empty string selects the image or "
+                "server default even inside a keep-alive instance."
             ),
-            "default": "",
+            "default": None,
         },
     )
-    uid: int | EllipsisType = field(
+    uid: int | None | EllipsisType = field(
         default=...,
-        metadata={"description": "User ID to run the process as.", "default": 0},
+        metadata={
+            "description": (
+                "User ID for the subprocess. Omission or null inherits the keep-alive "
+                "instance's user ID, or uses zero in an ordinary instance. An explicit "
+                "zero overrides inheritance."
+            ),
+            "default": None,
+        },
     )
-    gid: int | EllipsisType = field(
+    gid: int | None | EllipsisType = field(
         default=...,
-        metadata={"description": "Group ID to run the process as.", "default": 0},
+        metadata={
+            "description": (
+                "Group ID for the subprocess. Omission or null inherits the keep-alive "
+                "instance's group ID, or uses zero in an ordinary instance. An "
+                "explicit zero overrides inheritance."
+            ),
+            "default": None,
+        },
     )
     stdin: ClosableStreamRepr | EllipsisType = field(
         default=...,
@@ -1142,6 +1444,21 @@ class ExecSpec(ContreeModel):
                 "more data can be written via\n`POST "
                 "/operations/{operationId}/subprocesses/{spid}/stdin`."
             )
+        },
+    )
+    timeout: int | None | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Execution timeout in seconds, measured from command startup.\nA "
+                "positive value sends SIGKILL to the command's process tree\nwhen the "
+                "timer expires, including commands started without waiting.\nThe timer "
+                "stops when the command's main process exits; descendants\ncan outlive "
+                "that process without this timer terminating them.\nNull, zero, or "
+                "omission disables the command timer. The parent VM can\nstop earlier; "
+                "this field does not extend its lifetime."
+            ),
+            "default": None,
         },
     )
     truncate_output_at: int | EllipsisType = field(
@@ -1176,24 +1493,26 @@ class ExecSpec(ContreeModel):
             "stdin": (ClosableStreamRepr.from_dict(data["stdin"]))
             if data.get("stdin") is not None
             else data.get("stdin", ...),
+            "timeout": data.get("timeout", ...),
             "truncate_output_at": data.get("truncate_output_at", ...),
         }
 
 
 @dataclass
 class FileSpec(ContreeModel):
-    uuid: str | EllipsisType = ...
+    uuid: str
     uid: int | EllipsisType = field(
-        default=..., metadata={"description": "User ID", "example": 0}
+        default=..., metadata={"description": "User ID", "example": 0, "default": 0}
     )
     gid: int | EllipsisType = field(
-        default=..., metadata={"description": "Group ID", "example": 0}
+        default=..., metadata={"description": "Group ID", "example": 0, "default": 0}
     )
     mode: str | int | EllipsisType = field(
         default=...,
         metadata={
             "description": 'File mode in octal format (e.g., "0644")',
             "example": "0644",
+            "default": "0644",
         },
     )
 
@@ -1205,21 +1524,37 @@ class FileSpec(ContreeModel):
 
 @dataclass
 class InstanceSpawnRequest(ContreeModel):
-    command: str = field(
+    image: str
+    command: str | None | EllipsisType = field(
+        default=...,
         metadata={
             "description": (
-                "The command to execute. In case if `shell` is set to `true`, this "
-                "MUST contain shell expression. \nFor example `echo hello world` or "
-                "`ls -l /app`. \nIf `shell` is set to `false`, this must be a relative "
-                "or absolute path to the executable inside the image rootfs. \nFor "
-                "example: `/bin/app` or `/usr/bin/find`.\nDo not forget pass necessary "
-                "`PATH` variable to env field, by default `PATH` is set to  "
-                "`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`."
+                "Command to execute. With shell=true, use a shell expression; "
+                "otherwise, use an executable path. An omitted, null, or empty command "
+                "with omitted, null, or empty args creates a keep-alive instance "
+                "without a primary process, regardless of shell or an omitted or false "
+                "keep_alive flag. A nonempty command is required when args are "
+                "nonempty. Whitespace counts as a nonempty command. Stored metadata "
+                "and responses normalize an omitted or null command to an empty string."
             ),
             "example": "/bin/app",
-        }
+            "default": "",
+        },
     )
-    image: str
+    keep_alive: bool | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Keep the instance available for subprocess requests without starting "
+                "a primary process. True rejects a nonempty command or nonempty args. "
+                "An empty command and empty args always normalize this flag to true "
+                "before metadata is stored, even when the request sets false. The "
+                "instance timeout still limits its lifetime. Subprocess requests "
+                "continue to require a command."
+            ),
+            "default": False,
+        },
+    )
     disposable: bool | EllipsisType = field(
         default=...,
         metadata={
@@ -1237,10 +1572,14 @@ class InstanceSpawnRequest(ContreeModel):
             "default": "linuxkit",
         },
     )
-    args: list[str] | EllipsisType = field(
+    args: list[str] | None | EllipsisType = field(
         default=...,
         metadata={
-            "description": "Arguments to pass to the command if shell is set to false.",
+            "description": (
+                "Arguments to pass to the command if shell is false. Omitted or null "
+                "args normalize to an empty list. Nonempty args require a nonempty "
+                "command and cannot be combined with keep_alive=true."
+            ),
             "example": ["arg1", "arg2"],
             "default": [],
         },
@@ -1252,9 +1591,8 @@ class InstanceSpawnRequest(ContreeModel):
                 "Whether to run the command through a shell. If `true`, the command "
                 "must be a shell expression and all values from args will be ignored. "
                 "If `false`, the command field must be a path to an executable and "
-                "args will be used. When `true`, environment variables from the image "
-                "are automatically inherited. When `false`, they are not - use the "
-                "`env` field to pass them explicitly."
+                "args will be used. Environment variables from the image are inherited "
+                "in both modes."
             ),
             "default": False,
         },
@@ -1263,10 +1601,11 @@ class InstanceSpawnRequest(ContreeModel):
         default=...,
         metadata={
             "description": (
-                "Environment variables to set in the container. These are merged with "
-                "image-defined variables when `shell` is `true`. When `shell` is "
-                "`false`, only variables specified here are available - image-defined "
-                "variables are not inherited."
+                "Environment overrides for the main process. Image-defined variables "
+                "are inherited in both shell and direct execution. Omitted keys retain "
+                "their inherited values. A null value removes a variable; an empty "
+                "string keeps it present with an empty value. Omitting env or setting "
+                "the whole field to null applies no overrides."
             ),
             "example": {"KEY1": "value1", "KEY2": "value2"},
         },
@@ -1279,9 +1618,10 @@ class InstanceSpawnRequest(ContreeModel):
                 "When `true`, the image's existing environment variables from "
                 "`metadata/env` are merged with user-provided `env` values (user "
                 "values take priority on conflicts), and the combined result is "
-                "written back to `metadata/env` after command execution. Setting a "
-                "variable to an empty string or `null` removes it from the preserved "
-                "environment."
+                "written back to `metadata/env` after command execution. A null value "
+                "removes a variable from the preserved environment. An empty string "
+                "preserves the variable with an empty value; omitted keys remain "
+                "unchanged."
             ),
             "default": False,
         },
@@ -1336,7 +1676,18 @@ class InstanceSpawnRequest(ContreeModel):
     stdin: ClosableStreamRepr | EllipsisType = ...
     timeout: int | EllipsisType = field(
         default=...,
-        metadata={"description": "Maximum execution time in seconds", "example": 60},
+        metadata={
+            "description": (
+                "Guest execution timeout in seconds, always passed to the guest. "
+                "Expiry records timed_out and follows normal finalization, including "
+                "image persistence when disposable is false. The host VM watchdog "
+                "allows 15 additional seconds for boot and guest shutdown; this does "
+                "not extend the guest execution timeout. A host failure or an expired "
+                "watchdog can still prevent result and image publication."
+            ),
+            "example": 60,
+            "default": 60,
+        },
     )
     truncate_output_at: int | EllipsisType = field(
         default=...,
@@ -1376,8 +1727,9 @@ class InstanceSpawnRequest(ContreeModel):
     @classmethod
     def parse_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
         return {
-            "command": data["command"],
             "image": data["image"],
+            "command": data.get("command", ...),
+            "keep_alive": data.get("keep_alive", ...),
             "disposable": data.get("disposable", ...),
             "hostname": data.get("hostname", ...),
             "args": data.get("args", ...),
@@ -1411,6 +1763,11 @@ class InstanceSpawnRequest(ContreeModel):
 
 @dataclass
 class InstanceResultResources(ContreeModel):
+    """Resource usage of the primary process. A keep-alive instance has no
+    primary process; its process usage fields are -1, while monotonic_time
+    records its lifetime in seconds.
+    """
+
     block_input: int | EllipsisType = field(
         default=..., metadata={"description": "Block input operations"}
     )
@@ -1470,12 +1827,31 @@ class InstanceResultState(ContreeModel):
     core_dump: bool | EllipsisType = field(
         default=..., metadata={"description": "Whether a core dump was generated"}
     )
-    exit_code: int | EllipsisType = field(
-        default=..., metadata={"description": "Process exit code"}
+    exit_code: int | None | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Process exit code; null for a keep-alive instance without a primary "
+                "process."
+            )
+        },
     )
-    pid: int | EllipsisType = field(default=..., metadata={"description": "Process ID"})
+    pid: int | None | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Process ID; null for a keep-alive instance without a primary process."
+            )
+        },
+    )
     signal: int | EllipsisType = field(
-        default=..., metadata={"description": "Signal that caused termination, if any"}
+        default=...,
+        metadata={
+            "description": (
+                "Signal that caused termination, including a requested keep-alive "
+                "shutdown; -1 while running."
+            )
+        },
     )
     stopped: bool | EllipsisType = field(
         default=..., metadata={"description": "Whether the process was stopped"}
@@ -1503,7 +1879,16 @@ class InstanceResultState(ContreeModel):
 class InstanceResult(ContreeModel):
     """Result of an instance execution."""
 
-    resources: InstanceResultResources | EllipsisType = ...
+    resources: InstanceResultResources | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Resource usage of the primary process. A keep-alive instance has no "
+                "primary process; its process usage fields are -1, while "
+                "monotonic_time records its lifetime in seconds."
+            )
+        },
+    )
     state: InstanceResultState | EllipsisType = ...
     stdout: StreamRepr | EllipsisType = ...
     stderr: StreamRepr | EllipsisType = ...
@@ -1529,13 +1914,32 @@ class InstanceResult(ContreeModel):
 @dataclass
 class InstanceSpawnResponse(ContreeModel):
     uuid: str | EllipsisType = ...
-    command: str | EllipsisType = ...
+    command: str | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Canonical command; an empty string identifies an instance without a "
+                "primary process."
+            )
+        },
+    )
+    keep_alive: bool | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "True when the instance was normalized to run without a primary "
+                "process."
+            ),
+            "default": False,
+        },
+    )
     image: str | EllipsisType = ...
     hostname: str | EllipsisType = ...
     args: list[str] | EllipsisType = ...
     shell: bool | EllipsisType = ...
-    env: dict[str, str] | None | EllipsisType = ...
+    env: dict[str, str] | EllipsisType = ...
     preserve_env: bool | EllipsisType = ...
+    preserve_cwd: bool | EllipsisType = ...
     cwd: str | EllipsisType = ...
     uid: int | EllipsisType = ...
     gid: int | EllipsisType = ...
@@ -1553,12 +1957,14 @@ class InstanceSpawnResponse(ContreeModel):
         return {
             "uuid": data.get("uuid", ...),
             "command": data.get("command", ...),
+            "keep_alive": data.get("keep_alive", ...),
             "image": data.get("image", ...),
             "hostname": data.get("hostname", ...),
             "args": data.get("args", ...),
             "shell": data.get("shell", ...),
             "env": data.get("env", ...),
             "preserve_env": data.get("preserve_env", ...),
+            "preserve_cwd": data.get("preserve_cwd", ...),
             "cwd": data.get("cwd", ...),
             "uid": data.get("uid", ...),
             "gid": data.get("gid", ...),
@@ -1686,21 +2092,37 @@ class OperationSummary(ContreeModel):
 
 @dataclass
 class OperationInstanceMetadata(ContreeModel):
-    command: str = field(
+    image: str
+    command: str | None | EllipsisType = field(
+        default=...,
         metadata={
             "description": (
-                "The command to execute. In case if `shell` is set to `true`, this "
-                "MUST contain shell expression. \nFor example `echo hello world` or "
-                "`ls -l /app`. \nIf `shell` is set to `false`, this must be a relative "
-                "or absolute path to the executable inside the image rootfs. \nFor "
-                "example: `/bin/app` or `/usr/bin/find`.\nDo not forget pass necessary "
-                "`PATH` variable to env field, by default `PATH` is set to  "
-                "`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`."
+                "Command to execute. With shell=true, use a shell expression; "
+                "otherwise, use an executable path. An omitted, null, or empty command "
+                "with omitted, null, or empty args creates a keep-alive instance "
+                "without a primary process, regardless of shell or an omitted or false "
+                "keep_alive flag. A nonempty command is required when args are "
+                "nonempty. Whitespace counts as a nonempty command. Stored metadata "
+                "and responses normalize an omitted or null command to an empty string."
             ),
             "example": "/bin/app",
-        }
+            "default": "",
+        },
     )
-    image: str
+    keep_alive: bool | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Keep the instance available for subprocess requests without starting "
+                "a primary process. True rejects a nonempty command or nonempty args. "
+                "An empty command and empty args always normalize this flag to true "
+                "before metadata is stored, even when the request sets false. The "
+                "instance timeout still limits its lifetime. Subprocess requests "
+                "continue to require a command."
+            ),
+            "default": False,
+        },
+    )
     disposable: bool | EllipsisType = field(
         default=...,
         metadata={
@@ -1718,10 +2140,14 @@ class OperationInstanceMetadata(ContreeModel):
             "default": "linuxkit",
         },
     )
-    args: list[str] | EllipsisType = field(
+    args: list[str] | None | EllipsisType = field(
         default=...,
         metadata={
-            "description": "Arguments to pass to the command if shell is set to false.",
+            "description": (
+                "Arguments to pass to the command if shell is false. Omitted or null "
+                "args normalize to an empty list. Nonempty args require a nonempty "
+                "command and cannot be combined with keep_alive=true."
+            ),
             "example": ["arg1", "arg2"],
             "default": [],
         },
@@ -1733,9 +2159,8 @@ class OperationInstanceMetadata(ContreeModel):
                 "Whether to run the command through a shell. If `true`, the command "
                 "must be a shell expression and all values from args will be ignored. "
                 "If `false`, the command field must be a path to an executable and "
-                "args will be used. When `true`, environment variables from the image "
-                "are automatically inherited. When `false`, they are not - use the "
-                "`env` field to pass them explicitly."
+                "args will be used. Environment variables from the image are inherited "
+                "in both modes."
             ),
             "default": False,
         },
@@ -1744,10 +2169,11 @@ class OperationInstanceMetadata(ContreeModel):
         default=...,
         metadata={
             "description": (
-                "Environment variables to set in the container. These are merged with "
-                "image-defined variables when `shell` is `true`. When `shell` is "
-                "`false`, only variables specified here are available - image-defined "
-                "variables are not inherited."
+                "Environment overrides for the main process. Image-defined variables "
+                "are inherited in both shell and direct execution. Omitted keys retain "
+                "their inherited values. A null value removes a variable; an empty "
+                "string keeps it present with an empty value. Omitting env or setting "
+                "the whole field to null applies no overrides."
             ),
             "example": {"KEY1": "value1", "KEY2": "value2"},
         },
@@ -1760,9 +2186,10 @@ class OperationInstanceMetadata(ContreeModel):
                 "When `true`, the image's existing environment variables from "
                 "`metadata/env` are merged with user-provided `env` values (user "
                 "values take priority on conflicts), and the combined result is "
-                "written back to `metadata/env` after command execution. Setting a "
-                "variable to an empty string or `null` removes it from the preserved "
-                "environment."
+                "written back to `metadata/env` after command execution. A null value "
+                "removes a variable from the preserved environment. An empty string "
+                "preserves the variable with an empty value; omitted keys remain "
+                "unchanged."
             ),
             "default": False,
         },
@@ -1817,7 +2244,18 @@ class OperationInstanceMetadata(ContreeModel):
     stdin: ClosableStreamRepr | EllipsisType = ...
     timeout: int | EllipsisType = field(
         default=...,
-        metadata={"description": "Maximum execution time in seconds", "example": 60},
+        metadata={
+            "description": (
+                "Guest execution timeout in seconds, always passed to the guest. "
+                "Expiry records timed_out and follows normal finalization, including "
+                "image persistence when disposable is false. The host VM watchdog "
+                "allows 15 additional seconds for boot and guest shutdown; this does "
+                "not extend the guest execution timeout. A host failure or an expired "
+                "watchdog can still prevent result and image publication."
+            ),
+            "example": 60,
+            "default": 60,
+        },
     )
     truncate_output_at: int | EllipsisType = field(
         default=...,
@@ -1858,8 +2296,9 @@ class OperationInstanceMetadata(ContreeModel):
     @classmethod
     def parse_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
         return {
-            "command": data["command"],
             "image": data["image"],
+            "command": data.get("command", ...),
+            "keep_alive": data.get("keep_alive", ...),
             "disposable": data.get("disposable", ...),
             "hostname": data.get("hostname", ...),
             "args": data.get("args", ...),
@@ -2176,10 +2615,10 @@ class OperationEvent(ContreeModel):
         metadata={
             "description": (
                 "Spawned Process ID — present on process-scoped events\n(`init`, "
-                "`spawn`, `stdin`, `stdout`, `stderr`, `exit`,\n`truncated`, "
-                "`size_cap`, `network`, `shutdown`, `inspect`, `file_upload`).\nAbsent "
-                "on operation-scoped system events\n(`completion`), which don't tie to "
-                "a specific child."
+                "`spawn`, `lifecycle`, `stdin`, `stdout`, `stderr`, "
+                "`exit`,\n`truncated`, `size_cap`, `network`, `shutdown`, `inspect`, "
+                "`file_upload`).\nAbsent on operation-scoped system "
+                "events\n(`completion`), which don't tie to a specific child."
             ),
             "example": 1,
         },
@@ -2493,6 +2932,31 @@ class EventDataSpawn(ContreeModel):
 
 
 @dataclass
+class EventDataLifecycle(ContreeModel):
+    """Keep-alive readiness event for lifecycle root spid=1, without a primary
+    process.
+    """
+
+    keep_alive: bool
+    pid: int | None = field(
+        metadata={"description": "Always null because no primary process exists."}
+    )
+    cwd: str = field(
+        metadata={"description": "Resolved working directory for subprocess defaults."}
+    )
+    uid: int = field(metadata={"description": "Default user ID for subprocesses."})
+    gid: int = field(metadata={"description": "Default group ID for subprocesses."})
+    truncate_at: int = field(
+        metadata={
+            "description": (
+                "Output capture limit stored on the lifecycle root; subprocesses use "
+                "their own capture limits."
+            )
+        }
+    )
+
+
+@dataclass
 class EventDataStream(ContreeModel):
     """Payload for ``stdin`` / ``stdout`` / ``stderr`` events.  Encoding.
 
@@ -2595,19 +3059,25 @@ class EventDataExit(ContreeModel):
     flag (true only when the process's per-process timeout fired
     — distinguishes from an external signal/kill), wall-clock
     duration, and a snapshot of resource usage.
+    For a keep-alive lifecycle root, keep_alive is true, pid and code are
+    null,
+    resources is absent, and signal identifies the requested termination or
+    timeout.
     """
 
-    pid: int = field(
+    pid: int | None = field(
         metadata={
-            "description": "PID of the process that just exited.",
+            "description": (
+                "PID of the process that exited; null for a keep-alive lifecycle root."
+            ),
             "example": 4242,
         }
     )
-    code: int = field(
+    code: int | None = field(
         metadata={
             "description": (
-                "Exit code (0..255) if the process exited normally; -1 if killed by "
-                "signal."
+                "Exit code (0..255) if normal, -1 if killed by signal, or null for a "
+                "keep-alive lifecycle root."
             ),
             "example": 0,
         }
@@ -2631,7 +3101,15 @@ class EventDataExit(ContreeModel):
     duration_ms: int = field(
         metadata={"description": "Wall-clock time from spawn to exit.", "example": 1234}
     )
-    resources: EventResources
+    keep_alive: bool | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "True for a keep-alive lifecycle root without a primary process."
+            ),
+            "default": False,
+        },
+    )
     oom_killed: bool | EllipsisType = field(
         default=...,
         metadata={
@@ -2652,18 +3130,29 @@ class EventDataExit(ContreeModel):
             "example": False,
         },
     )
+    resources: EventResources | EllipsisType = field(
+        default=...,
+        metadata={
+            "description": (
+                "Required for process exits; absent for a keep-alive lifecycle root."
+            )
+        },
+    )
 
     @classmethod
     def parse_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
         return {
-            "pid": data["pid"],
-            "code": data["code"],
+            "pid": data.get("pid"),
+            "code": data.get("code"),
             "signal": data["signal"],
             "timed_out": data["timed_out"],
             "duration_ms": data["duration_ms"],
-            "resources": EventResources.from_dict(data["resources"]),
+            "keep_alive": data.get("keep_alive", ...),
             "oom_killed": data.get("oom_killed", ...),
             "core_dump": data.get("core_dump", ...),
+            "resources": (EventResources.from_dict(data["resources"]))
+            if data.get("resources") is not None
+            else data.get("resources", ...),
         }
 
 
@@ -2925,6 +3414,7 @@ class ListNetworkPolicyTagsResponse(ContreeModel):
 EventData = (
     EventDataInit
     | EventDataSpawn
+    | EventDataLifecycle
     | EventDataStream
     | EventDataExit
     | EventDataTruncated
@@ -2939,6 +3429,7 @@ EventData = (
 EVENT_DATA_PARSERS: dict[str, Callable[[dict[str, Any]], EventData]] = {
     "init": EventDataInit.from_dict,
     "spawn": EventDataSpawn.from_dict,
+    "lifecycle": EventDataLifecycle.from_dict,
     "stdin": EventDataStream.from_dict,
     "stdout": EventDataStream.from_dict,
     "stderr": EventDataStream.from_dict,

@@ -20,6 +20,7 @@ import type {
   ListNetworkPolicyTagsResponse,
   NetworkPolicy,
   NetworkPolicyCIDRRule,
+  NetworkPolicyDomainRule,
   NetworkPolicyListResponse,
   NetworkPolicyTag,
   OperationEvent,
@@ -111,7 +112,10 @@ export declare class ContreeClient {
     limit?: number | null;
     offset?: number | null;
   }): Promise<NetworkPolicyListResponse>;
-  createNetworkPolicy(cidrs: NetworkPolicyCIDRRule[]): Promise<NetworkPolicy>;
+  createNetworkPolicy(options?: {
+    cidrs?: NetworkPolicyCIDRRule[] | undefined;
+    domains?: NetworkPolicyDomainRule[] | undefined;
+  }): Promise<NetworkPolicy>;
   getNetworkPolicy(uuid: string): Promise<NetworkPolicy>;
   deleteNetworkPolicy(uuid: string): Promise<null>;
   listNetworkPolicyTags(options?: {
@@ -151,12 +155,13 @@ export declare class ContreeClient {
   getFile(sha256: string): Promise<File>;
   checkFileExists(sha256: string): Promise<boolean>;
   spawnInstance(
-    command: string,
     image: string,
     options?: {
+      command?: string | null | undefined;
+      keepAlive?: boolean | undefined;
       disposable?: boolean | undefined;
       hostname?: string | undefined;
-      args?: string[] | undefined;
+      args?: string[] | null | undefined;
       shell?: boolean | undefined;
       env?: Record<string, string> | null | undefined;
       preserveEnv?: boolean | undefined;
@@ -204,10 +209,11 @@ export declare class ContreeClient {
       args?: string[] | undefined;
       shell?: boolean | undefined;
       env?: Record<string, string> | null | undefined;
-      cwd?: string | undefined;
-      uid?: number | undefined;
-      gid?: number | undefined;
+      cwd?: string | null | undefined;
+      uid?: number | null | undefined;
+      gid?: number | null | undefined;
       stdin?: ClosableStreamRepr | undefined;
+      timeout?: number | null | undefined;
       truncateOutputAt?: number | undefined;
     },
   ): Promise<number>;

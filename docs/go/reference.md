@@ -432,6 +432,24 @@ NetworkPolicyCidrRuleProtoUdp is a documented NetworkPolicyCidrRuleProto value.
 const NetworkPolicyCidrRuleProtoUdp = "udp"
 ```
 
+(go-networkpolicydomainruleprototcp)=
+### const NetworkPolicyDomainRuleProtoTcp
+
+NetworkPolicyDomainRuleProtoTcp is a documented NetworkPolicyDomainRuleProto value.
+
+```go
+const NetworkPolicyDomainRuleProtoTcp = "tcp"
+```
+
+(go-networkpolicydomainruleprotoudp)=
+### const NetworkPolicyDomainRuleProtoUdp
+
+NetworkPolicyDomainRuleProtoUdp is a documented NetworkPolicyDomainRuleProto value.
+
+```go
+const NetworkPolicyDomainRuleProtoUdp = "udp"
+```
+
 (go-operationresponsekindimageimport)=
 ### const OperationResponseKindImageImport
 
@@ -492,7 +510,7 @@ const OperationSummaryKindInstance = "instance"
 SpecSHA256 identifies the exact OpenAPI input document.
 
 ```go
-const SpecSHA256 = "0c77136174a41b99c59fb4b98e5d8b1e660dee2243a24cff2da56fa84b836a0d"
+const SpecSHA256 = "a204733b148c6df576f6c5e6904f438860fac88160d205ce9e7fe15e0459e825"
 ```
 
 (go-streamreprencodingascii)=
@@ -1273,7 +1291,7 @@ CreateNetworkPolicy calls POST /network/policies.
 ```go
 func (c *Client) CreateNetworkPolicy(
 	ctx context.Context,
-	cidrs []NetworkPolicyCidrRule,
+	options *CreateNetworkPolicyOptions,
 ) (NetworkPolicy, error)
 ```
 
@@ -1860,7 +1878,6 @@ SpawnInstanceWithResponse calls POST /instances.
 ```go
 func (c *Client) SpawnInstanceWithResponse(
 	ctx context.Context,
-	command string,
 	image string,
 	options *SpawnInstanceWithResponseOptions,
 ) (InstanceSpawnResponse, error)
@@ -2104,6 +2121,18 @@ func (e ConflictError) Error() string
 func (e *ConflictError) Unwrap() error
 ```
 
+(go-createnetworkpolicyoptions)=
+### type CreateNetworkPolicyOptions
+
+CreateNetworkPolicyOptions contains optional arguments for CreateNetworkPolicy.
+
+```go
+type CreateNetworkPolicyOptions struct {
+	Cidrs   Optional[[]NetworkPolicyCidrRule]
+	Domains Optional[[]NetworkPolicyDomainRule]
+}
+```
+
 (go-deleteimagetagoptions)=
 ### type DeleteImageTagOptions
 
@@ -2273,14 +2302,15 @@ EventDataExit is generated from the EventDataExit schema.
 
 ```go
 type EventDataExit struct {
-	OomKilled  Optional[bool] `json:"oom_killed"`
-	Pid        int64          `json:"pid"`
-	Code       int64          `json:"code"`
-	Signal     int64          `json:"signal"`
-	CoreDump   Optional[bool] `json:"core_dump"`
-	TimedOut   bool           `json:"timed_out"`
-	DurationMs int64          `json:"duration_ms"`
-	Resources  EventResources `json:"resources"`
+	KeepAlive  Optional[bool]           `json:"keep_alive"`
+	OomKilled  Optional[bool]           `json:"oom_killed"`
+	Pid        *int64                   `json:"pid"`
+	Code       *int64                   `json:"code"`
+	Signal     int64                    `json:"signal"`
+	CoreDump   Optional[bool]           `json:"core_dump"`
+	TimedOut   bool                     `json:"timed_out"`
+	DurationMs int64                    `json:"duration_ms"`
+	Resources  Optional[EventResources] `json:"resources"`
 }
 ```
 
@@ -2410,6 +2440,40 @@ UnmarshalJSON decodes EventDataInspect and checks required fields.
 
 ```go
 func (m *EventDataInspect) UnmarshalJSON(data []byte) error
+```
+
+(go-eventdatalifecycle)=
+### type EventDataLifecycle
+
+EventDataLifecycle is generated from the EventDataLifecycle schema.
+
+```go
+type EventDataLifecycle struct {
+	KeepAlive  bool   `json:"keep_alive"`
+	Pid        *int64 `json:"pid"`
+	Cwd        string `json:"cwd"`
+	UID        int64  `json:"uid"`
+	GID        int64  `json:"gid"`
+	TruncateAt int64  `json:"truncate_at"`
+}
+```
+
+(go-eventdatalifecycle-marshaljson)=
+#### EventDataLifecycle.MarshalJSON
+
+MarshalJSON encodes EventDataLifecycle with exact wire names.
+
+```go
+func (m EventDataLifecycle) MarshalJSON() ([]byte, error)
+```
+
+(go-eventdatalifecycle-unmarshaljson)=
+#### EventDataLifecycle.UnmarshalJSON
+
+UnmarshalJSON decodes EventDataLifecycle and checks required fields.
+
+```go
+func (m *EventDataLifecycle) UnmarshalJSON(data []byte) error
 ```
 
 (go-eventdatanetwork)=
@@ -2815,6 +2879,7 @@ type ExecSpec struct {
 	UID              Optional[int64]                  `json:"uid"`
 	GID              Optional[int64]                  `json:"gid"`
 	Stdin            Optional[ClosableStreamRepr]     `json:"stdin"`
+	Timeout          Optional[int64]                  `json:"timeout"`
 	TruncateOutputAt Optional[int64]                  `json:"truncate_output_at"`
 }
 ```
@@ -2951,7 +3016,7 @@ FileSpec is generated from the FileSpec schema.
 
 ```go
 type FileSpec struct {
-	UUID Optional[string]        `json:"uuid"`
+	UUID string                  `json:"uuid"`
 	UID  Optional[int64]         `json:"uid"`
 	GID  Optional[int64]         `json:"gid"`
 	Mode Optional[StringOrInt64] `json:"mode"`
@@ -3565,9 +3630,12 @@ InstanceResourcesLimits is generated from the InstanceResourcesLimits schema.
 
 ```go
 type InstanceResourcesLimits struct {
-	CPU           Optional[int64] `json:"cpu"`
-	MemoryMib     Optional[int64] `json:"memory_mib"`
-	MaxLayerBytes Optional[int64] `json:"max_layer_bytes"`
+	CPU             Optional[int64] `json:"cpu"`
+	VMMemoryMib     Optional[int64] `json:"vm_memory_mib"`
+	MemoryMib       Optional[int64] `json:"memory_mib"`
+	MemoryHardMib   Optional[int64] `json:"memory_hard_mib"`
+	AddressSpaceMib Optional[int64] `json:"address_space_mib"`
+	MaxLayerBytes   Optional[int64] `json:"max_layer_bytes"`
 }
 ```
 
@@ -3708,7 +3776,8 @@ InstanceSpawnRequest is generated from the InstanceSpawnRequest schema.
 
 ```go
 type InstanceSpawnRequest struct {
-	Command          string                            `json:"command"`
+	Command          Optional[string]                  `json:"command"`
+	KeepAlive        Optional[bool]                    `json:"keep_alive"`
 	Disposable       Optional[bool]                    `json:"disposable"`
 	Hostname         Optional[string]                  `json:"hostname"`
 	Image            string                            `json:"image"`
@@ -3756,12 +3825,14 @@ InstanceSpawnResponse is generated from the InstanceSpawnResponse schema.
 type InstanceSpawnResponse struct {
 	UUID             Optional[string]                     `json:"uuid"`
 	Command          Optional[string]                     `json:"command"`
+	KeepAlive        Optional[bool]                       `json:"keep_alive"`
 	Image            Optional[string]                     `json:"image"`
 	Hostname         Optional[string]                     `json:"hostname"`
 	Args             Optional[[]string]                   `json:"args"`
 	Shell            Optional[bool]                       `json:"shell"`
 	Env              Optional[map[string]string]          `json:"env"`
 	PreserveEnv      Optional[bool]                       `json:"preserve_env"`
+	PreserveCwd      Optional[bool]                       `json:"preserve_cwd"`
 	Cwd              Optional[string]                     `json:"cwd"`
 	UID              Optional[int64]                      `json:"uid"`
 	GID              Optional[int64]                      `json:"gid"`
@@ -4114,8 +4185,9 @@ NetworkPolicy is generated from the NetworkPolicy schema.
 
 ```go
 type NetworkPolicy struct {
-	UUID  string                  `json:"uuid"`
-	Cidrs []NetworkPolicyCidrRule `json:"cidrs"`
+	UUID    string                    `json:"uuid"`
+	Cidrs   []NetworkPolicyCidrRule   `json:"cidrs"`
+	Domains []NetworkPolicyDomainRule `json:"domains"`
 }
 ```
 
@@ -4175,7 +4247,8 @@ NetworkPolicyCreateRequest is generated from the NetworkPolicyCreateRequest sche
 
 ```go
 type NetworkPolicyCreateRequest struct {
-	Cidrs []NetworkPolicyCidrRule `json:"cidrs"`
+	Cidrs   Optional[[]NetworkPolicyCidrRule]   `json:"cidrs"`
+	Domains Optional[[]NetworkPolicyDomainRule] `json:"domains"`
 }
 ```
 
@@ -4195,6 +4268,37 @@ UnmarshalJSON decodes NetworkPolicyCreateRequest and checks required fields.
 
 ```go
 func (m *NetworkPolicyCreateRequest) UnmarshalJSON(data []byte) error
+```
+
+(go-networkpolicydomainrule)=
+### type NetworkPolicyDomainRule
+
+NetworkPolicyDomainRule is generated from the NetworkPolicyDomainRule schema.
+
+```go
+type NetworkPolicyDomainRule struct {
+	Domain string            `json:"domain"`
+	Proto  string            `json:"proto"`
+	Ports  Optional[[]int64] `json:"ports"`
+}
+```
+
+(go-networkpolicydomainrule-marshaljson)=
+#### NetworkPolicyDomainRule.MarshalJSON
+
+MarshalJSON encodes NetworkPolicyDomainRule with exact wire names.
+
+```go
+func (m NetworkPolicyDomainRule) MarshalJSON() ([]byte, error)
+```
+
+(go-networkpolicydomainrule-unmarshaljson)=
+#### NetworkPolicyDomainRule.UnmarshalJSON
+
+UnmarshalJSON decodes NetworkPolicyDomainRule and checks required fields.
+
+```go
+func (m *NetworkPolicyDomainRule) UnmarshalJSON(data []byte) error
 ```
 
 (go-networkpolicylistitem)=
@@ -4236,7 +4340,8 @@ NetworkPolicyListItemSummary is generated from the NetworkPolicyListItemSummary 
 
 ```go
 type NetworkPolicyListItemSummary struct {
-	Cidrs int64 `json:"cidrs"`
+	Cidrs   int64 `json:"cidrs"`
+	Domains int64 `json:"domains"`
 }
 ```
 
@@ -4423,6 +4528,7 @@ type OperationEventType string
 ```
 
 (go-operationeventtypespawn)=
+(go-operationeventtypelifecycle)=
 (go-operationeventtypestdin)=
 (go-operationeventtypestdout)=
 (go-operationeventtypestderr)=
@@ -4441,6 +4547,7 @@ type OperationEventType string
 const (
 	OperationEventTypeInit       OperationEventType = "init"
 	OperationEventTypeSpawn      OperationEventType = "spawn"
+	OperationEventTypeLifecycle  OperationEventType = "lifecycle"
 	OperationEventTypeStdin      OperationEventType = "stdin"
 	OperationEventTypeStdout     OperationEventType = "stdout"
 	OperationEventTypeStderr     OperationEventType = "stderr"
@@ -4462,7 +4569,8 @@ OperationInstanceMetadata is generated from the OperationInstanceMetadata schema
 
 ```go
 type OperationInstanceMetadata struct {
-	Command          string                               `json:"command"`
+	Command          Optional[string]                     `json:"command"`
+	KeepAlive        Optional[bool]                       `json:"keep_alive"`
 	Disposable       Optional[bool]                       `json:"disposable"`
 	Hostname         Optional[string]                     `json:"hostname"`
 	Image            string                               `json:"image"`
@@ -4625,6 +4733,7 @@ type OperationSubprocessCreateOptions struct {
 	UID              Optional[int64]
 	GID              Optional[int64]
 	Stdin            Optional[ClosableStreamRepr]
+	Timeout          Optional[int64]
 	TruncateOutputAt Optional[int64]
 }
 ```
@@ -4822,8 +4931,10 @@ ProcessResourcesLimits is generated from the ProcessResourcesLimits schema.
 
 ```go
 type ProcessResourcesLimits struct {
-	CPU       Optional[int64] `json:"cpu"`
-	MemoryMib Optional[int64] `json:"memory_mib"`
+	CPU             Optional[int64] `json:"cpu"`
+	MemoryMib       Optional[int64] `json:"memory_mib"`
+	MemoryHardMib   Optional[int64] `json:"memory_hard_mib"`
+	AddressSpaceMib Optional[int64] `json:"address_space_mib"`
 }
 ```
 
@@ -5048,6 +5159,8 @@ SpawnInstanceWithResponseOptions contains optional arguments for SpawnInstanceWi
 
 ```go
 type SpawnInstanceWithResponseOptions struct {
+	Command          Optional[string]
+	KeepAlive        Optional[bool]
 	Disposable       Optional[bool]
 	Hostname         Optional[string]
 	Args             Optional[[]string]

@@ -266,11 +266,15 @@ client.mock(
 ```
 -->
 ```python
-client.spawn_instance("uname -a", "tag:ubuntu:latest", shell=True)
+client.spawn_instance(command="uname -a", image="tag:ubuntu:latest", shell=True)
 
 (call,) = client.calls_for("spawn_instance")
-assert call.args == ("uname -a", "tag:ubuntu:latest")
-assert call.kwargs == {"shell": True}
+assert call.args == ()
+assert call.kwargs == {
+    "command": "uname -a",
+    "image": "tag:ubuntu:latest",
+    "shell": True,
+}
 ```
 :::
 
@@ -291,11 +295,15 @@ client.mock(
 ```
 -->
 ```python
-await client.spawn_instance("uname -a", "tag:ubuntu:latest", shell=True)
+await client.spawn_instance(command="uname -a", image="tag:ubuntu:latest", shell=True)
 
 (call,) = client.calls_for("spawn_instance")
-assert call.args == ("uname -a", "tag:ubuntu:latest")
-assert call.kwargs == {"shell": True}
+assert call.args == ()
+assert call.kwargs == {
+    "command": "uname -a",
+    "image": "tag:ubuntu:latest",
+    "shell": True,
+}
 ```
 :::
 

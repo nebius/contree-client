@@ -8,7 +8,7 @@ clients. **Complete** means the client preserves the same API semantics.
 
 | Capability | Python | JavaScript | Go | Status |
 |---|---|---|---|---|
-| Generated API | Sync and async methods | Promise-based methods | Context-aware methods | Complete: 33 wire operations and all schemas; two redirect routes have no client method |
+| Generated API | Sync and async methods | Promise-based methods | Context-aware methods | Complete: 41 wire operations and all schemas; two redirect routes have no client method |
 | Simple instance creation | `spawn_instance` with keyword arguments; full response | `spawnInstance` with options; full response | `SpawnInstance` with plain options, `time.Duration`, and the full response | Idiomatic; `SpawnInstanceWithResponse` provides exact JSON request control |
 | Optional JSON fields | `...`, `None`, value | `undefined`, `null`, value | `Optional[T]`: unset, null, value | Complete |
 | Client construction | Five transport adapters | Injectable `fetch` | Functional options and injectable `http.Client` | Idiomatic |
@@ -26,7 +26,7 @@ clients. **Complete** means the client preserves the same API semantics.
 | File and image helpers | Deduplicated upload and image resolution | Equivalent helpers | Reader-aware upload and image resolution | Complete |
 | Subprocess lifecycle | Create, inspect, stdin, kill | Same four operations | Same four operations | Complete |
 | Live instance filesystem | List, download, archive, grep, existence checks, and apply uploaded files | Same operations | Same operations | Complete; archives stream, file application preserves explicit false flags |
-| Resource limits | Instance and process models | Same models | Same models with `Optional[T]` fields | Complete; omitted or null process limits inherit operation limits |
+| Resource limits | Instance and process models | Same models | Same models with `Optional[T]` fields | Complete; omitted or null process CPU limits inherit the operation CPU limit; memory limits require explicit values |
 | Tutorial coverage | Executed examples | Subprocess, grep, and download examples executed | All Go blocks compile; subprocess, grep, and download snippets also execute | Compile gate runs in the Go test suite on every CI platform |
 
 ## Intentional differences

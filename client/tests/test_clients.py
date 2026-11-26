@@ -196,8 +196,8 @@ def test_get_file(invoke: Invoke, stub_server: StubServer) -> None:
 def test_spawn_instance(invoke: Invoke, stub_server: StubServer) -> None:
     response = invoke(
         "spawn_instance",
-        "echo hi",
-        "tag:busybox:latest",
+        command="echo hi",
+        image="tag:busybox:latest",
         shell=True,
         env={"KEY": "value"},
         timeout=30,
@@ -218,7 +218,7 @@ def test_spawn_instance_minimal_body(
     invoke: Invoke,
     stub_server: StubServer,
 ) -> None:
-    invoke("spawn_instance", "/bin/true", "tag:busybox:latest")
+    invoke("spawn_instance", command="/bin/true", image="tag:busybox:latest")
     assert set(last_json(stub_server)) == {"command", "image"}
 
 
@@ -228,8 +228,8 @@ def test_spawn_instance_explicit_falsy_values_are_sent(
 ) -> None:
     invoke(
         "spawn_instance",
-        "/bin/true",
-        "tag:busybox:latest",
+        command="/bin/true",
+        image="tag:busybox:latest",
         shell=False,
         uid=0,
         cwd="",
@@ -245,7 +245,7 @@ def test_spawn_instance_explicit_null_is_sent(
     invoke: Invoke,
     stub_server: StubServer,
 ) -> None:
-    invoke("spawn_instance", "/bin/true", "tag:busybox:latest", env=None)
+    invoke("spawn_instance", command="/bin/true", image="tag:busybox:latest", env=None)
     body = last_json(stub_server)
     assert set(body) == {"command", "image", "env"}
     assert body["env"] is None

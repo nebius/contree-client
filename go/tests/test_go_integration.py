@@ -175,6 +175,47 @@ def test_go_auth_and_lists(live_go: Callable[..., None]) -> None:
     """)
 
 
+def test_go_domain_network_policy_roundtrip(live_go: Callable[..., None]) -> None:
+    live_go(
+        r"""
+    permissions := must(c.WhoAmI(ctx)).Permissions
+    if !permissions["network_policy"] {
+        return "token lacks network_policy permission"
+    }
+    var nonce [16]byte
+    _, err := rand.Read(nonce[:])
+    noError(err)
+
+    domain := contree.NetworkPolicyDomainRule{
+        Domain: fmt.Sprintf("**.client-go-%x.example.invalid", nonce),
+        Proto: "tcp",
+        Ports: contree.Some([]int64{443}),
+    }
+    created := must(c.CreateNetworkPolicy(ctx, &contree.CreateNetworkPolicyOptions{
+        Domains: contree.Some([]contree.NetworkPolicyDomainRule{domain}),
+    }))
+    defer func() {
+        cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
+        noError(c.DeleteNetworkPolicy(cleanupCtx, created.UUID))
+    }()
+
+    check(created.UUID != "", "created policy has no UUID")
+    fetched := must(c.GetNetworkPolicy(ctx, created.UUID))
+    for _, policy := range []contree.NetworkPolicy{created, fetched} {
+        check(policy.UUID == created.UUID, "wrong policy UUID")
+        check(len(policy.Cidrs) == 0, "domain-only policy contains CIDRs")
+        check(len(policy.Domains) == 1, "wrong domain rule count")
+        rule := policy.Domains[0]
+        ports, present := rule.Ports.Value()
+        check(rule.Domain == domain.Domain && rule.Proto == "tcp", "wrong domain rule")
+        check(present && len(ports) == 1 && ports[0] == 443, "wrong domain ports")
+    }
+    """,
+        imports='"crypto/rand"',
+    )
+
+
 def test_go_network_policy_allows_https_blocks_http(
     live_go: Callable[..., None],
     live_network_policy: str,
@@ -204,9 +245,11 @@ def test_go_network_policy_allows_https_blocks_http(
     check(len(policies) == 1 && policies[0] == policy, "wrong policy UUID")
 
     effective, present := networking.EffectivePolicy.Value()
-    check(present && len(effective.Cidrs) == 1, "wrong effective policy")
+    check(present, "missing effective policy")
+    cidrs, present := effective.Cidrs.Value()
+    check(present && len(cidrs) == 1, "wrong effective policy")
 
-    rule := effective.Cidrs[0]
+    rule := cidrs[0]
     ports, _ := rule.Ports.Value()
     check(rule.Cidr == "1.1.1.1/32" && rule.Proto == "tcp" && len(ports) == 1 && ports[0] == 443, "wrong effective rule")
 

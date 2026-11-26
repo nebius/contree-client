@@ -11,6 +11,7 @@ import {
 export const OPERATION_EVENT_TYPES = Object.freeze([
   "init",
   "spawn",
+  "lifecycle",
   "stdin",
   "stdout",
   "stderr",
@@ -796,18 +797,24 @@ export class ClosableStreamRepr {
   }
 }
 
-/** Launch-time limits. CPU sets the VM's vCPU count. memory_mib limits */
+/** Launch-time VM resources and optional workload limits. CPU sets the */
 export class InstanceResourcesLimits {
   constructor(fields = {}) {
     this.cpu = fields.cpu;
+    this.vmMemoryMib = fields.vmMemoryMib;
     this.memoryMib = fields.memoryMib;
+    this.memoryHardMib = fields.memoryHardMib;
+    this.addressSpaceMib = fields.addressSpaceMib;
     this.maxLayerBytes = fields.maxLayerBytes;
   }
 
   static fromWire(data) {
     return new InstanceResourcesLimits({
       cpu: data["cpu"],
+      vmMemoryMib: data["vm_memory_mib"],
       memoryMib: data["memory_mib"],
+      memoryHardMib: data["memory_hard_mib"],
+      addressSpaceMib: data["address_space_mib"],
       maxLayerBytes: data["max_layer_bytes"],
     });
   }
@@ -817,8 +824,17 @@ export class InstanceResourcesLimits {
     if (this.cpu !== undefined) {
       data["cpu"] = this.cpu;
     }
+    if (this.vmMemoryMib !== undefined) {
+      data["vm_memory_mib"] = this.vmMemoryMib;
+    }
     if (this.memoryMib !== undefined) {
       data["memory_mib"] = this.memoryMib;
+    }
+    if (this.memoryHardMib !== undefined) {
+      data["memory_hard_mib"] = this.memoryHardMib;
+    }
+    if (this.addressSpaceMib !== undefined) {
+      data["address_space_mib"] = this.addressSpaceMib;
     }
     if (this.maxLayerBytes !== undefined) {
       data["max_layer_bytes"] = this.maxLayerBytes;
@@ -827,17 +843,21 @@ export class InstanceResourcesLimits {
   }
 }
 
-/** Launch-time limits for a subprocess and its descendants. Each omitted */
+/** Launch-time limits for a subprocess and its descendants. An omitted */
 export class ProcessResourcesLimits {
   constructor(fields = {}) {
     this.cpu = fields.cpu;
     this.memoryMib = fields.memoryMib;
+    this.memoryHardMib = fields.memoryHardMib;
+    this.addressSpaceMib = fields.addressSpaceMib;
   }
 
   static fromWire(data) {
     return new ProcessResourcesLimits({
       cpu: data["cpu"],
       memoryMib: data["memory_mib"],
+      memoryHardMib: data["memory_hard_mib"],
+      addressSpaceMib: data["address_space_mib"],
     });
   }
 
@@ -848,6 +868,12 @@ export class ProcessResourcesLimits {
     }
     if (this.memoryMib !== undefined) {
       data["memory_mib"] = this.memoryMib;
+    }
+    if (this.memoryHardMib !== undefined) {
+      data["memory_hard_mib"] = this.memoryHardMib;
+    }
+    if (this.addressSpaceMib !== undefined) {
+      data["address_space_mib"] = this.addressSpaceMib;
     }
     return data;
   }
@@ -908,15 +934,55 @@ export class NetworkPolicyCIDRRule {
   }
 }
 
-/** An allowlist of destination networks, protocols, and ports. A policy with `{"cidrs": []}` */
+export class NetworkPolicyDomainRule {
+  constructor(fields = {}) {
+    this.domain = fields.domain;
+    this.proto = fields.proto;
+    this.ports = fields.ports;
+  }
+
+  static fromWire(data) {
+    return new NetworkPolicyDomainRule({
+      domain: data["domain"],
+      proto: data["proto"],
+      ports: data["ports"],
+    });
+  }
+
+  toWire() {
+    const data = {};
+    if (this.domain !== undefined) {
+      data["domain"] = this.domain;
+    }
+    if (this.proto !== undefined) {
+      data["proto"] = this.proto;
+    }
+    if (this.ports !== undefined) {
+      data["ports"] = this.ports;
+    }
+    return data;
+  }
+}
+
+/** An allowlist of destination networks, protocols, and ports. */
 export class NetworkPolicyCreateRequest {
   constructor(fields = {}) {
     this.cidrs = fields.cidrs;
+    this.domains = fields.domains;
   }
 
   static fromWire(data) {
     return new NetworkPolicyCreateRequest({
-      cidrs: data["cidrs"].map((item) => NetworkPolicyCIDRRule.fromWire(item)),
+      cidrs:
+        data["cidrs"] == null
+          ? data["cidrs"]
+          : data["cidrs"].map((item) => NetworkPolicyCIDRRule.fromWire(item)),
+      domains:
+        data["domains"] == null
+          ? data["domains"]
+          : data["domains"].map((item) =>
+              NetworkPolicyDomainRule.fromWire(item),
+            ),
     });
   }
 
@@ -925,6 +991,12 @@ export class NetworkPolicyCreateRequest {
     if (this.cidrs !== undefined) {
       data["cidrs"] =
         this.cidrs === null ? null : this.cidrs.map((item) => item.toWire());
+    }
+    if (this.domains !== undefined) {
+      data["domains"] =
+        this.domains === null
+          ? null
+          : this.domains.map((item) => item.toWire());
     }
     return data;
   }
@@ -993,12 +1065,16 @@ export class NetworkPolicy {
   constructor(fields = {}) {
     this.uuid = fields.uuid;
     this.cidrs = fields.cidrs;
+    this.domains = fields.domains;
   }
 
   static fromWire(data) {
     return new NetworkPolicy({
       uuid: data["uuid"],
       cidrs: data["cidrs"].map((item) => NetworkPolicyCIDRRule.fromWire(item)),
+      domains: data["domains"].map((item) =>
+        NetworkPolicyDomainRule.fromWire(item),
+      ),
     });
   }
 
@@ -1011,6 +1087,12 @@ export class NetworkPolicy {
       data["cidrs"] =
         this.cidrs === null ? null : this.cidrs.map((item) => item.toWire());
     }
+    if (this.domains !== undefined) {
+      data["domains"] =
+        this.domains === null
+          ? null
+          : this.domains.map((item) => item.toWire());
+    }
     return data;
   }
 }
@@ -1018,11 +1100,13 @@ export class NetworkPolicy {
 export class NetworkPolicyListItemSummary {
   constructor(fields = {}) {
     this.cidrs = fields.cidrs;
+    this.domains = fields.domains;
   }
 
   static fromWire(data) {
     return new NetworkPolicyListItemSummary({
       cidrs: data["cidrs"],
+      domains: data["domains"],
     });
   }
 
@@ -1030,6 +1114,9 @@ export class NetworkPolicyListItemSummary {
     const data = {};
     if (this.cidrs !== undefined) {
       data["cidrs"] = this.cidrs;
+    }
+    if (this.domains !== undefined) {
+      data["domains"] = this.domains;
     }
     return data;
   }
@@ -1096,7 +1183,7 @@ export class NetworkPolicyListResponse {
   }
 }
 
-/** Process-execution surface shared between `InstanceSpawnRequest` */
+/** Execution parameters for `POST /operations/{operationId}/subprocesses`. */
 export class ExecSpec {
   constructor(fields = {}) {
     this.command = fields.command;
@@ -1108,6 +1195,7 @@ export class ExecSpec {
     this.uid = fields.uid;
     this.gid = fields.gid;
     this.stdin = fields.stdin;
+    this.timeout = fields.timeout;
     this.truncateOutputAt = fields.truncateOutputAt;
   }
 
@@ -1128,6 +1216,7 @@ export class ExecSpec {
         data["stdin"] == null
           ? data["stdin"]
           : ClosableStreamRepr.fromWire(data["stdin"]),
+      timeout: data["timeout"],
       truncateOutputAt: data["truncate_output_at"],
     });
   }
@@ -1161,6 +1250,9 @@ export class ExecSpec {
     }
     if (this.stdin !== undefined) {
       data["stdin"] = this.stdin === null ? null : this.stdin.toWire();
+    }
+    if (this.timeout !== undefined) {
+      data["timeout"] = this.timeout;
     }
     if (this.truncateOutputAt !== undefined) {
       data["truncate_output_at"] = this.truncateOutputAt;
@@ -1211,8 +1303,9 @@ export class FileSpec {
 
 export class InstanceSpawnRequest {
   constructor(fields = {}) {
-    this.command = fields.command;
     this.image = fields.image;
+    this.command = fields.command;
+    this.keepAlive = fields.keepAlive;
     this.disposable = fields.disposable;
     this.hostname = fields.hostname;
     this.args = fields.args;
@@ -1233,8 +1326,9 @@ export class InstanceSpawnRequest {
 
   static fromWire(data) {
     return new InstanceSpawnRequest({
-      command: data["command"],
       image: data["image"],
+      command: data["command"],
+      keepAlive: data["keep_alive"],
       disposable: data["disposable"],
       hostname: data["hostname"],
       args: data["args"],
@@ -1273,11 +1367,14 @@ export class InstanceSpawnRequest {
 
   toWire() {
     const data = {};
+    if (this.image !== undefined) {
+      data["image"] = this.image;
+    }
     if (this.command !== undefined) {
       data["command"] = this.command;
     }
-    if (this.image !== undefined) {
-      data["image"] = this.image;
+    if (this.keepAlive !== undefined) {
+      data["keep_alive"] = this.keepAlive;
     }
     if (this.disposable !== undefined) {
       data["disposable"] = this.disposable;
@@ -1341,6 +1438,7 @@ export class InstanceSpawnRequest {
   }
 }
 
+/** Resource usage of the primary process. A keep-alive instance has no primary process; its process usage fields are -1, while monotonic_time records its lifetime in seconds. */
 export class InstanceResultResources {
   constructor(fields = {}) {
     this.blockInput = fields.blockInput;
@@ -1544,12 +1642,14 @@ export class InstanceSpawnResponse {
   constructor(fields = {}) {
     this.uuid = fields.uuid;
     this.command = fields.command;
+    this.keepAlive = fields.keepAlive;
     this.image = fields.image;
     this.hostname = fields.hostname;
     this.args = fields.args;
     this.shell = fields.shell;
     this.env = fields.env;
     this.preserveEnv = fields.preserveEnv;
+    this.preserveCwd = fields.preserveCwd;
     this.cwd = fields.cwd;
     this.uid = fields.uid;
     this.gid = fields.gid;
@@ -1567,12 +1667,14 @@ export class InstanceSpawnResponse {
     return new InstanceSpawnResponse({
       uuid: data["uuid"],
       command: data["command"],
+      keepAlive: data["keep_alive"],
       image: data["image"],
       hostname: data["hostname"],
       args: data["args"],
       shell: data["shell"],
       env: data["env"],
       preserveEnv: data["preserve_env"],
+      preserveCwd: data["preserve_cwd"],
       cwd: data["cwd"],
       uid: data["uid"],
       gid: data["gid"],
@@ -1615,6 +1717,9 @@ export class InstanceSpawnResponse {
     if (this.command !== undefined) {
       data["command"] = this.command;
     }
+    if (this.keepAlive !== undefined) {
+      data["keep_alive"] = this.keepAlive;
+    }
     if (this.image !== undefined) {
       data["image"] = this.image;
     }
@@ -1632,6 +1737,9 @@ export class InstanceSpawnResponse {
     }
     if (this.preserveEnv !== undefined) {
       data["preserve_env"] = this.preserveEnv;
+    }
+    if (this.preserveCwd !== undefined) {
+      data["preserve_cwd"] = this.preserveCwd;
     }
     if (this.cwd !== undefined) {
       data["cwd"] = this.cwd;
@@ -1752,8 +1860,9 @@ export class OperationSummary {
 
 export class OperationInstanceMetadata {
   constructor(fields = {}) {
-    this.command = fields.command;
     this.image = fields.image;
+    this.command = fields.command;
+    this.keepAlive = fields.keepAlive;
     this.disposable = fields.disposable;
     this.hostname = fields.hostname;
     this.args = fields.args;
@@ -1775,8 +1884,9 @@ export class OperationInstanceMetadata {
 
   static fromWire(data) {
     return new OperationInstanceMetadata({
-      command: data["command"],
       image: data["image"],
+      command: data["command"],
+      keepAlive: data["keep_alive"],
       disposable: data["disposable"],
       hostname: data["hostname"],
       args: data["args"],
@@ -1819,11 +1929,14 @@ export class OperationInstanceMetadata {
 
   toWire() {
     const data = {};
+    if (this.image !== undefined) {
+      data["image"] = this.image;
+    }
     if (this.command !== undefined) {
       data["command"] = this.command;
     }
-    if (this.image !== undefined) {
-      data["image"] = this.image;
+    if (this.keepAlive !== undefined) {
+      data["keep_alive"] = this.keepAlive;
     }
     if (this.disposable !== undefined) {
       data["disposable"] = this.disposable;
@@ -2592,6 +2705,52 @@ export class EventDataSpawn {
   }
 }
 
+/** Keep-alive readiness event for lifecycle root spid=1, without a primary process. */
+export class EventDataLifecycle {
+  constructor(fields = {}) {
+    this.keepAlive = fields.keepAlive;
+    this.pid = fields.pid;
+    this.cwd = fields.cwd;
+    this.uid = fields.uid;
+    this.gid = fields.gid;
+    this.truncateAt = fields.truncateAt;
+  }
+
+  static fromWire(data) {
+    return new EventDataLifecycle({
+      keepAlive: data["keep_alive"],
+      pid: data["pid"],
+      cwd: data["cwd"],
+      uid: data["uid"],
+      gid: data["gid"],
+      truncateAt: data["truncate_at"],
+    });
+  }
+
+  toWire() {
+    const data = {};
+    if (this.keepAlive !== undefined) {
+      data["keep_alive"] = this.keepAlive;
+    }
+    if (this.pid !== undefined) {
+      data["pid"] = this.pid;
+    }
+    if (this.cwd !== undefined) {
+      data["cwd"] = this.cwd;
+    }
+    if (this.uid !== undefined) {
+      data["uid"] = this.uid;
+    }
+    if (this.gid !== undefined) {
+      data["gid"] = this.gid;
+    }
+    if (this.truncateAt !== undefined) {
+      data["truncate_at"] = this.truncateAt;
+    }
+    return data;
+  }
+}
+
 /** Payload for `stdin` / `stdout` / `stderr` events.  Encoding */
 export class EventDataStream {
   constructor(fields = {}) {
@@ -2771,9 +2930,10 @@ export class EventDataExit {
     this.signal = fields.signal;
     this.timedOut = fields.timedOut;
     this.durationMs = fields.durationMs;
-    this.resources = fields.resources;
+    this.keepAlive = fields.keepAlive;
     this.oomKilled = fields.oomKilled;
     this.coreDump = fields.coreDump;
+    this.resources = fields.resources;
   }
 
   static fromWire(data) {
@@ -2783,9 +2943,13 @@ export class EventDataExit {
       signal: data["signal"],
       timedOut: data["timed_out"],
       durationMs: data["duration_ms"],
-      resources: EventResources.fromWire(data["resources"]),
+      keepAlive: data["keep_alive"],
       oomKilled: data["oom_killed"],
       coreDump: data["core_dump"],
+      resources:
+        data["resources"] == null
+          ? data["resources"]
+          : EventResources.fromWire(data["resources"]),
     });
   }
 
@@ -2806,15 +2970,18 @@ export class EventDataExit {
     if (this.durationMs !== undefined) {
       data["duration_ms"] = this.durationMs;
     }
-    if (this.resources !== undefined) {
-      data["resources"] =
-        this.resources === null ? null : this.resources.toWire();
+    if (this.keepAlive !== undefined) {
+      data["keep_alive"] = this.keepAlive;
     }
     if (this.oomKilled !== undefined) {
       data["oom_killed"] = this.oomKilled;
     }
     if (this.coreDump !== undefined) {
       data["core_dump"] = this.coreDump;
+    }
+    if (this.resources !== undefined) {
+      data["resources"] =
+        this.resources === null ? null : this.resources.toWire();
     }
     return data;
   }
@@ -3125,6 +3292,7 @@ export class ListNetworkPolicyTagsResponse {
 export const EVENT_DATA_PARSERS = {
   init: EventDataInit,
   spawn: EventDataSpawn,
+  lifecycle: EventDataLifecycle,
   stdin: EventDataStream,
   stdout: EventDataStream,
   stderr: EventDataStream,
@@ -3151,10 +3319,11 @@ const EVENT_DATA_REQUIRED_FIELDS = {
     "timeout",
     "truncate_at",
   ],
+  lifecycle: ["keep_alive", "pid", "cwd", "uid", "gid", "truncate_at"],
   stdin: ["value", "encoding"],
   stdout: ["value", "encoding"],
   stderr: ["value", "encoding"],
-  exit: ["pid", "code", "signal", "timed_out", "duration_ms", "resources"],
+  exit: ["pid", "code", "signal", "timed_out", "duration_ms"],
   truncated: ["stream", "bytes_emitted", "bytes_dropped"],
   size_cap: ["limit_bytes", "file_size"],
   network: ["interfaces"],

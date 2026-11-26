@@ -20,7 +20,7 @@ await codeUnderTest(client); // accepts any ContreeClient
 
 const calls = client.callsFor("spawnInstance");
 assert.equal(calls.length, 1);
-assert.equal(calls[0].args[0], "echo hi");
+assert.equal(calls[0].args[1].command, "echo hi");
 ```
 
 ## Outcome queues

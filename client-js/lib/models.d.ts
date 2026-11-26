@@ -3,6 +3,7 @@
 export type OperationEventType =
   | "init"
   | "spawn"
+  | "lifecycle"
   | "stdin"
   | "stdout"
   | "stderr"
@@ -261,11 +262,17 @@ export declare class ClosableStreamRepr {
 
 export declare class InstanceResourcesLimits {
   cpu?: number;
-  memoryMib?: number;
+  vmMemoryMib?: number;
+  memoryMib?: number | null;
+  memoryHardMib?: number | null;
+  addressSpaceMib?: number | null;
   maxLayerBytes?: number;
   constructor(fields?: {
     cpu?: number | null;
+    vmMemoryMib?: number | null;
     memoryMib?: number | null;
+    memoryHardMib?: number | null;
+    addressSpaceMib?: number | null;
     maxLayerBytes?: number | null;
   });
   static fromWire(data: Record<string, unknown>): InstanceResourcesLimits;
@@ -275,7 +282,14 @@ export declare class InstanceResourcesLimits {
 export declare class ProcessResourcesLimits {
   cpu?: number | null;
   memoryMib?: number | null;
-  constructor(fields?: { cpu?: number | null; memoryMib?: number | null });
+  memoryHardMib?: number | null;
+  addressSpaceMib?: number | null;
+  constructor(fields?: {
+    cpu?: number | null;
+    memoryMib?: number | null;
+    memoryHardMib?: number | null;
+    addressSpaceMib?: number | null;
+  });
   static fromWire(data: Record<string, unknown>): ProcessResourcesLimits;
   toWire(): Record<string, unknown>;
 }
@@ -301,9 +315,26 @@ export declare class NetworkPolicyCIDRRule {
   toWire(): Record<string, unknown>;
 }
 
+export declare class NetworkPolicyDomainRule {
+  domain: string;
+  proto: "tcp" | "udp";
+  ports?: number[];
+  constructor(fields?: {
+    domain?: string;
+    proto?: "tcp" | "udp";
+    ports?: number[] | null;
+  });
+  static fromWire(data: Record<string, unknown>): NetworkPolicyDomainRule;
+  toWire(): Record<string, unknown>;
+}
+
 export declare class NetworkPolicyCreateRequest {
-  cidrs: NetworkPolicyCIDRRule[];
-  constructor(fields?: { cidrs?: NetworkPolicyCIDRRule[] });
+  cidrs?: NetworkPolicyCIDRRule[];
+  domains?: NetworkPolicyDomainRule[];
+  constructor(fields?: {
+    cidrs?: NetworkPolicyCIDRRule[] | null;
+    domains?: NetworkPolicyDomainRule[] | null;
+  });
   static fromWire(data: Record<string, unknown>): NetworkPolicyCreateRequest;
   toWire(): Record<string, unknown>;
 }
@@ -332,14 +363,20 @@ export declare class NetworkPolicyTag {
 export declare class NetworkPolicy {
   uuid: string;
   cidrs: NetworkPolicyCIDRRule[];
-  constructor(fields?: { uuid?: string; cidrs?: NetworkPolicyCIDRRule[] });
+  domains: NetworkPolicyDomainRule[];
+  constructor(fields?: {
+    uuid?: string;
+    cidrs?: NetworkPolicyCIDRRule[];
+    domains?: NetworkPolicyDomainRule[];
+  });
   static fromWire(data: Record<string, unknown>): NetworkPolicy;
   toWire(): Record<string, unknown>;
 }
 
 export declare class NetworkPolicyListItemSummary {
   cidrs: number;
-  constructor(fields?: { cidrs?: number });
+  domains: number;
+  constructor(fields?: { cidrs?: number; domains?: number });
   static fromWire(data: Record<string, unknown>): NetworkPolicyListItemSummary;
   toWire(): Record<string, unknown>;
 }
@@ -372,10 +409,11 @@ export declare class ExecSpec {
   args?: string[];
   shell?: boolean;
   env?: Record<string, string> | null;
-  cwd?: string;
-  uid?: number;
-  gid?: number;
+  cwd?: string | null;
+  uid?: number | null;
+  gid?: number | null;
   stdin?: ClosableStreamRepr;
+  timeout?: number | null;
   truncateOutputAt?: number;
   constructor(fields?: {
     command?: string;
@@ -387,6 +425,7 @@ export declare class ExecSpec {
     uid?: number | null;
     gid?: number | null;
     stdin?: ClosableStreamRepr | null;
+    timeout?: number | null;
     truncateOutputAt?: number | null;
   });
   static fromWire(data: Record<string, unknown>): ExecSpec;
@@ -394,12 +433,12 @@ export declare class ExecSpec {
 }
 
 export declare class FileSpec {
-  uuid?: string;
+  uuid: string;
   uid?: number;
   gid?: number;
   mode?: string | number;
   constructor(fields?: {
-    uuid?: string | null;
+    uuid?: string;
     uid?: number | null;
     gid?: number | null;
     mode?: string | number | null;
@@ -409,11 +448,12 @@ export declare class FileSpec {
 }
 
 export declare class InstanceSpawnRequest {
-  command: string;
   image: string;
+  command?: string | null;
+  keepAlive?: boolean;
   disposable?: boolean;
   hostname?: string;
-  args?: string[];
+  args?: string[] | null;
   shell?: boolean;
   env?: Record<string, string> | null;
   preserveEnv?: boolean;
@@ -428,8 +468,9 @@ export declare class InstanceSpawnRequest {
   truncateOutputAt?: number;
   files?: Record<string, FileSpec>;
   constructor(fields?: {
-    command?: string;
     image?: string;
+    command?: string | null;
+    keepAlive?: boolean | null;
     disposable?: boolean | null;
     hostname?: string | null;
     args?: string[] | null;
@@ -493,8 +534,8 @@ export declare class InstanceResultResources {
 export declare class InstanceResultState {
   continued?: boolean;
   coreDump?: boolean;
-  exitCode?: number;
-  pid?: number;
+  exitCode?: number | null;
+  pid?: number | null;
   signal?: number;
   stopped?: boolean;
   timedOut?: boolean;
@@ -531,12 +572,14 @@ export declare class InstanceResult {
 export declare class InstanceSpawnResponse {
   uuid?: string;
   command?: string;
+  keepAlive?: boolean;
   image?: string;
   hostname?: string;
   args?: string[];
   shell?: boolean;
-  env?: Record<string, string> | null;
+  env?: Record<string, string>;
   preserveEnv?: boolean;
+  preserveCwd?: boolean;
   cwd?: string;
   uid?: number;
   gid?: number;
@@ -551,12 +594,14 @@ export declare class InstanceSpawnResponse {
   constructor(fields?: {
     uuid?: string | null;
     command?: string | null;
+    keepAlive?: boolean | null;
     image?: string | null;
     hostname?: string | null;
     args?: string[] | null;
     shell?: boolean | null;
     env?: Record<string, string> | null;
     preserveEnv?: boolean | null;
+    preserveCwd?: boolean | null;
     cwd?: string | null;
     uid?: number | null;
     gid?: number | null;
@@ -603,11 +648,12 @@ export declare class OperationSummary {
 }
 
 export declare class OperationInstanceMetadata {
-  command: string;
   image: string;
+  command?: string | null;
+  keepAlive?: boolean;
   disposable?: boolean;
   hostname?: string;
-  args?: string[];
+  args?: string[] | null;
   shell?: boolean;
   env?: Record<string, string> | null;
   preserveEnv?: boolean;
@@ -623,8 +669,9 @@ export declare class OperationInstanceMetadata {
   files?: Record<string, FileSpec>;
   result?: InstanceResult;
   constructor(fields?: {
-    command?: string;
     image?: string;
+    command?: string | null;
+    keepAlive?: boolean | null;
     disposable?: boolean | null;
     hostname?: string | null;
     args?: string[] | null;
@@ -938,6 +985,25 @@ export declare class EventDataSpawn {
   toWire(): Record<string, unknown>;
 }
 
+export declare class EventDataLifecycle {
+  keepAlive: boolean;
+  pid: number | null;
+  cwd: string;
+  uid: number;
+  gid: number;
+  truncateAt: number;
+  constructor(fields?: {
+    keepAlive?: boolean;
+    pid?: number | null;
+    cwd?: string;
+    uid?: number;
+    gid?: number;
+    truncateAt?: number;
+  });
+  static fromWire(data: Record<string, unknown>): EventDataLifecycle;
+  toWire(): Record<string, unknown>;
+}
+
 export declare class EventDataStream {
   value: string;
   encoding: "ascii" | "base64";
@@ -995,23 +1061,25 @@ export declare class EventResources {
 }
 
 export declare class EventDataExit {
-  pid: number;
-  code: number;
+  pid: number | null;
+  code: number | null;
   signal: number;
   timedOut: boolean;
   durationMs: number;
-  resources: EventResources;
+  keepAlive?: boolean;
   oomKilled?: boolean;
   coreDump?: boolean;
+  resources?: EventResources;
   constructor(fields?: {
-    pid?: number;
-    code?: number;
+    pid?: number | null;
+    code?: number | null;
     signal?: number;
     timedOut?: boolean;
     durationMs?: number;
-    resources?: EventResources;
+    keepAlive?: boolean | null;
     oomKilled?: boolean | null;
     coreDump?: boolean | null;
+    resources?: EventResources | null;
   });
   static fromWire(data: Record<string, unknown>): EventDataExit;
   toWire(): Record<string, unknown>;
@@ -1140,6 +1208,7 @@ export type EventData =
   | EventDataFileUpload
   | EventDataInit
   | EventDataInspect
+  | EventDataLifecycle
   | EventDataNetwork
   | EventDataShutdown
   | EventDataSizeCap

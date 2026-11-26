@@ -48,6 +48,7 @@ from .models import (
     ListNetworkPolicyTagsResponse,
     NetworkPolicy,
     NetworkPolicyCIDRRule,
+    NetworkPolicyDomainRule,
     NetworkPolicyListResponse,
     NetworkPolicyTag,
     OperationEvent,
@@ -719,54 +720,32 @@ class ContreeSyncClient(ContreeClientBase, ABC):
         return operations.parse_list_network_policies(response)
 
     def create_network_policy(
-        self, cidrs: list[NetworkPolicyCIDRRule]
+        self,
+        *,
+        cidrs: list[NetworkPolicyCIDRRule] | EllipsisType = ...,
+        domains: list[NetworkPolicyDomainRule] | EllipsisType = ...,
     ) -> NetworkPolicy:
         """Create a network policy.
 
-        Creates a policy with immutable rules in the caller's namespace.
-        Requires ``network_policy`` permission.
-
-        **Rules**
-
-        - Each rule allows a CIDR for the selected protocol and ports. An empty
-          or
-          omitted port list allows all ports.
-
-        - ICMP is allowed to every listed CIDR, regardless of protocol or ports.
-        - An empty rules array (``cidrs: []``) blocks all IP egress, including
-          ICMP
-          and traffic to the host.
-
-        - ARP is blocked for all policies.
-
-        **Limits**
-
-        The same limit of 16384 units applies before and after normalization.
-        Sum the number of ports across all rules, counting an empty or omitted
-        port list (all ports) as 1. The limit covers the entire policy, across
-        all IP versions and protocols.
-        Duplicates count toward the limit before normalization. Exceeding the
-        limit returns 400, even if normalization would remove redundant rules or
-        ports.
-
-        **Normalization**
-
-        Before storage, duplicate rules and ports are removed, CIDRs are merged
-        per protocol and port, and rules and ports are sorted. This preserves
-        the
-        allowed traffic. The response contains the normalized rules.
-
-        **Policy identity**
+        Creates, reuses, or restores a policy in the caller's namespace.
+        Requires ``network_policy`` permission. Rules are immutable; create a
+        new policy to change them.
+        The response contains the normalized rules.
 
         Equivalent normalized policies in the same namespace reuse the same
-        UUID,
-        including concurrent requests. The UUID is UUIDv5 derived from the
-        namespace
-        and the normalized policy hash. Resubmitting a deleted policy restores
-        it
-        without restoring its tags. To change the rules, create a new policy.
+        UUID, including
+        concurrent requests. The UUID is UUIDv5 derived from the namespace and
+        the normalized policy hash.
+        Submitting a deleted policy again restores it without restoring its
+        former tags.
+
+        Args:
+            cidrs: CIDR permissions. Omitted or empty means no CIDR
+                permissions.
+            domains: Domain permissions. Omitted or empty means no domain
+                permissions.
         """
-        spec = operations.build_create_network_policy(cidrs=cidrs)
+        spec = operations.build_create_network_policy(cidrs=cidrs, domains=domains)
         self.log_request(spec)
         response = self.call(spec)
         self.log_response(spec, response)
@@ -1261,12 +1240,13 @@ class ContreeSyncClient(ContreeClientBase, ABC):
 
     def spawn_instance(
         self,
-        command: str,
         image: str,
         *,
+        command: str | None | EllipsisType = ...,
+        keep_alive: bool | EllipsisType = ...,
         disposable: bool | EllipsisType = ...,
         hostname: str | EllipsisType = ...,
-        args: list[str] | EllipsisType = ...,
+        args: list[str] | None | EllipsisType = ...,
         shell: bool | EllipsisType = ...,
         env: dict[str, str] | None | EllipsisType = ...,
         preserve_env: bool | EllipsisType = ...,
@@ -1289,56 +1269,68 @@ class ContreeSyncClient(ContreeClientBase, ABC):
 
         Common request body rules:
 
-          * The request body must contain at least ``command`` and ``image``
-            fields all other fields can be omitted.
+          * The request body must contain ``image``. All other fields can be
+            omitted.
+          * An omitted, null, or empty ``command`` with empty or omitted
+            ``args`` creates a keep-alive instance
+            without a primary process. Null ``args`` also count as empty.
+
           * If the ``command`` field is a shell expression, you must set
             ``shell`` field to ``true``.
           * For specifying the shell binary, you can use ``env`` field to set
             ``SHELL`` variable.
-          * When ``shell`` is ``true``, environment variables defined in the
-            image (via ``ENV`` directives) are
-            automatically inherited. When ``shell`` is ``false``, image
-            environment variables are not inherited
-            and must be passed explicitly via the ``env`` field.
+          * Environment variables defined in the image are inherited in both
+            shell and direct execution.
+            The ``env`` field overrides inherited values; null removes a
+            variable and an empty string keeps it present.
 
         Args:
-            command: The command to execute. In case if ``shell`` is set to
-                ``true``, this MUST contain shell expression. For example
-                ``echo hello world`` or ``ls -l /app``. If ``shell`` is set
-                to ``false``, this must be a relative or absolute path to
-                the executable inside the image rootfs. For example:
-                ``/bin/app`` or ``/usr/bin/find``. Do not forget pass
-                necessary ``PATH`` variable to env field, by default
-                ``PATH`` is set to
-                ``/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin``.
-                Example: ``/bin/app``.
+            command: Command to execute. With shell=true, use a shell
+                expression; otherwise, use an executable path. An omitted,
+                null, or empty command with omitted, null, or empty args
+                creates a keep-alive instance without a primary process,
+                regardless of shell or an omitted or false keep_alive flag.
+                A nonempty command is required when args are nonempty.
+                Whitespace counts as a nonempty command. Stored metadata and
+                responses normalize an omitted or null command to an empty
+                string. Example: ``/bin/app``.
+            keep_alive: Keep the instance available for subprocess requests
+                without starting a primary process. True rejects a nonempty
+                command or nonempty args. An empty command and empty args
+                always normalize this flag to true before metadata is
+                stored, even when the request sets false. The instance
+                timeout still limits its lifetime. Subprocess requests
+                continue to require a command.
             disposable: Creates a disposable execution environment no any
                 state will be saved.
             hostname: Hostname to set when execution. Example:
                 ``container-name``.
-            args: Arguments to pass to the command if shell is set to false.
-                Example: ``["arg1","arg2"]``.
+            args: Arguments to pass to the command if shell is false.
+                Omitted or null args normalize to an empty list. Nonempty
+                args require a nonempty command and cannot be combined with
+                keep_alive=true. Example: ``["arg1","arg2"]``.
             shell: Whether to run the command through a shell. If ``true``,
                 the command must be a shell expression and all values from
                 args will be ignored. If ``false``, the command field must
-                be a path to an executable and args will be used. When
-                ``true``, environment variables from the image are
-                automatically inherited. When ``false``, they are not - use
-                the ``env`` field to pass them explicitly.
-            env: Environment variables to set in the container. These are
-                merged with image-defined variables when ``shell`` is
-                ``true``. When ``shell`` is ``false``, only variables
-                specified here are available - image-defined variables are
-                not inherited. Example:
+                be a path to an executable and args will be used.
+                Environment variables from the image are inherited in both
+                modes.
+            env: Environment overrides for the main process. Image-defined
+                variables are inherited in both shell and direct execution.
+                Omitted keys retain their inherited values. A null value
+                removes a variable; an empty string keeps it present with an
+                empty value. Omitting env or setting the whole field to null
+                applies no overrides. Example:
                 ``{"KEY1":"value1","KEY2":"value2"}``.
             preserve_env: Preserve environment variables in resulting image
                 after execution. When ``true``, the image's existing
                 environment variables from ``metadata/env`` are merged with
                 user-provided ``env`` values (user values take priority on
                 conflicts), and the combined result is written back to
-                ``metadata/env`` after command execution. Setting a variable
-                to an empty string or ``null`` removes it from the preserved
-                environment.
+                ``metadata/env`` after command execution. A null value
+                removes a variable from the preserved environment. An empty
+                string preserves the variable with an empty value; omitted
+                keys remain unchanged.
             preserve_cwd: Save the resolved initial working directory as the
                 default in the resulting image. An empty or omitted ``cwd``
                 resolves to the image's current workdir, or ``/`` if none
@@ -1355,7 +1347,13 @@ class ContreeSyncClient(ContreeClientBase, ABC):
                 exist. Example: ``/app``.
             uid: User ID to run the process as. Example: ``0``.
             gid: Group ID to run the process as. Example: ``0``.
-            timeout: Maximum execution time in seconds Example: ``60``.
+            timeout: Guest execution timeout in seconds, always passed to
+                the guest. Expiry records timed_out and follows normal
+                finalization, including image persistence when disposable is
+                false. The host VM watchdog allows 15 additional seconds for
+                boot and guest shutdown; this does not extend the guest
+                execution timeout. A host failure or an expired watchdog can
+                still prevent result and image publication. Example: ``60``.
             truncate_output_at: Maximum number of bytes to keep per stream
                 (stdout, stderr, and stdin) in the subprocess event log.
                 Does not affect stdin delivery to the child, which always
@@ -1366,8 +1364,9 @@ class ContreeSyncClient(ContreeClientBase, ABC):
                 ``{"/root/hello.txt":{"uuid":"a9165a5d-5c86-4bd8-8ee4-ae46c...``.
         """
         spec = operations.build_spawn_instance(
-            command=command,
             image=image,
+            command=command,
+            keep_alive=keep_alive,
             disposable=disposable,
             hostname=hostname,
             args=args,
@@ -1678,6 +1677,12 @@ class ContreeSyncClient(ContreeClientBase, ABC):
            * - 410
              - Stream is over but the terminal artifact isn't ready yet
              - Retry after ``Retry-After``
+           * - 413
+             - Archived events exceed a configured size budget
+             - Do not retry the same archive
+           * - 422
+             - Archived events contain invalid gzip data
+             - Do not retry the same archive
            * - 425
              - Not yet ready (operation is still being prepared)
              - Retry after ``Retry-After``
@@ -1693,6 +1698,17 @@ class ContreeSyncClient(ContreeClientBase, ABC):
         close is the in-band equivalent of "the stream broke after we
         already committed to a 200" — handle it the same way as 410:
         wait briefly, reconnect with ``Last-Event-Id``.
+
+        StoreD validates a private copy of events.gz before publication.
+        Invalid or oversized archives are not written to object storage.
+        Upload retries use the same validated copy.
+
+        Completed-operation archives are checked before SSE headers are sent.
+        The server limits compressed bytes, total decompressed bytes and line
+        length. A budget violation returns HTTP 413. Invalid or truncated gzip
+        data returns HTTP 422. If a live stream switches to an archive after
+        headers were sent, these errors are reported as ``sse_error``. Retrying
+        the same oversized or corrupt archive does not resolve the error.
 
         See ``OperationEvent`` for the per-event shape.
 
@@ -1764,10 +1780,11 @@ class ContreeSyncClient(ContreeClientBase, ABC):
         args: list[str] | EllipsisType = ...,
         shell: bool | EllipsisType = ...,
         env: dict[str, str] | None | EllipsisType = ...,
-        cwd: str | EllipsisType = ...,
-        uid: int | EllipsisType = ...,
-        gid: int | EllipsisType = ...,
+        cwd: str | None | EllipsisType = ...,
+        uid: int | None | EllipsisType = ...,
+        gid: int | None | EllipsisType = ...,
         stdin: ClosableStreamRepr | EllipsisType = ...,
+        timeout: int | None | EllipsisType = ...,
         truncate_output_at: int | EllipsisType = ...,
     ) -> int:
         """Spawn an additional subprocess inside a running instance.
@@ -1779,16 +1796,23 @@ class ContreeSyncClient(ContreeClientBase, ABC):
 
         The body is an ``ExecSpec`` — process-execution fields only.
         VM-level concerns (``image``, ``hostname``,
-        ``files``, ``timeout``, ``disposable``, ``preserve_env``) are not
+        ``files``, ``disposable``, ``preserve_env``) are not
         accepted here; they were set when the parent operation was
         created.
 
-        ``resources_limits.cpu`` and ``resources_limits.memory_mib`` use the
-        same names and units as operation creation. Each omitted or null
-        subprocess limit inherits the corresponding operation limit.
-        Values above the operation limit return 400. Limits apply at
-        launch: memory_mib sets RLIMIT_AS for each process and memory.max
-        for the entire process tree. They cannot be changed through this
+        The command must be a nonempty string, including when ``shell=true``.
+        Omitted, null, or empty commands and any supplied ``keep_alive`` field
+        return 400 before the worker receives a spawn request.
+
+        An omitted or null ``resources_limits.cpu`` inherits the operation's
+        CPU limit. A CPU value above that limit returns 400.
+        Optional memory limits apply only when explicitly supplied:
+        ``memory_mib`` sets memory.high, ``memory_hard_mib`` sets memory.max,
+        and ``address_space_mib`` sets both RLIMIT_AS bounds before exec.
+        Omitted or null memory fields do not create limits or inherit values
+        from the operation. Explicit operation cgroup limits still constrain
+        all workloads in the VM. ``vm_memory_mib`` configures VM RAM and is not
+        accepted for a subprocess. Limits cannot be changed through this
         API. Guest root can modify limits; these limits do not
         provide security isolation between processes in one VM.
 
@@ -1805,23 +1829,44 @@ class ContreeSyncClient(ContreeClientBase, ABC):
         Args:
             operation_id: The ID of the operation Example:
                 ``12345678-9abc-baba-deda-0123456789ab``.
-            command: The command to execute. Same semantics as in
-                ``InstanceSpawnRequest.command`` — when ``shell=true`` it is
-                a shell expression, otherwise a path to an executable.
-                Example: ``/bin/app``.
+            command: Required nonempty command for a subprocess. With
+                shell=true, use a shell expression; otherwise, use a path to
+                an executable. Subprocess requests reject the keep_alive
+                field, including false and null values. Example:
+                ``/bin/app``.
             args: Arguments to pass to the command if shell is set to false.
                 Example: ``["arg1","arg2"]``.
-            shell: Run command through a shell expression (args must be
-                empty).
-            env: Environment variables to set in the child process.
-            cwd: Working directory; empty string means image / server
-                default.
-            uid: User ID to run the process as.
-            gid: Group ID to run the process as.
+            shell: Run command through a shell expression; args are ignored
+                when shell is true.
+            env: Environment overrides for the child process. Image-defined
+                variables are inherited in both shell and direct execution.
+                Omitted keys retain their inherited values. A null value
+                removes a variable; an empty string keeps it present with an
+                empty value. Omitting env or setting the whole field to null
+                applies no overrides.
+            cwd: Working directory. Omission or null inherits the keep-alive
+                instance's resolved working directory; otherwise, it uses
+                the image or server default. An explicit empty string
+                selects the image or server default even inside a keep-alive
+                instance.
+            uid: User ID for the subprocess. Omission or null inherits the
+                keep-alive instance's user ID, or uses zero in an ordinary
+                instance. An explicit zero overrides inheritance.
+            gid: Group ID for the subprocess. Omission or null inherits the
+                keep-alive instance's group ID, or uses zero in an ordinary
+                instance. An explicit zero overrides inheritance.
             stdin: Bytes fed to the child's stdin — honored for both the
                 main process and exec'd subprocesses. With ``close=false``
                 the pipe stays open and more data can be written via
                 ``POST /operations/{operationId}/subprocesses/{spid}/stdin``.
+            timeout: Execution timeout in seconds, measured from command
+                startup. A positive value sends SIGKILL to the command's
+                process tree when the timer expires, including commands
+                started without waiting. The timer stops when the command's
+                main process exits; descendants can outlive that process
+                without this timer terminating them. Null, zero, or omission
+                disables the command timer. The parent VM can stop earlier;
+                this field does not extend its lifetime.
             truncate_output_at: Maximum number of bytes to keep per stream
                 (stdout, stderr, and stdin) in the subprocess event log.
                 Does not affect delivery to the child — stdin is always
@@ -1839,6 +1884,7 @@ class ContreeSyncClient(ContreeClientBase, ABC):
             uid=uid,
             gid=gid,
             stdin=stdin,
+            timeout=timeout,
             truncate_output_at=truncate_output_at,
         )
         self.log_request(spec)
@@ -2003,10 +2049,16 @@ class ContreeSyncClient(ContreeClientBase, ABC):
         inside that tree are
         not followed. Absolute entry names and entries containing '..' are
         rejected.
-        procfs, sysfs, devices, FIFOs and sockets are unsupported. New
-        directories
-        have mode 0755; regular files retain tar permission bits (0777).
-        Ownership
+        procfs, sysfs, devices, FIFOs and sockets are unsupported. Regular files
+        and
+        explicit directory entries retain tar permission bits (0777). Directory
+        modes
+        are applied after their children; the last entry for a directory sets
+        its mode.
+        An explicit '.' directory sets the destination root mode. Without that
+        entry,
+        a new or replaced root has mode 0755. Implicit new directories have mode
+        0755. Ownership
         and timestamps are not restored. Other entries fail explicitly.
         With replace omitted or false, any existing destination returns 409,
         including
@@ -2036,6 +2088,12 @@ class ContreeSyncClient(ContreeClientBase, ABC):
         Destination
         directory symlinks are not followed; directory/file conflicts fail
         explicitly.
+        Explicit directory entries update existing directory modes after their
+        children
+        are merged. Existing directories without an explicit entry retain their
+        modes,
+        including the destination root when the archive has no '.' directory
+        entry.
         Same-filesystem hardlinks are retained. Crossing a destination mount
         requires
         copying file bytes and does not preserve hardlinks across filesystems.
@@ -3105,54 +3163,32 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
         return operations.parse_list_network_policies(response)
 
     async def create_network_policy(
-        self, cidrs: list[NetworkPolicyCIDRRule]
+        self,
+        *,
+        cidrs: list[NetworkPolicyCIDRRule] | EllipsisType = ...,
+        domains: list[NetworkPolicyDomainRule] | EllipsisType = ...,
     ) -> NetworkPolicy:
         """Create a network policy.
 
-        Creates a policy with immutable rules in the caller's namespace.
-        Requires ``network_policy`` permission.
-
-        **Rules**
-
-        - Each rule allows a CIDR for the selected protocol and ports. An empty
-          or
-          omitted port list allows all ports.
-
-        - ICMP is allowed to every listed CIDR, regardless of protocol or ports.
-        - An empty rules array (``cidrs: []``) blocks all IP egress, including
-          ICMP
-          and traffic to the host.
-
-        - ARP is blocked for all policies.
-
-        **Limits**
-
-        The same limit of 16384 units applies before and after normalization.
-        Sum the number of ports across all rules, counting an empty or omitted
-        port list (all ports) as 1. The limit covers the entire policy, across
-        all IP versions and protocols.
-        Duplicates count toward the limit before normalization. Exceeding the
-        limit returns 400, even if normalization would remove redundant rules or
-        ports.
-
-        **Normalization**
-
-        Before storage, duplicate rules and ports are removed, CIDRs are merged
-        per protocol and port, and rules and ports are sorted. This preserves
-        the
-        allowed traffic. The response contains the normalized rules.
-
-        **Policy identity**
+        Creates, reuses, or restores a policy in the caller's namespace.
+        Requires ``network_policy`` permission. Rules are immutable; create a
+        new policy to change them.
+        The response contains the normalized rules.
 
         Equivalent normalized policies in the same namespace reuse the same
-        UUID,
-        including concurrent requests. The UUID is UUIDv5 derived from the
-        namespace
-        and the normalized policy hash. Resubmitting a deleted policy restores
-        it
-        without restoring its tags. To change the rules, create a new policy.
+        UUID, including
+        concurrent requests. The UUID is UUIDv5 derived from the namespace and
+        the normalized policy hash.
+        Submitting a deleted policy again restores it without restoring its
+        former tags.
+
+        Args:
+            cidrs: CIDR permissions. Omitted or empty means no CIDR
+                permissions.
+            domains: Domain permissions. Omitted or empty means no domain
+                permissions.
         """
-        spec = operations.build_create_network_policy(cidrs=cidrs)
+        spec = operations.build_create_network_policy(cidrs=cidrs, domains=domains)
         self.log_request(spec)
         response = await self.call(spec)
         self.log_response(spec, response)
@@ -3651,12 +3687,13 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
 
     async def spawn_instance(
         self,
-        command: str,
         image: str,
         *,
+        command: str | None | EllipsisType = ...,
+        keep_alive: bool | EllipsisType = ...,
         disposable: bool | EllipsisType = ...,
         hostname: str | EllipsisType = ...,
-        args: list[str] | EllipsisType = ...,
+        args: list[str] | None | EllipsisType = ...,
         shell: bool | EllipsisType = ...,
         env: dict[str, str] | None | EllipsisType = ...,
         preserve_env: bool | EllipsisType = ...,
@@ -3679,56 +3716,68 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
 
         Common request body rules:
 
-          * The request body must contain at least ``command`` and ``image``
-            fields all other fields can be omitted.
+          * The request body must contain ``image``. All other fields can be
+            omitted.
+          * An omitted, null, or empty ``command`` with empty or omitted
+            ``args`` creates a keep-alive instance
+            without a primary process. Null ``args`` also count as empty.
+
           * If the ``command`` field is a shell expression, you must set
             ``shell`` field to ``true``.
           * For specifying the shell binary, you can use ``env`` field to set
             ``SHELL`` variable.
-          * When ``shell`` is ``true``, environment variables defined in the
-            image (via ``ENV`` directives) are
-            automatically inherited. When ``shell`` is ``false``, image
-            environment variables are not inherited
-            and must be passed explicitly via the ``env`` field.
+          * Environment variables defined in the image are inherited in both
+            shell and direct execution.
+            The ``env`` field overrides inherited values; null removes a
+            variable and an empty string keeps it present.
 
         Args:
-            command: The command to execute. In case if ``shell`` is set to
-                ``true``, this MUST contain shell expression. For example
-                ``echo hello world`` or ``ls -l /app``. If ``shell`` is set
-                to ``false``, this must be a relative or absolute path to
-                the executable inside the image rootfs. For example:
-                ``/bin/app`` or ``/usr/bin/find``. Do not forget pass
-                necessary ``PATH`` variable to env field, by default
-                ``PATH`` is set to
-                ``/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin``.
-                Example: ``/bin/app``.
+            command: Command to execute. With shell=true, use a shell
+                expression; otherwise, use an executable path. An omitted,
+                null, or empty command with omitted, null, or empty args
+                creates a keep-alive instance without a primary process,
+                regardless of shell or an omitted or false keep_alive flag.
+                A nonempty command is required when args are nonempty.
+                Whitespace counts as a nonempty command. Stored metadata and
+                responses normalize an omitted or null command to an empty
+                string. Example: ``/bin/app``.
+            keep_alive: Keep the instance available for subprocess requests
+                without starting a primary process. True rejects a nonempty
+                command or nonempty args. An empty command and empty args
+                always normalize this flag to true before metadata is
+                stored, even when the request sets false. The instance
+                timeout still limits its lifetime. Subprocess requests
+                continue to require a command.
             disposable: Creates a disposable execution environment no any
                 state will be saved.
             hostname: Hostname to set when execution. Example:
                 ``container-name``.
-            args: Arguments to pass to the command if shell is set to false.
-                Example: ``["arg1","arg2"]``.
+            args: Arguments to pass to the command if shell is false.
+                Omitted or null args normalize to an empty list. Nonempty
+                args require a nonempty command and cannot be combined with
+                keep_alive=true. Example: ``["arg1","arg2"]``.
             shell: Whether to run the command through a shell. If ``true``,
                 the command must be a shell expression and all values from
                 args will be ignored. If ``false``, the command field must
-                be a path to an executable and args will be used. When
-                ``true``, environment variables from the image are
-                automatically inherited. When ``false``, they are not - use
-                the ``env`` field to pass them explicitly.
-            env: Environment variables to set in the container. These are
-                merged with image-defined variables when ``shell`` is
-                ``true``. When ``shell`` is ``false``, only variables
-                specified here are available - image-defined variables are
-                not inherited. Example:
+                be a path to an executable and args will be used.
+                Environment variables from the image are inherited in both
+                modes.
+            env: Environment overrides for the main process. Image-defined
+                variables are inherited in both shell and direct execution.
+                Omitted keys retain their inherited values. A null value
+                removes a variable; an empty string keeps it present with an
+                empty value. Omitting env or setting the whole field to null
+                applies no overrides. Example:
                 ``{"KEY1":"value1","KEY2":"value2"}``.
             preserve_env: Preserve environment variables in resulting image
                 after execution. When ``true``, the image's existing
                 environment variables from ``metadata/env`` are merged with
                 user-provided ``env`` values (user values take priority on
                 conflicts), and the combined result is written back to
-                ``metadata/env`` after command execution. Setting a variable
-                to an empty string or ``null`` removes it from the preserved
-                environment.
+                ``metadata/env`` after command execution. A null value
+                removes a variable from the preserved environment. An empty
+                string preserves the variable with an empty value; omitted
+                keys remain unchanged.
             preserve_cwd: Save the resolved initial working directory as the
                 default in the resulting image. An empty or omitted ``cwd``
                 resolves to the image's current workdir, or ``/`` if none
@@ -3745,7 +3794,13 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
                 exist. Example: ``/app``.
             uid: User ID to run the process as. Example: ``0``.
             gid: Group ID to run the process as. Example: ``0``.
-            timeout: Maximum execution time in seconds Example: ``60``.
+            timeout: Guest execution timeout in seconds, always passed to
+                the guest. Expiry records timed_out and follows normal
+                finalization, including image persistence when disposable is
+                false. The host VM watchdog allows 15 additional seconds for
+                boot and guest shutdown; this does not extend the guest
+                execution timeout. A host failure or an expired watchdog can
+                still prevent result and image publication. Example: ``60``.
             truncate_output_at: Maximum number of bytes to keep per stream
                 (stdout, stderr, and stdin) in the subprocess event log.
                 Does not affect stdin delivery to the child, which always
@@ -3756,8 +3811,9 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
                 ``{"/root/hello.txt":{"uuid":"a9165a5d-5c86-4bd8-8ee4-ae46c...``.
         """
         spec = operations.build_spawn_instance(
-            command=command,
             image=image,
+            command=command,
+            keep_alive=keep_alive,
             disposable=disposable,
             hostname=hostname,
             args=args,
@@ -4068,6 +4124,12 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
            * - 410
              - Stream is over but the terminal artifact isn't ready yet
              - Retry after ``Retry-After``
+           * - 413
+             - Archived events exceed a configured size budget
+             - Do not retry the same archive
+           * - 422
+             - Archived events contain invalid gzip data
+             - Do not retry the same archive
            * - 425
              - Not yet ready (operation is still being prepared)
              - Retry after ``Retry-After``
@@ -4083,6 +4145,17 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
         close is the in-band equivalent of "the stream broke after we
         already committed to a 200" — handle it the same way as 410:
         wait briefly, reconnect with ``Last-Event-Id``.
+
+        StoreD validates a private copy of events.gz before publication.
+        Invalid or oversized archives are not written to object storage.
+        Upload retries use the same validated copy.
+
+        Completed-operation archives are checked before SSE headers are sent.
+        The server limits compressed bytes, total decompressed bytes and line
+        length. A budget violation returns HTTP 413. Invalid or truncated gzip
+        data returns HTTP 422. If a live stream switches to an archive after
+        headers were sent, these errors are reported as ``sse_error``. Retrying
+        the same oversized or corrupt archive does not resolve the error.
 
         See ``OperationEvent`` for the per-event shape.
 
@@ -4154,10 +4227,11 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
         args: list[str] | EllipsisType = ...,
         shell: bool | EllipsisType = ...,
         env: dict[str, str] | None | EllipsisType = ...,
-        cwd: str | EllipsisType = ...,
-        uid: int | EllipsisType = ...,
-        gid: int | EllipsisType = ...,
+        cwd: str | None | EllipsisType = ...,
+        uid: int | None | EllipsisType = ...,
+        gid: int | None | EllipsisType = ...,
         stdin: ClosableStreamRepr | EllipsisType = ...,
+        timeout: int | None | EllipsisType = ...,
         truncate_output_at: int | EllipsisType = ...,
     ) -> int:
         """Spawn an additional subprocess inside a running instance.
@@ -4169,16 +4243,23 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
 
         The body is an ``ExecSpec`` — process-execution fields only.
         VM-level concerns (``image``, ``hostname``,
-        ``files``, ``timeout``, ``disposable``, ``preserve_env``) are not
+        ``files``, ``disposable``, ``preserve_env``) are not
         accepted here; they were set when the parent operation was
         created.
 
-        ``resources_limits.cpu`` and ``resources_limits.memory_mib`` use the
-        same names and units as operation creation. Each omitted or null
-        subprocess limit inherits the corresponding operation limit.
-        Values above the operation limit return 400. Limits apply at
-        launch: memory_mib sets RLIMIT_AS for each process and memory.max
-        for the entire process tree. They cannot be changed through this
+        The command must be a nonempty string, including when ``shell=true``.
+        Omitted, null, or empty commands and any supplied ``keep_alive`` field
+        return 400 before the worker receives a spawn request.
+
+        An omitted or null ``resources_limits.cpu`` inherits the operation's
+        CPU limit. A CPU value above that limit returns 400.
+        Optional memory limits apply only when explicitly supplied:
+        ``memory_mib`` sets memory.high, ``memory_hard_mib`` sets memory.max,
+        and ``address_space_mib`` sets both RLIMIT_AS bounds before exec.
+        Omitted or null memory fields do not create limits or inherit values
+        from the operation. Explicit operation cgroup limits still constrain
+        all workloads in the VM. ``vm_memory_mib`` configures VM RAM and is not
+        accepted for a subprocess. Limits cannot be changed through this
         API. Guest root can modify limits; these limits do not
         provide security isolation between processes in one VM.
 
@@ -4195,23 +4276,44 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
         Args:
             operation_id: The ID of the operation Example:
                 ``12345678-9abc-baba-deda-0123456789ab``.
-            command: The command to execute. Same semantics as in
-                ``InstanceSpawnRequest.command`` — when ``shell=true`` it is
-                a shell expression, otherwise a path to an executable.
-                Example: ``/bin/app``.
+            command: Required nonempty command for a subprocess. With
+                shell=true, use a shell expression; otherwise, use a path to
+                an executable. Subprocess requests reject the keep_alive
+                field, including false and null values. Example:
+                ``/bin/app``.
             args: Arguments to pass to the command if shell is set to false.
                 Example: ``["arg1","arg2"]``.
-            shell: Run command through a shell expression (args must be
-                empty).
-            env: Environment variables to set in the child process.
-            cwd: Working directory; empty string means image / server
-                default.
-            uid: User ID to run the process as.
-            gid: Group ID to run the process as.
+            shell: Run command through a shell expression; args are ignored
+                when shell is true.
+            env: Environment overrides for the child process. Image-defined
+                variables are inherited in both shell and direct execution.
+                Omitted keys retain their inherited values. A null value
+                removes a variable; an empty string keeps it present with an
+                empty value. Omitting env or setting the whole field to null
+                applies no overrides.
+            cwd: Working directory. Omission or null inherits the keep-alive
+                instance's resolved working directory; otherwise, it uses
+                the image or server default. An explicit empty string
+                selects the image or server default even inside a keep-alive
+                instance.
+            uid: User ID for the subprocess. Omission or null inherits the
+                keep-alive instance's user ID, or uses zero in an ordinary
+                instance. An explicit zero overrides inheritance.
+            gid: Group ID for the subprocess. Omission or null inherits the
+                keep-alive instance's group ID, or uses zero in an ordinary
+                instance. An explicit zero overrides inheritance.
             stdin: Bytes fed to the child's stdin — honored for both the
                 main process and exec'd subprocesses. With ``close=false``
                 the pipe stays open and more data can be written via
                 ``POST /operations/{operationId}/subprocesses/{spid}/stdin``.
+            timeout: Execution timeout in seconds, measured from command
+                startup. A positive value sends SIGKILL to the command's
+                process tree when the timer expires, including commands
+                started without waiting. The timer stops when the command's
+                main process exits; descendants can outlive that process
+                without this timer terminating them. Null, zero, or omission
+                disables the command timer. The parent VM can stop earlier;
+                this field does not extend its lifetime.
             truncate_output_at: Maximum number of bytes to keep per stream
                 (stdout, stderr, and stdin) in the subprocess event log.
                 Does not affect delivery to the child — stdin is always
@@ -4229,6 +4331,7 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
             uid=uid,
             gid=gid,
             stdin=stdin,
+            timeout=timeout,
             truncate_output_at=truncate_output_at,
         )
         self.log_request(spec)
@@ -4395,10 +4498,16 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
         inside that tree are
         not followed. Absolute entry names and entries containing '..' are
         rejected.
-        procfs, sysfs, devices, FIFOs and sockets are unsupported. New
-        directories
-        have mode 0755; regular files retain tar permission bits (0777).
-        Ownership
+        procfs, sysfs, devices, FIFOs and sockets are unsupported. Regular files
+        and
+        explicit directory entries retain tar permission bits (0777). Directory
+        modes
+        are applied after their children; the last entry for a directory sets
+        its mode.
+        An explicit '.' directory sets the destination root mode. Without that
+        entry,
+        a new or replaced root has mode 0755. Implicit new directories have mode
+        0755. Ownership
         and timestamps are not restored. Other entries fail explicitly.
         With replace omitted or false, any existing destination returns 409,
         including
@@ -4428,6 +4537,12 @@ class ContreeAsyncClient(ContreeClientBase, ABC):
         Destination
         directory symlinks are not followed; directory/file conflicts fail
         explicitly.
+        Explicit directory entries update existing directory modes after their
+        children
+        are merged. Existing directories without an explicit entry retain their
+        modes,
+        including the destination root when the archive has no '.' directory
+        entry.
         Same-filesystem hardlinks are retained. Crossing a destination mount
         requires
         copying file bytes and does not preserve hardlinks across filesystems.

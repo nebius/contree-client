@@ -640,26 +640,16 @@ def optional_args(op: OperationDef) -> list[tuple[str, str | None]]:
     ]
 
 
-def js_params(op: OperationDef, destructure: bool) -> str:
+def js_params(op: OperationDef) -> str:
     """The parameter list of a builder/method.
 
     Required args are positional (camelCase locals); optional args
-    arrive in a trailing options object - destructured in builders,
-    passed through whole in client methods.
+    arrive in a trailing options object. Builders validate it before
+    destructuring; client methods pass it through whole.
     """
     parts = [js_arg(name) for name in required_args(op)]
-    optionals = optional_args(op)
-    if optionals:
-        if destructure:
-            entries = []
-            for name, default in optionals:
-                public = camel(name)
-                local = js_local(public)
-                entry = public if local == public else f"{public}: {local}"
-                entries.append(entry + ("" if default is None else f" = {default}"))
-            parts.append(f"{{ {', '.join(entries)} }} = {{}}")
-        else:
-            parts.append("options = {}")
+    if optional_args(op):
+        parts.append("options = {}")
     return ", ".join(parts)
 
 
@@ -716,6 +706,24 @@ def model_names_in_type(type_ref: TypeRef) -> set[str]:
 def render_build_fn(op: OperationDef) -> str:
     name = camel(f"build_{op.name}")
     body: list[str] = []
+    optionals = optional_args(op)
+    if optionals:
+        allowed = [camel(argument_name) for argument_name, _ in optionals]
+        if op.response.mode is ResponseMode.SSE:
+            # iterOperationEvents mixes client-side streaming controls into the
+            # API options passed to the builder. Allow these names here; the
+            # caller consumes them after building the request, not the builder.
+            allowed.extend(["deadline", "idleTimeout", "_singleAttempt"])
+        body.append(f"validateOptions(options, {json.dumps(allowed)});")
+        entries = []
+        for argument_name, default in optionals:
+            public = camel(argument_name)
+            local = js_local(public)
+            entry = public if local == public else f"{public}: {local}"
+            entries.append(entry + ("" if default is None else f" = {default}"))
+        body.append(f"const {{ {', '.join(entries)} }} = options;")
+        body.append("")
+
     query = [
         parameter
         for parameter in op.request.parameters
@@ -821,7 +829,7 @@ def render_build_fn(op: OperationDef) -> str:
     body.append(f"return {{ {', '.join(spec_fields)} }};")
     lines = [
         f"/** Build the request for `{op.http_method} {op.path}`. */",
-        f"export function {name}({js_params(op, destructure=True)}) {{",
+        f"export function {name}({js_params(op)}) {{",
         *[f"  {line}" for line in body],
         "}",
     ]
@@ -903,6 +911,19 @@ def render_operations_js(ir: SpecIR) -> str:
     parts.append(f'import {{ {", ".join(imports)} }} from "./runtime.js";')
     if models:
         parts.append(f'import {{ {", ".join(sorted(models))} }} from "./models.js";')
+    parts.append(
+        """function validateOptions(options, allowed) {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("options must be a non-null object, not an array");
+  }
+
+  for (const key of Reflect.ownKeys(options)) {
+    if (!allowed.includes(key)) {
+      throw new TypeError(`unknown option: ${String(key)}`);
+    }
+  }
+}"""
+    )
     for op in ir.operations:
         parts.append(render_build_fn(op))
         parse = render_parse_fn(op)
@@ -1688,7 +1709,7 @@ def render_client_method(op: OperationDef) -> list[str]:
     name = camel(op.name)
     build = camel(f"build_{op.name}")
     parse = camel(f"parse_{op.name}")
-    params = js_params(op, destructure=False)
+    params = js_params(op)
     call_args = method_call_args(op)
     doc = f"  /** {op.summary or op.name} ({op.http_method} {op.path}) */"
     blocks: list[str] = []

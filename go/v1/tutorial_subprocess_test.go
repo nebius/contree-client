@@ -20,7 +20,8 @@ import (
 func subprocessEvents(t *testing.T) []contree.OperationEvent {
     t.Helper()
     spawn := contree.EventDataSpawn{Pid: 42, Command: "id", Args: []string{}}
-    exit := contree.EventDataExit{Pid: 42, Code: 0, Signal: -1}
+    pid, code := int64(42), int64(0)
+    exit := contree.EventDataExit{Pid: &pid, Code: &code, Signal: -1, Resources: contree.Some(contree.EventResources{})}
     rows := []struct {
         kind contree.OperationEventType
         spid int64

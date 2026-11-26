@@ -19,8 +19,8 @@ asynchronous.
 <!-- name: test_api_spawn; fixtures: client -->
 ```python
 response = client.spawn_instance(
-    "echo hello world",
-    "tag:ubuntu:latest",   # image tag, or a bare image UUID
+    command="echo hello world",
+    image="tag:ubuntu:latest",   # image tag, or a bare image UUID
     shell=True,
     env={"GREETING": "hi"},
     timeout=60,
@@ -41,8 +41,8 @@ client = async_client
 -->
 ```python
 response = await client.spawn_instance(
-    "echo hello world",
-    "tag:ubuntu:latest",   # image tag, or a bare image UUID
+    command="echo hello world",
+    image="tag:ubuntu:latest",   # image tag, or a bare image UUID
     shell=True,
     env={"GREETING": "hi"},
     timeout=60,
@@ -64,10 +64,10 @@ JSON `null` (models are tri-state: unset `...` / `None` / value):
 
 <!-- name: test_api_tristate; fixtures: client -->
 ```python
-client.spawn_instance("/bin/true", "tag:ubuntu:latest")
+client.spawn_instance(command="/bin/true", image="tag:ubuntu:latest")
 # body: {"command": "/bin/true", "image": "tag:ubuntu:latest"}
 
-client.spawn_instance("/bin/true", "tag:ubuntu:latest", env=None)
+client.spawn_instance(command="/bin/true", image="tag:ubuntu:latest", env=None)
 # body: {"command": "/bin/true", "image": "tag:ubuntu:latest", "env": null}
 ```
 :::
@@ -83,10 +83,10 @@ client = async_client
 ```
 -->
 ```python
-await client.spawn_instance("/bin/true", "tag:ubuntu:latest")
+await client.spawn_instance(command="/bin/true", image="tag:ubuntu:latest")
 # body: {"command": "/bin/true", "image": "tag:ubuntu:latest"}
 
-await client.spawn_instance("/bin/true", "tag:ubuntu:latest", env=None)
+await client.spawn_instance(command="/bin/true", image="tag:ubuntu:latest", env=None)
 # body: {"command": "/bin/true", "image": "tag:ubuntu:latest", "env": null}
 ```
 :::
@@ -106,8 +106,8 @@ sandbox, stdin is a `StreamRepr`:
 from contree_client import FileSpec, StreamRepr
 
 client.spawn_instance(
-    "/bin/sh",
-    "tag:ubuntu:latest",
+    command="/bin/sh",
+    image="tag:ubuntu:latest",
     args=["-c", "wc -l < /work/data.txt"],
     # mode accepts the octal wire string ("0644") or a plain int
     files={"/work/data.txt": FileSpec(uuid=file_uuid, mode=0o644)},
@@ -131,8 +131,8 @@ client = async_client
 from contree_client import FileSpec, StreamRepr
 
 await client.spawn_instance(
-    "/bin/sh",
-    "tag:ubuntu:latest",
+    command="/bin/sh",
+    image="tag:ubuntu:latest",
     args=["-c", "wc -l < /work/data.txt"],
     # mode accepts the octal wire string ("0644") or a plain int
     files={"/work/data.txt": FileSpec(uuid=file_uuid, mode=0o644)},

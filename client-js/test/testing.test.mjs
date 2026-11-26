@@ -14,13 +14,17 @@ test("the double replays mocked results and records calls", async () => {
     "spawnInstance",
     InstanceSpawnResponse.fromWire({ uuid: OPERATION_UUID }),
   );
-  const response = await client.spawnInstance("echo hi", "tag:busybox:latest", {
+  const response = await client.spawnInstance("tag:busybox:latest", {
+    command: "echo hi",
     shell: true,
   });
   assert.equal(response.uuid, OPERATION_UUID);
   const calls = client.callsFor("spawnInstance");
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].args[0], "echo hi");
+  assert.deepEqual(calls[0].args, [
+    "tag:busybox:latest",
+    { command: "echo hi", shell: true },
+  ]);
 });
 
 test("a mock queue steps through outcomes, the last one is sticky", async () => {

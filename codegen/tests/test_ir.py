@@ -131,15 +131,22 @@ def test_live_instance_operations(ir: SpecIR) -> None:
 
 def test_resource_limit_types(ir: SpecIR) -> None:
     models = {model.name: model for model in ir.models}
-    for name, nullable in (
-        ("ProcessResourcesLimits", True),
-        ("InstanceResourcesLimits", False),
-    ):
+    for name in ("ProcessResourcesLimits", "InstanceResourcesLimits"):
         fields = {field.name: field for field in models[name].fields}
-        for limit in ("cpu", "memory_mib"):
+        for limit in ("cpu", "memory_mib", "memory_hard_mib", "address_space_mib"):
             assert fields[limit].type.kind is TypeKind.INTEGER
+            nullable = name == "ProcessResourcesLimits" or limit != "cpu"
             assert fields[limit].nullable is nullable
             assert not fields[limit].required
+
+    vm_memory = next(
+        field
+        for field in models["InstanceResourcesLimits"].fields
+        if field.name == "vm_memory_mib"
+    )
+    assert vm_memory.type.kind is TypeKind.INTEGER
+    assert not vm_memory.nullable
+    assert not vm_memory.required
 
     for name, expected in (
         ("ExecSpec", "ProcessResourcesLimits"),
@@ -373,7 +380,7 @@ def test_flag_param_is_bool(ir: SpecIR) -> None:
 def test_spawn_instance_flattens_body(ir: SpecIR) -> None:
     op = op_by_name(ir, "spawn_instance")
     arg_names = [arg.name for arg in op.arguments]
-    assert arg_names[:2] == ["command", "image"]
+    assert arg_names[:2] == ["image", "command"]
     assert "env" in arg_names
     assert "files" in arg_names
     assert op.request.body is not None
@@ -389,8 +396,10 @@ def test_body_arguments_preserve_presence_and_nullability(ir: SpecIR) -> None:
     op = op_by_name(ir, "spawn_instance")
     arguments = {argument.name: argument for argument in op.arguments}
 
-    assert arguments["command"].presence is ArgumentPresence.REQUIRED
-    assert not arguments["command"].nullable
+    assert arguments["image"].presence is ArgumentPresence.REQUIRED
+    assert not arguments["image"].nullable
+    assert arguments["command"].presence is ArgumentPresence.OMIT_IF_UNSET
+    assert arguments["command"].nullable
     assert arguments["env"].presence is ArgumentPresence.OMIT_IF_UNSET
     assert arguments["env"].nullable
     assert arguments["files"].presence is ArgumentPresence.OMIT_IF_UNSET

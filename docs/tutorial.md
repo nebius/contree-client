@@ -19,8 +19,8 @@ options object in JavaScript. Go's `SpawnInstance` helper accepts an options str
 returns the full response:
 
 ```text
-client.spawn_instance(cmd, image, shell=True)      # Python
-client.spawnInstance(cmd, image, { shell: true }); // JavaScript
+client.spawn_instance(image, command=cmd, shell=True)      # Python
+client.spawnInstance(image, { command: cmd, shell: true }); // JavaScript
 client.SpawnInstance(ctx, cmd, image, contree.SpawnInstanceOptions{
     Shell: true,
 }) // Go
@@ -301,8 +301,8 @@ default). Shell expressions need `shell=True`, `shell: true`, or
 <!-- name: test_tutorial; case: spawn -->
 ```python
 response = client.spawn_instance(
-    "wc -l < /work/data.txt",
-    "tag:ubuntu:latest",         # an image tag, or a bare image UUID
+    command="wc -l < /work/data.txt",
+    image="tag:ubuntu:latest",         # an image tag, or a bare image UUID
     shell=True,                  # the command is a shell expression
     env={"LC_ALL": "C"},         # explicit None sends a JSON null
     cwd="/work",
@@ -319,8 +319,8 @@ operation_id = response.uuid
 <!-- name: test_tutorial_async; case: spawn -->
 ```python
 response = await client.spawn_instance(
-    "wc -l < /work/data.txt",
-    "tag:ubuntu:latest",         # an image tag, or a bare image UUID
+    command="wc -l < /work/data.txt",
+    image="tag:ubuntu:latest",         # an image tag, or a bare image UUID
     shell=True,                  # the command is a shell expression
     env={"LC_ALL": "C"},         # explicit None sends a JSON null
     cwd="/work",
@@ -337,9 +337,9 @@ operation_id = response.uuid
 <!-- name: tutorial_spawn; fixtures: client -->
 ```js
 const response = await client.spawnInstance(
-  "wc -l < /work/data.txt",
   "tag:ubuntu:latest", // an image tag, or a bare image UUID
   {
+    command: "wc -l < /work/data.txt",
     shell: true, // the command is a shell expression
     env: { LC_ALL: "C" }, // explicit null sends a JSON null
     cwd: "/work",
@@ -394,11 +394,14 @@ are staged with {class}`~contree_client.FileSpec` (mode accepts an int
 / number or the octal wire string), and cgroup limits ride in
 {class}`~contree_client.InstanceResourcesLimits`:
 
-`InstanceResourcesLimits` also accepts `cpu` and `memory_mib` (`memoryMib` in
-JavaScript, `CPU` and `MemoryMib` in Go). Subprocess creation accepts a separate
-`ProcessResourcesLimits` model through `resources_limits` / `resourcesLimits` /
-`ResourcesLimits`. Omitted or null process limits inherit the requested operation
-limits. Process limits cannot exceed the operation limits.
+`InstanceResourcesLimits` accepts `cpu`, `vm_memory_mib`, and optional workload
+limits: `memory_mib` for `memory.high`, `memory_hard_mib` for `memory.max`, and
+`address_space_mib` for `RLIMIT_AS`. VM RAM and workload memory limits are separate.
+Names use camelCase in JavaScript and PascalCase in Go.
+Subprocess creation accepts `ProcessResourcesLimits`. Omitted or null CPU limits
+inherit the operation's CPU limit; a larger value is rejected. Omitted or null
+memory limits do not add subprocess limits. Explicit operation cgroup limits
+still constrain all workloads in the VM.
 
 ::::{tab-set}
 
@@ -410,8 +413,8 @@ limits. Process limits cannot exceed the operation limits.
 from contree_client import ClosableStreamRepr, FileSpec, InstanceResourcesLimits
 
 client.spawn_instance(
-    "/bin/sh",
-    "tag:ubuntu:latest",
+    command="/bin/sh",
+    image="tag:ubuntu:latest",
     args=["-c", "cat - >> /work/data.txt"],
     stdin=ClosableStreamRepr.from_text("appended line\n"),
     files={"/work/data.txt": FileSpec(uuid=file_uuid, mode=0o644)},
@@ -431,8 +434,8 @@ client.spawn_instance(
 from contree_client import ClosableStreamRepr, FileSpec, InstanceResourcesLimits
 
 await client.spawn_instance(
-    "/bin/sh",
-    "tag:ubuntu:latest",
+    command="/bin/sh",
+    image="tag:ubuntu:latest",
     args=["-c", "cat - >> /work/data.txt"],
     stdin=ClosableStreamRepr.from_text("appended line\n"),
     files={"/work/data.txt": FileSpec(uuid=file_uuid, mode=0o644)},
@@ -455,7 +458,8 @@ import {
   ClosableStreamRepr,
 } from "contree-client";
 
-await client.spawnInstance("/bin/sh", "tag:ubuntu:latest", {
+await client.spawnInstance("tag:ubuntu:latest", {
+  command: "/bin/sh",
   args: ["-c", "cat - >> /work/data.txt"],
   stdin: ClosableStreamRepr.fromText("appended line\n"),
   files: { "/work/data.txt": new FileSpec({ uuid: fileUuid, mode: 0o644 }) },
@@ -486,7 +490,7 @@ _, err := client.SpawnInstance(
         },
         Files: map[string]contree.FileSpec{
             "/work/data.txt": {
-                UUID: contree.Some(fileUUID),
+                UUID: fileUUID,
                 Mode: contree.Some(contree.StringOrInt64FromInt64(0o644)),
             },
         },
@@ -746,7 +750,7 @@ client.mock("operation_subprocess_create", 2)
 from contextlib import closing
 
 response = client.spawn_instance(
-    "sleep 60", "tag:ubuntu:latest", shell=True, timeout=60, disposable=True
+    command="sleep 60", image="tag:ubuntu:latest", shell=True, timeout=60, disposable=True
 )
 operation_id = response.uuid
 spid = None
@@ -790,7 +794,7 @@ client.mock("operation_subprocess_create", 2)
 from contextlib import aclosing
 
 response = await client.spawn_instance(
-    "sleep 60", "tag:ubuntu:latest", shell=True, timeout=60, disposable=True
+    command="sleep 60", image="tag:ubuntu:latest", shell=True, timeout=60, disposable=True
 )
 operation_id = response.uuid
 spid = None
@@ -822,7 +826,8 @@ if not subprocess_exited or not operation_completed:
 
 <!-- name: tutorial_subprocesses; fixtures: client -->
 ```js
-const response = await client.spawnInstance("sleep 60", "tag:ubuntu:latest", {
+const response = await client.spawnInstance("tag:ubuntu:latest", {
+  command: "sleep 60",
   shell: true,
   timeout: 60,
   disposable: true,
@@ -837,7 +842,11 @@ for await (const event of client.followOperationEvents(operationId)) {
   if (event.type === "spawn" && event.spid === 1 && spid === undefined) {
     spid = await client.operationSubprocessCreate(operationId, "id");
     console.log("started subprocess:", spid);
-  } else if (event.type === "exit" && spid !== undefined && event.spid === spid) {
+  } else if (
+    event.type === "exit" &&
+    spid !== undefined &&
+    event.spid === spid
+  ) {
     subprocessExited = true;
     console.log("subprocess exited:", spid);
     await client.cancelOperation(operationId);
@@ -848,7 +857,9 @@ for await (const event of client.followOperationEvents(operationId)) {
   }
 }
 if (!subprocessExited || !operationCompleted) {
-  throw new Error("event stream ended before subprocess exit and operation completion");
+  throw new Error(
+    "event stream ended before subprocess exit and operation completion",
+  );
 }
 ```
 :::
@@ -1156,8 +1167,8 @@ for event, err := range client.FollowOperationEvents(ctx, operationID, nil) {
             output.Write(data.AsBytes())
         }
     case contree.EventDataExit:
-        if hasSPID && spid == 1 {
-            exitCode = data.Code // the main process finished
+        if hasSPID && spid == 1 && data.Code != nil {
+            exitCode = *data.Code // the main process finished
         }
     case contree.EventDataTruncated:
         fmt.Printf("%s: %d bytes dropped\n", data.Stream, data.BytesDropped)

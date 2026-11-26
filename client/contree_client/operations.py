@@ -33,6 +33,7 @@ from .models import (
     NetworkPolicy,
     NetworkPolicyCIDRRule,
     NetworkPolicyCreateRequest,
+    NetworkPolicyDomainRule,
     NetworkPolicyListResponse,
     NetworkPolicyTag,
     OperationResponse,
@@ -73,9 +74,13 @@ def parse_list_network_policies(response: ResponseData) -> NetworkPolicyListResp
     raise ValueError(f"unexpected HTTP status {response.status}")
 
 
-def build_create_network_policy(cidrs: list[NetworkPolicyCIDRRule]) -> RequestSpec:
+def build_create_network_policy(
+    *,
+    cidrs: list[NetworkPolicyCIDRRule] | EllipsisType = ...,
+    domains: list[NetworkPolicyDomainRule] | EllipsisType = ...,
+) -> RequestSpec:
     """Build the request for `POST /network/policies`."""
-    payload = NetworkPolicyCreateRequest(cidrs=cidrs).to_dict()
+    payload = NetworkPolicyCreateRequest(cidrs=cidrs, domains=domains).to_dict()
     request_path = "/network/policies"
     return RequestSpec(
         method="POST",
@@ -363,12 +368,13 @@ def parse_check_file_exists(response: ResponseData) -> bool:
 
 
 def build_spawn_instance(
-    command: str,
     image: str,
     *,
+    command: str | None | EllipsisType = ...,
+    keep_alive: bool | EllipsisType = ...,
     disposable: bool | EllipsisType = ...,
     hostname: str | EllipsisType = ...,
-    args: list[str] | EllipsisType = ...,
+    args: list[str] | None | EllipsisType = ...,
     shell: bool | EllipsisType = ...,
     env: dict[str, str] | None | EllipsisType = ...,
     preserve_env: bool | EllipsisType = ...,
@@ -385,8 +391,9 @@ def build_spawn_instance(
 ) -> RequestSpec:
     """Build the request for `POST /instances`."""
     payload = InstanceSpawnRequest(
-        command=command,
         image=image,
+        command=command,
+        keep_alive=keep_alive,
         disposable=disposable,
         hostname=hostname,
         args=args,
@@ -524,10 +531,11 @@ def build_operation_subprocess_create(
     args: list[str] | EllipsisType = ...,
     shell: bool | EllipsisType = ...,
     env: dict[str, str] | None | EllipsisType = ...,
-    cwd: str | EllipsisType = ...,
-    uid: int | EllipsisType = ...,
-    gid: int | EllipsisType = ...,
+    cwd: str | None | EllipsisType = ...,
+    uid: int | None | EllipsisType = ...,
+    gid: int | None | EllipsisType = ...,
     stdin: ClosableStreamRepr | EllipsisType = ...,
+    timeout: int | None | EllipsisType = ...,
     truncate_output_at: int | EllipsisType = ...,
 ) -> RequestSpec:
     """Build the request for `POST /operations/{operationId}/subprocesses`."""
@@ -541,6 +549,7 @@ def build_operation_subprocess_create(
         uid=uid,
         gid=gid,
         stdin=stdin,
+        timeout=timeout,
         truncate_output_at=truncate_output_at,
     ).to_dict()
     request_path = f"/operations/{quote_path(operation_id)}/subprocesses"

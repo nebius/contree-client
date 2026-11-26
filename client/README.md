@@ -78,7 +78,7 @@ from contree_client.sync import ContreeClient
 # reuse a saved Contree profile,
 # or pass credentials directly: ContreeClient("IAM_TOKEN", project=...)
 with ContreeClient.from_profile() as client:
-    response = client.spawn_instance("uname -a", "tag:ubuntu:latest", shell=True)
+    response = client.spawn_instance(command="uname -a", image="tag:ubuntu:latest", shell=True)
     for event in client.iter_operation_events(response.uuid, follow=True):
         print(event.type, event.data)
 ```
@@ -183,8 +183,8 @@ client = UseCaseDouble("IAM_TOKEN")
 from contree_client import OperationStatus
 
 response = client.spawn_instance(
-    "echo hello",
-    "tag:ubuntu:latest",
+    command="echo hello",
+    image="tag:ubuntu:latest",
     shell=True,
     disposable=True,   # do not persist a result image
     timeout=60,
@@ -225,8 +225,8 @@ from contree_client import FileSpec
 
 uploaded = client.upload_file(open("data.txt", "rb"))
 client.spawn_instance(
-    "wc -l /work/data.txt",
-    "tag:ubuntu:latest",
+    command="wc -l /work/data.txt",
+    image="tag:ubuntu:latest",
     shell=True,
     files={"/work/data.txt": FileSpec(uuid=uploaded.uuid, mode="0644")},
 )
@@ -322,7 +322,7 @@ exit_event = stdout_event
 
 
 def run_my_code(client):
-    response = client.spawn_instance("uname -a", "tag:ubuntu:latest", shell=True)
+    response = client.spawn_instance(command="uname -a", image="tag:ubuntu:latest", shell=True)
     for event in client.iter_operation_events(response.uuid):
         pass
 ```

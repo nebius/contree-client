@@ -254,6 +254,30 @@ def test_parse_event_data_all_service_types(models: ModuleType) -> None:
 def test_live_instance_event_payloads(models: ModuleType) -> None:
     cases = [
         (
+            "lifecycle",
+            models.EventDataLifecycle,
+            {
+                "keep_alive": True,
+                "pid": None,
+                "cwd": "/work",
+                "uid": 1000,
+                "gid": 1001,
+                "truncate_at": 1048576,
+            },
+        ),
+        (
+            "exit",
+            models.EventDataExit,
+            {
+                "keep_alive": True,
+                "pid": None,
+                "code": None,
+                "signal": -1,
+                "timed_out": False,
+                "duration_ms": 0,
+            },
+        ),
+        (
             "inspect",
             models.EventDataInspect,
             {

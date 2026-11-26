@@ -207,6 +207,34 @@ def test_whoami(live: Invoke) -> None:
     assert me.permissions  # the server reports all known permissions
 
 
+def test_domain_network_policy_roundtrip(
+    live: Invoke,
+    models: ModuleType,
+    permissions: dict[str, bool],
+) -> None:
+    if not permissions.get("network_policy"):
+        pytest.skip("token lacks network_policy permission")
+
+    rule = {
+        "domain": f"**.client-{uuid.uuid4().hex}.example.invalid",
+        "proto": "tcp",
+        "ports": [443],
+    }
+    created = live(
+        "create_network_policy", domains=[models.NetworkPolicyDomainRule(**rule)]
+    )
+    try:
+        expected = {"uuid": created.uuid, "cidrs": [], "domains": [rule]}
+        assert created.to_dict() == expected
+        assert isinstance(created.domains[0], models.NetworkPolicyDomainRule)
+
+        fetched = live("get_network_policy", str(created.uuid))
+        assert fetched.to_dict() == expected
+        assert isinstance(fetched.domains[0], models.NetworkPolicyDomainRule)
+    finally:
+        live("delete_network_policy", str(created.uuid))
+
+
 def test_network_policy_allows_https_blocks_http(
     live: Invoke,
     models: ModuleType,
@@ -217,8 +245,8 @@ def test_network_policy_allows_https_blocks_http(
 ) -> None:
     spawned = live(
         "spawn_instance",
-        network_probe_command,
-        network_probe_image,
+        command=network_probe_command,
+        image=network_probe_image,
         shell=True,
         disposable=True,
         timeout=60,
@@ -231,7 +259,8 @@ def test_network_policy_allows_https_blocks_http(
     try:
         assert spawned.networking.policy == [live_network_policy]
         assert spawned.networking.effective_policy.to_dict() == {
-            "cidrs": [{"cidr": "1.1.1.1/32", "proto": "tcp", "ports": [443]}]
+            "cidrs": [{"cidr": "1.1.1.1/32", "proto": "tcp", "ports": [443]}],
+            "domains": [],
         }
         operation = live("wait_operation", operation_id, timeout=90)
         assert operation.status is models.OperationStatus.SUCCESS, operation.to_dict()
@@ -462,8 +491,8 @@ def test_cancel_running_operation(
     # lands (a `sleep 60` once raced the cancel and won: SUCCESS);
     # wait_terminal still gives up after 180s if the cancel is lost
     response = sync_client.spawn_instance(
-        "sleep 600",
-        str(sample_image.uuid),
+        command="sleep 600",
+        image=str(sample_image.uuid),
         shell=True,
         disposable=True,
         timeout=630,
@@ -492,8 +521,8 @@ def test_disposable_spawn_roundtrip(
     models = importlib.import_module("contree_client.models")
     marker = f"contree-client-integration-{uuid.uuid4().hex[:12]}"
     response = sync_client.spawn_instance(
-        f"echo {marker}",
-        str(sample_image.uuid),
+        command=f"echo {marker}",
+        image=str(sample_image.uuid),
         shell=True,
         disposable=True,
         timeout=60,
@@ -531,8 +560,8 @@ def test_wait_and_follow_helpers(
     models = importlib.import_module("contree_client.models")
     marker = f"contree-client-integration-{uuid.uuid4().hex[:12]}"
     response = sync_client.spawn_instance(
-        f"echo {marker}",
-        str(sample_image.uuid),
+        command=f"echo {marker}",
+        image=str(sample_image.uuid),
         shell=True,
         disposable=True,
         timeout=60,
@@ -576,8 +605,8 @@ def test_operation_subprocess_lifecycle(
     marker = f"contree-client-subprocess-{uuid.uuid4().hex[:12]}"
 
     response = sync_client.spawn_instance(
-        "sleep 90",
-        str(sample_image.uuid),
+        command="sleep 90",
+        image=str(sample_image.uuid),
         shell=True,
         disposable=True,
         timeout=120,
@@ -639,8 +668,8 @@ def test_live_instance_files_and_events(
     marker = f"ready-{uuid.uuid4().hex}"
     payload = f"live-file-{uuid.uuid4().hex}\n".encode()
     operation = sync_client.spawn_instance(
-        f"echo {marker}; read line",
-        str(sample_image.uuid),
+        command=f"echo {marker}; read line",
+        image=str(sample_image.uuid),
         shell=True,
         disposable=True,
         timeout=180,

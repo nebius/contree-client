@@ -146,6 +146,7 @@ OPERATION_EVENT_TYPE = alias_ref("OperationEventType")
 EVENT_DATA_VARIANTS = (
     ("init", model_ref("EventDataInit")),
     ("spawn", model_ref("EventDataSpawn")),
+    ("lifecycle", model_ref("EventDataLifecycle")),
     ("stdin", model_ref("EventDataStream")),
     ("stdout", model_ref("EventDataStream")),
     ("stderr", model_ref("EventDataStream")),

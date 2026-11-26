@@ -245,7 +245,8 @@ Requests still use `InstanceNetworking`. The `Networking` fields of
 `EffectivePolicy`. Update code that explicitly assigns the old response type.
 
 Selecting no policies allows all IPv4 and global-unicast IPv6 destinations.
-Selecting only policies with empty `cidrs` denies all network traffic.
+Policies may contain CIDR rules, domain rules, or both. Selecting only policies
+with both `cidrs` and `domains` empty denies all network traffic.
 
 ## Files and images
 

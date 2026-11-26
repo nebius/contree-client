@@ -68,7 +68,7 @@ go get github.com/nebius/contree-client/go/v1
 from contree_client.sync import ContreeClient  # first installed backend
 
 with ContreeClient.from_profile() as client:   # or ContreeClient("IAM_TOKEN", project=...)
-    response = client.spawn_instance("uname -a", "tag:ubuntu:latest", shell=True)
+    response = client.spawn_instance(command="uname -a", image="tag:ubuntu:latest", shell=True)
     for event in client.iter_operation_events(response.uuid, follow=True):
         print(event.type, event.data)
 ```
@@ -81,7 +81,7 @@ with ContreeClient.from_profile() as client:   # or ContreeClient("IAM_TOKEN", p
 from contree_client.asyncio import ContreeAsyncClient  # first installed backend
 
 async with ContreeAsyncClient.from_profile() as client:  # or ContreeAsyncClient("IAM_TOKEN", project=...)
-    response = await client.spawn_instance("uname -a", "tag:ubuntu:latest", shell=True)
+    response = await client.spawn_instance(command="uname -a", image="tag:ubuntu:latest", shell=True)
     async for event in client.iter_operation_events(response.uuid, follow=True):
         print(event.type, event.data)
 ```
@@ -94,7 +94,8 @@ async with ContreeAsyncClient.from_profile() as client:  # or ContreeAsyncClient
 import { ContreeClient } from "contree-client";
 
 const client = await ContreeClient.fromProfile(); // or new ContreeClient("IAM_TOKEN", { project })
-const response = await client.spawnInstance("uname -a", "tag:ubuntu:latest", {
+const response = await client.spawnInstance("tag:ubuntu:latest", {
+  command: "uname -a",
   shell: true,
 });
 for await (const event of client.iterOperationEvents(response.uuid, {

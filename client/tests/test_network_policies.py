@@ -5,6 +5,8 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import Any
 
+import pytest
+
 from tests import stub_server as stub
 from tests.stub_server import StubServer
 
@@ -13,15 +15,24 @@ def test_network_policy_methods(
     invoke: Callable[..., Any], models: ModuleType, stub_server: StubServer
 ) -> None:
     rule = models.NetworkPolicyCIDRRule.from_dict(stub.NETWORK_RULE)
-    policy = invoke("create_network_policy", cidrs=[rule])
+    domain = models.NetworkPolicyDomainRule.from_dict(stub.NETWORK_DOMAIN_RULE)
+    policy = invoke("create_network_policy", cidrs=[rule], domains=[domain])
     assert policy.to_dict() == stub.NETWORK_POLICY
-    assert json.loads(stub_server.last.body) == {"cidrs": [stub.NETWORK_RULE]}
-    assert invoke("get_network_policy", policy.uuid).to_dict() == stub.NETWORK_POLICY
+    assert isinstance(policy.domains[0], models.NetworkPolicyDomainRule)
+    assert json.loads(stub_server.last.body) == {
+        "cidrs": [stub.NETWORK_RULE],
+        "domains": [stub.NETWORK_DOMAIN_RULE],
+    }
+
+    fetched = invoke("get_network_policy", policy.uuid)
+    assert fetched.to_dict() == stub.NETWORK_POLICY
+    assert isinstance(fetched.domains[0], models.NetworkPolicyDomainRule)
 
     search = "tcp://[2001:db8::/64]:443"
     listing = invoke("list_network_policies", limit=2, offset=1, search=search)
     assert listing.policies[0].uuid == policy.uuid
     assert listing.policies[0].summary.cidrs == 1
+    assert listing.policies[0].summary.domains == 1
     assert listing.policies[0].created_at.year == 2024
     assert stub_server.last.query == {
         "limit": ["2"],
@@ -42,11 +53,26 @@ def test_network_policy_methods(
     assert invoke("delete_network_policy", policy.uuid) is None
 
 
+def test_cidr_only_policy_request(
+    invoke: Callable[..., Any], models: ModuleType, stub_server: StubServer
+) -> None:
+    rule = models.NetworkPolicyCIDRRule.from_dict(stub.NETWORK_RULE)
+    policy = invoke("create_network_policy", cidrs=[rule])
+
+    assert json.loads(stub_server.last.body) == {"cidrs": [stub.NETWORK_RULE]}
+    assert policy.to_dict() == {
+        "uuid": stub.NETWORK_POLICY_UUID,
+        "cidrs": [stub.NETWORK_RULE],
+        "domains": [],
+    }
+
+
 def test_networking_response_models(models: ModuleType) -> None:
+    domain = {"domain": "*.example.com", "proto": "udp", "ports": [53]}
     payload = {
         "enabled": True,
         "policy": [stub.NETWORK_POLICY_UUID],
-        "effective_policy": {"cidrs": [stub.NETWORK_RULE]},
+        "effective_policy": {"cidrs": [stub.NETWORK_RULE], "domains": [domain]},
     }
     for name in ("InstanceSpawnResponse", "OperationInstanceMetadata"):
         result = getattr(models, name).from_dict(
@@ -54,7 +80,53 @@ def test_networking_response_models(models: ModuleType) -> None:
         )
         assert isinstance(result.networking, models.InstanceNetworkingResponse)
         assert result.networking.effective_policy.cidrs[0].ports == [443]
+        assert isinstance(
+            result.networking.effective_policy.domains[0],
+            models.NetworkPolicyDomainRule,
+        )
         assert result.to_dict()["networking"] == payload
     for extra in ({}, {"effective_policy": None}):
         result = models.InstanceNetworkingResponse.from_dict({"enabled": True, **extra})
         assert result.to_dict() == {"enabled": True, **extra}
+
+
+@pytest.mark.parametrize("include_cidrs", [False, True])
+@pytest.mark.parametrize("ports", [None, [], [443, 8443]])
+def test_domain_policy_request(
+    invoke: Callable[..., Any],
+    models: ModuleType,
+    stub_server: StubServer,
+    include_cidrs: bool,
+    ports: list[int] | None,
+) -> None:
+    domain: dict[str, Any] = {"domain": "**.example.com", "proto": "tcp"}
+    if ports is not None:
+        domain["ports"] = ports
+    expected: dict[str, Any] = {"domains": [domain]}
+    arguments: dict[str, Any] = {"domains": [models.NetworkPolicyDomainRule(**domain)]}
+    if include_cidrs:
+        expected["cidrs"] = [stub.NETWORK_RULE]
+        arguments["cidrs"] = [models.NetworkPolicyCIDRRule(**stub.NETWORK_RULE)]
+
+    invoke("create_network_policy", **arguments)
+
+    assert json.loads(stub_server.last.body) == expected
+
+
+def test_empty_policy_request(
+    invoke: Callable[..., Any], stub_server: StubServer
+) -> None:
+    invoke("create_network_policy")
+    assert json.loads(stub_server.last.body) == {}
+
+
+def test_domain_policy_response(models: ModuleType) -> None:
+    payload = {
+        "uuid": stub.NETWORK_POLICY_UUID,
+        "cidrs": [],
+        "domains": [{"domain": "*.example.com", "proto": "udp", "ports": [53]}],
+    }
+    policy = models.NetworkPolicy.from_dict(payload)
+    assert isinstance(policy.domains[0], models.NetworkPolicyDomainRule)
+    assert policy.domains[0].domain == "*.example.com"
+    assert policy.to_dict() == payload

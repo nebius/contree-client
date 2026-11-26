@@ -24,6 +24,7 @@ import {
   EventDataFileUpload,
   InstanceNetworking,
   InstanceResourcesLimits,
+  NetworkPolicyDomainRule,
   OperationStatus,
   SSEParser,
   TERMINAL_STATUSES,
@@ -140,6 +141,36 @@ def test_js_whoami(live_js: Callable[[str], None]) -> None:
     """)
 
 
+def test_js_domain_network_policy_roundtrip(live_js: Callable[[str], None]) -> None:
+    live_js(r"""
+  if (!permissions.network_policy) {
+    return "token lacks network_policy permission";
+  }
+  const domain = {
+    domain: `**.client-js-${randomUUID()}.example.invalid`,
+    proto: "tcp",
+    ports: [443],
+  };
+  const created = await client.createNetworkPolicy({
+    domains: [new NetworkPolicyDomainRule(domain)],
+  });
+
+  try {
+    assert.ok(created.uuid, "created policy has no UUID");
+    const fetched = await client.getNetworkPolicy(created.uuid);
+    for (const policy of [created, fetched]) {
+      assert.equal(policy.uuid, created.uuid);
+      assert.deepEqual(policy.cidrs, []);
+      assert.equal(policy.domains.length, 1);
+      assert.ok(policy.domains[0] instanceof NetworkPolicyDomainRule);
+      assert.deepEqual(policy.domains[0].toWire(), domain);
+    }
+  } finally {
+    await client.deleteNetworkPolicy(created.uuid);
+  }
+    """)
+
+
 def test_js_network_policy_allows_https_blocks_http(
     live_js: Callable[..., None],
     live_network_policy: str,
@@ -148,7 +179,8 @@ def test_js_network_policy_allows_https_blocks_http(
 ) -> None:
     source = r"""
   const policy = POLICY_UUID;
-  const spawned = await client.spawnInstance(PROBE_COMMAND, SAMPLE_IMAGE_UUID, {
+  const spawned = await client.spawnInstance(SAMPLE_IMAGE_UUID, {
+    command: PROBE_COMMAND,
     shell: true,
     disposable: true,
     timeout: 60,
@@ -159,6 +191,7 @@ def test_js_network_policy_allows_https_blocks_http(
     assert.deepEqual(spawned.networking.policy, [policy]);
     assert.deepEqual(spawned.networking.effectivePolicy.toWire(), {
       cidrs: [{ cidr: "1.1.1.1/32", proto: "tcp", ports: [443] }],
+      domains: [],
     });
 
     const operation = await client.waitOperation(spawned.uuid, { timeout: 90 });
@@ -231,9 +264,8 @@ def test_js_spawn_wait_and_events(live_js_image: Callable[[str], None]) -> None:
   const image = await pickSampleImage();
 
   const spawned = await client.spawnInstance(
-    "echo js-live-smoke",
     String(image.uuid),
-    { shell: true, disposable: true, timeout: 60 },
+    { command: "echo js-live-smoke", shell: true, disposable: true, timeout: 60 },
   );
   const operation = await client.waitOperation(spawned.uuid, { timeout: 180 });
   assert.equal(operation.status, OperationStatus.SUCCESS);
@@ -255,7 +287,8 @@ def test_js_subprocess_stdin_and_kill(live_js_image: Callable[[str], None]) -> N
   const image = await pickSampleImage();
   const marker = `js-live-subprocess-${randomUUID().slice(0, 8)}`;
 
-  const spawned = await client.spawnInstance("sleep 90", String(image.uuid), {
+  const spawned = await client.spawnInstance(String(image.uuid), {
+    command: "sleep 90",
     shell: true,
     disposable: true,
     timeout: 120,
@@ -325,9 +358,9 @@ def test_js_live_instance_files_and_events(
   const marker = `ready-${randomUUID()}`;
   const payload = Buffer.from(`live-file-${randomUUID()}\n`);
   const spawned = await client.spawnInstance(
-    `echo ${marker}; read line`,
     String(image.uuid),
     {
+      command: `echo ${marker}; read line`,
       shell: true,
       disposable: true,
       timeout: 180,
@@ -484,9 +517,13 @@ def test_js_recovers_retained_event_tail(
   }
   const image = await pickSampleImage();
   const operation = await client.spawnInstance(
-    "printf 'retained-one\n'; printf 'retained-two\n'",
     String(image.uuid),
-    { shell: true, disposable: true, timeout: 30 },
+    {
+      command: "printf 'retained-one\n'; printf 'retained-two\n'",
+      shell: true,
+      disposable: true,
+      timeout: 30,
+    },
   );
   const finished = await client.waitOperation(operation.uuid, {
     followEvents: false, timeout: 120,

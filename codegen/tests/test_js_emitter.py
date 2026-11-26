@@ -224,8 +224,9 @@ def test_operation_uses_camel_case_and_exact_wire_names() -> None:
     )
 
     source = render_build_fn(op)
+    assert "function buildSyntheticOp(operationId, options = {})" in source
     assert (
-        "operationId, { lastEventId = null, maxCount = null, wireName } = {}" in source
+        "const { lastEventId = null, maxCount = null, wireName } = options;" in source
     )
     assert "${quotePath(operationId)}" in source
     assert 'headers["Last-Event-Id"] = String(lastEventId);' in source
