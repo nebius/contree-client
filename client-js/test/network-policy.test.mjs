@@ -112,6 +112,62 @@ test("CIDR-only policy requests omit domains", async () => {
   });
 });
 
+for (const [name, options] of [
+  ["legacy rule array", [NetworkPolicyCIDRRule.fromWire(rule)]],
+  ["empty array", []],
+  ["null", null],
+  ["string", "cidrs"],
+  ["number", 1],
+  ["boolean", false],
+  ["bigint", 1n],
+  ["symbol", Symbol("options")],
+  ["function", () => ({ cidrs: [rule] })],
+]) {
+  test(`network policy rejects ${name} before sending a request`, async () => {
+    const requestCount = requests.length;
+
+    await assert.rejects(client.createNetworkPolicy(options), {
+      name: "TypeError",
+      message: "options must be a non-null object, not an array",
+    });
+
+    assert.equal(requests.length, requestCount);
+  });
+}
+
+test("class instances with supported properties are valid policy options", async () => {
+  class PolicyOptions {
+    cidrs = [NetworkPolicyCIDRRule.fromWire(rule)];
+  }
+
+  const created = await client.createNetworkPolicy(new PolicyOptions());
+
+  assert.deepEqual(JSON.parse(requests.at(-1).options.body), { cidrs: [rule] });
+  assert.deepEqual(created.toWire(), {
+    uuid: policyUuid,
+    cidrs: [rule],
+    domains: [],
+  });
+});
+
+for (const [key, options] of [
+  ["cidr", { cidr: [rule] }],
+  ["domain", { cidrs: [rule], domain: "example.com" }],
+  ["toString", { toString: "unexpected" }],
+  ["Symbol(cidrs)", { [Symbol("cidrs")]: [rule] }],
+]) {
+  test(`network policy rejects unknown option ${key} before sending a request`, async () => {
+    const requestCount = requests.length;
+
+    await assert.rejects(client.createNetworkPolicy(options), {
+      name: "TypeError",
+      message: `unknown option: ${key}`,
+    });
+
+    assert.equal(requests.length, requestCount);
+  });
+}
+
 for (const ports of [undefined, [], [443, 8443]]) {
   for (const includeCidrs of [false, true]) {
     test(`domain policy request preserves ports=${JSON.stringify(ports)} and cidrs=${includeCidrs}`, async () => {
@@ -135,6 +191,17 @@ test("empty policy request omits both rule groups", async () => {
   await client.createNetworkPolicy();
   assert.deepEqual(JSON.parse(requests.at(-1).options.body), {});
 });
+
+for (const [name, options] of [
+  ["empty object", {}],
+  ["undefined", undefined],
+  ["null-prototype object", Object.create(null)],
+]) {
+  test(`${name} options create an empty policy`, async () => {
+    await client.createNetworkPolicy(options);
+    assert.deepEqual(JSON.parse(requests.at(-1).options.body), {});
+  });
+}
 
 test("domain policy responses preserve typed rules", () => {
   const payload = {

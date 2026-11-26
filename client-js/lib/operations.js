@@ -31,12 +31,27 @@ import {
   WhoAmIResponse,
 } from "./models.js";
 
+function validateOptions(options, allowed) {
+  if (
+    options === null ||
+    typeof options !== "object" ||
+    Array.isArray(options)
+  ) {
+    throw new TypeError("options must be a non-null object, not an array");
+  }
+
+  for (const key of Reflect.ownKeys(options)) {
+    if (!allowed.includes(key)) {
+      throw new TypeError(`unknown option: ${String(key)}`);
+    }
+  }
+}
+
 /** Build the request for `GET /network/policies`. */
-export function buildListNetworkPolicies({
-  search = null,
-  limit = null,
-  offset = null,
-} = {}) {
+export function buildListNetworkPolicies(options = {}) {
+  validateOptions(options, ["search", "limit", "offset"]);
+  const { search = null, limit = null, offset = null } = options;
+
   const query = {};
   if (search != null) {
     query["search"] = search;
@@ -59,7 +74,10 @@ export function parseListNetworkPolicies(response) {
 }
 
 /** Build the request for `POST /network/policies`. */
-export function buildCreateNetworkPolicy({ cidrs, domains } = {}) {
+export function buildCreateNetworkPolicy(options = {}) {
+  validateOptions(options, ["cidrs", "domains"]);
+  const { cidrs, domains } = options;
+
   const payload = new NetworkPolicyCreateRequest({ cidrs, domains }).toWire();
   return {
     method: "POST",
@@ -113,10 +131,10 @@ export function parseDeleteNetworkPolicy(response) {
 }
 
 /** Build the request for `GET /network/tags`. */
-export function buildListNetworkPolicyTags({
-  limit = null,
-  offset = null,
-} = {}) {
+export function buildListNetworkPolicyTags(options = {}) {
+  validateOptions(options, ["limit", "offset"]);
+  const { limit = null, offset = null } = options;
+
   const query = {};
   if (limit != null) {
     query["limit"] = String(limit);
@@ -191,15 +209,26 @@ export function parseDeleteNetworkPolicyTag(response) {
 }
 
 /** Build the request for `GET /images`. */
-export function buildListImages({
-  limit = null,
-  offset = null,
-  tagged = false,
-  tag = null,
-  uuid = null,
-  since = null,
-  until = null,
-} = {}) {
+export function buildListImages(options = {}) {
+  validateOptions(options, [
+    "limit",
+    "offset",
+    "tagged",
+    "tag",
+    "uuid",
+    "since",
+    "until",
+  ]);
+  const {
+    limit = null,
+    offset = null,
+    tagged = false,
+    tag = null,
+    uuid = null,
+    since = null,
+    until = null,
+  } = options;
+
   const query = {};
   if (limit != null) {
     query["limit"] = String(limit);
@@ -234,7 +263,10 @@ export function parseListImages(response) {
 }
 
 /** Build the request for `DELETE /images/{imageUUID}/tag`. */
-export function buildDeleteImageTag(imageUuid, { tag = null } = {}) {
+export function buildDeleteImageTag(imageUuid, options = {}) {
+  validateOptions(options, ["tag"]);
+  const { tag = null } = options;
+
   const query = {};
   if (tag != null) {
     query["tag"] = tag;
@@ -277,7 +309,10 @@ export function parseUpdateImageTag(response) {
 }
 
 /** Build the request for `POST /images/import`. */
-export function buildImportImage(registry, { tag, timeout } = {}) {
+export function buildImportImage(registry, options = {}) {
+  validateOptions(options, ["tag", "timeout"]);
+  const { tag, timeout } = options;
+
   const payload = new ImageImportRequest({ registry, tag, timeout }).toWire();
   return {
     method: "POST",
@@ -297,12 +332,10 @@ export function parseImportImage(response) {
 }
 
 /** Build the request for `GET /files`. */
-export function buildListFiles({
-  limit = null,
-  offset = null,
-  since = null,
-  until = null,
-} = {}) {
+export function buildListFiles(options = {}) {
+  validateOptions(options, ["limit", "offset", "since", "until"]);
+  const { limit = null, offset = null, since = null, until = null } = options;
+
   const query = {};
   if (limit != null) {
     query["limit"] = String(limit);
@@ -381,9 +414,28 @@ export function parseCheckFileExists(response) {
 }
 
 /** Build the request for `POST /instances`. */
-export function buildSpawnInstance(
-  image,
-  {
+export function buildSpawnInstance(image, options = {}) {
+  validateOptions(options, [
+    "command",
+    "keepAlive",
+    "disposable",
+    "hostname",
+    "args",
+    "shell",
+    "env",
+    "preserveEnv",
+    "preserveCwd",
+    "cwd",
+    "uid",
+    "gid",
+    "resourcesLimits",
+    "networking",
+    "stdin",
+    "timeout",
+    "truncateOutputAt",
+    "files",
+  ]);
+  const {
     command,
     keepAlive,
     disposable,
@@ -402,8 +454,8 @@ export function buildSpawnInstance(
     timeout,
     truncateOutputAt,
     files,
-  } = {},
-) {
+  } = options;
+
   const payload = new InstanceSpawnRequest({
     image,
     command,
@@ -443,14 +495,24 @@ export function parseSpawnInstance(response) {
 }
 
 /** Build the request for `GET /operations`. */
-export function buildListOperations({
-  limit = null,
-  offset = null,
-  status = null,
-  kind = null,
-  since = null,
-  until = null,
-} = {}) {
+export function buildListOperations(options = {}) {
+  validateOptions(options, [
+    "limit",
+    "offset",
+    "status",
+    "kind",
+    "since",
+    "until",
+  ]);
+  const {
+    limit = null,
+    offset = null,
+    status = null,
+    kind = null,
+    since = null,
+    until = null,
+  } = options;
+
   const query = {};
   if (limit != null) {
     query["limit"] = String(limit);
@@ -482,10 +544,10 @@ export function parseListOperations(response) {
 }
 
 /** Build the request for `GET /operations/{operationId}`. */
-export function buildGetOperationStatus(
-  operationId,
-  { inflight = false } = {},
-) {
+export function buildGetOperationStatus(operationId, options = {}) {
+  validateOptions(options, ["inflight"]);
+  const { inflight = false } = options;
+
   const query = {};
   if (inflight) {
     query["inflight"] = "1";
@@ -524,10 +586,23 @@ export function parseCancelOperation(response) {
 }
 
 /** Build the request for `GET /operations/{operationId}/events`. */
-export function buildIterOperationEvents(
-  operationId,
-  { follow = false, spid = null, since = null, lastEventId = null } = {},
-) {
+export function buildIterOperationEvents(operationId, options = {}) {
+  validateOptions(options, [
+    "follow",
+    "spid",
+    "since",
+    "lastEventId",
+    "deadline",
+    "idleTimeout",
+    "_singleAttempt",
+  ]);
+  const {
+    follow = false,
+    spid = null,
+    since = null,
+    lastEventId = null,
+  } = options;
+
   const query = {};
   if (follow) {
     query["follow"] = "1";
@@ -556,7 +631,21 @@ export function buildIterOperationEvents(
 export function buildOperationSubprocessCreate(
   operationId,
   command,
-  {
+  options = {},
+) {
+  validateOptions(options, [
+    "resourcesLimits",
+    "args",
+    "shell",
+    "env",
+    "cwd",
+    "uid",
+    "gid",
+    "stdin",
+    "timeout",
+    "truncateOutputAt",
+  ]);
+  const {
     resourcesLimits,
     args,
     shell,
@@ -567,8 +656,8 @@ export function buildOperationSubprocessCreate(
     stdin,
     timeout,
     truncateOutputAt,
-  } = {},
-) {
+  } = options;
+
   const payload = new ExecSpec({
     operationId,
     command,
@@ -618,11 +707,10 @@ export function parseOperationSubprocess(response) {
 }
 
 /** Build the request for `DELETE /operations/{operationId}/subprocesses/{spid}`. */
-export function buildOperationSubprocessKill(
-  operationId,
-  spid,
-  { signal = null } = {},
-) {
+export function buildOperationSubprocessKill(operationId, spid, options = {}) {
+  validateOptions(options, ["signal"]);
+  const { signal = null } = options;
+
   const query = {};
   if (signal != null) {
     query["signal"] = signal;
@@ -648,8 +736,11 @@ export function buildOperationSubprocessStdin(
   operationId,
   spid,
   value,
-  { encoding, close } = {},
+  options = {},
 ) {
+  validateOptions(options, ["encoding", "close"]);
+  const { encoding, close } = options;
+
   const payload = new ClosableStreamRepr({
     operationId,
     spid,
@@ -679,8 +770,11 @@ export function buildApplyInstanceFile(
   operationUuid,
   fileUuid,
   path,
-  { unpack, replace, merge } = {},
+  options = {},
 ) {
+  validateOptions(options, ["unpack", "replace", "merge"]);
+  const { unpack, replace, merge } = options;
+
   const payload = {};
   payload["file_uuid"] = fileUuid;
   payload["path"] = path;
@@ -940,10 +1034,17 @@ export function parseInspectImageList(response) {
 }
 
 /** Build the request for `GET /operations/{operation_uuid}/inspect/grep`. */
-export function buildInspectInstanceGrep(
-  operationUuid,
-  pattern,
-  {
+export function buildInspectInstanceGrep(operationUuid, pattern, options = {}) {
+  validateOptions(options, [
+    "path",
+    "glob",
+    "maxCount",
+    "maxTotal",
+    "case",
+    "before",
+    "after",
+  ]);
+  const {
     path = null,
     glob = null,
     maxCount = null,
@@ -951,8 +1052,8 @@ export function buildInspectInstanceGrep(
     case: case_ = null,
     before = null,
     after = null,
-  } = {},
-) {
+  } = options;
+
   const query = {};
   query["pattern"] = pattern;
   if (path != null) {
@@ -993,10 +1094,17 @@ export function parseInspectInstanceGrep(response) {
 }
 
 /** Build the request for `GET /inspect/{image_uuid}/grep`. */
-export function buildInspectImageGrep(
-  imageUuid,
-  pattern,
-  {
+export function buildInspectImageGrep(imageUuid, pattern, options = {}) {
+  validateOptions(options, [
+    "path",
+    "glob",
+    "maxCount",
+    "maxTotal",
+    "case",
+    "before",
+    "after",
+  ]);
+  const {
     path = null,
     glob = null,
     maxCount = null,
@@ -1004,8 +1112,8 @@ export function buildInspectImageGrep(
     case: case_ = null,
     before = null,
     after = null,
-  } = {},
-) {
+  } = options;
+
   const query = {};
   query["pattern"] = pattern;
   if (path != null) {
