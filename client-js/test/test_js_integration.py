@@ -26,6 +26,7 @@ import {
   InstanceResourcesLimits,
   NetworkPolicyDomainRule,
   OperationStatus,
+  RetryPolicy,
   SSEParser,
   TERMINAL_STATUSES,
   profiles,
@@ -298,11 +299,25 @@ def test_js_subprocess_stdin_and_kill(live_js_image: Callable[[str], None]) -> N
   try {
     await waitRunning(operationId);
 
-    const spid = await client.operationSubprocessCreate(
-      operationId,
-      `echo ${marker}`,
-      { shell: true },
-    );
+    // ASSIGNED/EXECUTING can precede guest readiness. HTTP 425 means
+    // the request was rejected before execution, so retrying it is safe.
+    const previousRetry = client.retry;
+    client.retry = new RetryPolicy({
+      statuses: [425],
+      serverErrors: false,
+      delays: [1],
+      maxAttempts: 30,
+    });
+    let spid;
+    try {
+      spid = await client.operationSubprocessCreate(
+        operationId,
+        `echo ${marker}`,
+        { shell: true },
+      );
+    } finally {
+      client.retry = previousRetry;
+    }
     assert.ok(spid >= 2);
 
     const result = await waitSubprocessTerminal(operationId, spid);
